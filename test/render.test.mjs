@@ -186,19 +186,56 @@ test('restored history does not wait out a placeholder', () => {
   assert.equal(rowBranch(undefined, false), 'plain', 'unknown freshness is not treated as fresh');
 });
 
-test('freshness is latched once, and only once state is available', () => {
-  // Two regressions in one place, both seen as a visible flash:
-  // 1. `fresh` derived from live state flipped mid-render (9ms oscillation).
-  // 2. Latching on a render with no state marked every fresh step as history, so
-  //    the plain report appeared first and was replaced a moment later.
-  const source = fs.readFileSync(SOURCE, 'utf8');
-  const start = source.indexOf('const row = state?.rows?.find');
-  const end = source.indexOf('const branch = rowBranch', start);
-  assert.ok(start > 0 && end > start, 'the freshness computation is present');
-  const block = source.slice(start, end);
+/** Render the registered chat component with explicit props. */
+function renderStep(props) {
+  const { registrations } = renderViaSlot();
+  const component = registrations.find((entry) => entry.options.key === 'assistant-step').component;
+  assert.ok(component, 'the chat node registered');
+  return component({
+    sessionId: 's1',
+    t: (key) => key,
+    ...props,
+  });
+}
 
-  assert.match(block, /if \(!freshDecided\.has\(seq\) && state !== undefined\)/, 'the latch waits for state');
-  assert.match(block, /freshDecided\.set\(seq, row === undefined\)/, 'new means absent from a loaded state');
+test('the reasoning partition is left to the shipped renderer', () => {
+  // The shipped chat renders the same assistant node twice: once with
+  // `groupPart: 'reasoning'` for the folded thinking block, once for the answer.
+  // This entry owns only the answer. Claiming the reasoning pane put the answer
+  // inside it and hid the real reasoning.
+  const node = {
+    data: {
+      status: 'settled',
+      blocks: [{ kind: 'text', text: '这是正文。' }],
+      finalNode: { seq: 7, blocks: [{ kind: 'text', text: '这是正文。' }] },
+    },
+  };
+  assert.equal(renderStep({ node, groupPart: 'reasoning' }), null, 'the reasoning pane is not ours');
+});
+
+test('a running or interrupted step is left to the shipped renderer', () => {
+  const make = (status) => ({
+    data: {
+      status,
+      blocks: [{ kind: 'text', text: '正文。' }],
+      finalNode: { seq: 8, blocks: [{ kind: 'text', text: '正文。' }] },
+    },
+  });
+  assert.equal(renderStep({ node: make('running') }), null);
+  assert.equal(renderStep({ node: make('interrupted') }), null);
+});
+
+test('freshness is cached per session, not per seq', () => {
+  // `seq` is only unique inside a session. Keying the cache by `seq` alone let one
+  // session's verdict be reused by another session's unrelated row with the same
+  // number.
+  const source = fs.readFileSync(SOURCE, 'utf8');
+  assert.match(source, /const rowKey = \(sessionId, seq\) =>/, 'a composite key helper exists');
+  assert.match(source, /freshDecided\.has\(key\)/, 'the freshness cache uses it');
+  assert.ok(
+    !/freshDecided\.has\(seq\)/.test(source),
+    'no bare-seq key remains in the freshness cache',
+  );
 });
 
 test('a row whose rewrite already failed shows the plain report immediately', () => {

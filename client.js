@@ -19,19 +19,20 @@ window.__ModuleLoader__.load({
 
     /** sessionId → newest state payload from the host half. */
     const states = new Map();
-    /** seq → last rendered branch, for spotting a visible flash. */
-    const branchHistory = new Map();
-    /** seq → whether the step was new when first seen; decided once. */
-    const freshDecided = new Map();
     /**
-     * sessionId → the highest seq the page had already seen for it.
+     * Cache key for one row.
      *
-     * Updated on every state fetch, so a step that arrives later can be compared
-     * against what the page knew *before* it appeared. This is what makes
-     * "new step" a stable answer instead of one that flips when state lands.
+     * `seq` is only unique inside a session, so keying these maps by `seq` alone
+     * let session A's verdict about `seq: 1` be reused for session B's unrelated
+     * `seq: 1` — a step could be treated as history in a session that had just
+     * created it.
      */
-    const newestSeenSeq = new Map();
-    /** seq → the branch sequence, capped. */
+    const rowKey = (sessionId, seq) => `${sessionId}:${seq}`;
+    /** `${sessionId}:${seq}` → last rendered branch, for spotting a visible flash. */
+    const branchHistory = new Map();
+    /** `${sessionId}:${seq}` → whether the step was new when first seen. */
+    const freshDecided = new Map();
+    /** `${sessionId}:${seq}` → the branch sequence, capped. */
     const diagnosticsTrail = new Map();
     const listeners = new Set();
     /** `${sessionId}` → poll handle, so several steps share one timer. */
@@ -55,15 +56,6 @@ window.__ModuleLoader__.load({
         const value = await response.json();
         const previous = states.get(sessionId);
         states.set(sessionId, value);
-        // Remember the highest seq this session has ever shown. A step rendered
-        // later compares against it to decide whether it is new; recording it here
-        // keeps that answer stable once state has landed.
-        const rows = Array.isArray(value?.rows) ? value.rows : [];
-        if (rows.length > 0) {
-          const highest = rows.reduce((best, entry) => (entry.seq > best ? entry.seq : best), rows[0].seq);
-          const seen = newestSeenSeq.get(sessionId);
-          if (seen === undefined || highest > seen) newestSeenSeq.set(sessionId, highest);
-        }
         if (previous === undefined || previous.rev !== value.rev) emit();
       } catch (error) {
         reportDiagnostics({
@@ -533,7 +525,7 @@ window.__ModuleLoader__.load({
      * @returns the persona block, or `null` to let the shipped renderer render.
      */
     function PersonaStep(props) {
-      const { node, sessionId, t } = props;
+      const { node, sessionId, t, groupPart } = props;
       const data = node?.data;
       const finalNode = data?.finalNode;
       const seq = finalNode?.seq;
@@ -543,11 +535,26 @@ window.__ModuleLoader__.load({
       const [openOriginal, setOpenOriginal] = React.useState(false);
       const [conceded, setConceded] = React.useState(false);
 
+      // The same assistant node is rendered twice by the shipped chat: once with
+      // `groupPart: 'reasoning'` for the folded thinking block, once as the
+      // response body. This entry only owns the response. Ignoring the partition
+      // put the *answer* inside the reasoning pane and hid the real reasoning —
+      // the two panes showed the same prose, and expanding the fold showed the
+      // report twice.
+      if (groupPart === 'reasoning') return null;
+
+      // The hold window must measure the wait for a rewrite, not the lifetime of
+      // this component. The shipped chat keeps one instance across
+      // running → settled, so a timer started at mount had already expired by the
+      // time the step settled — the row conceded immediately and showed the plain
+      // report, then swapped to the persona when the rewrite landed. That is the
+      // flash this whole mechanism exists to prevent.
+      const settled = status === 'settled';
       React.useEffect(() => {
-        if (conceded) return undefined;
+        if (!settled || conceded) return undefined;
         const timer = setTimeout(() => setConceded(true), HOLD_PLACEHOLDER_MS);
         return () => clearTimeout(timer);
-      }, [conceded]);
+      }, [settled, conceded]);
 
       if (status === 'running' || status === 'interrupted') return null;
       if (seq === undefined || original === '') return null;
@@ -563,28 +570,28 @@ window.__ModuleLoader__.load({
       // oscillation is the flash this whole mechanism exists to prevent, so the
       // answer is latched the first time the step is seen.
       //
-      // "New" means: the page already had this session's state, and this seq was
+      // "New" means: the page already had this session's state, and this row was
       // not in it. That is precisely a step that just arrived and whose rewrite is
-      // being computed now. A step present in the first state the page ever got is
+      // being computed now. A row present in the first state the page ever got is
       // history — nothing is coming for it, so it renders at once.
-      if (!freshDecided.has(seq) && state !== undefined) {
-        freshDecided.set(seq, row === undefined);
+      const key = rowKey(sessionId, seq);
+      if (!freshDecided.has(key) && state !== undefined) {
+        freshDecided.set(key, row === undefined);
       }
-      const fresh = freshDecided.get(seq) === true;
+      const fresh = freshDecided.get(key) === true;
       const branch = rowBranch(row, conceded, fresh);
       // Record the first branch a row takes, and any change after it. "Plain
       // first, persona later" is a visible flash, and this is the only way to see
       // whether it came from a placeholder timeout, a transient skipped row, or a
       // second render with different data.
-      const branchKey = `${seq}`;
-      const previousBranch = branchHistory.get(branchKey);
+      const previousBranch = branchHistory.get(key);
       if (previousBranch !== branch) {
-        branchHistory.set(branchKey, branch);
-        const trace = diagnosticsTrail.get(branchKey) ?? [];
+        branchHistory.set(key, branch);
+        const trace = diagnosticsTrail.get(key) ?? [];
         trace.push({ branch, at: Date.now() });
-        diagnosticsTrail.set(branchKey, trace.slice(-4));
+        diagnosticsTrail.set(key, trace.slice(-4));
         if (trace.length <= 4) {
-          reportDiagnostics({ branchTrail: { [branchKey]: trace } });
+          reportDiagnostics({ branchTrail: { [key]: trace } });
         }
       }
 
