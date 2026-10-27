@@ -4,19 +4,6 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
 
-    // Report the React surface once. If `useEffect` is missing or is a different
-    // shape here, every hook-based feature silently does nothing — and that is
-    // indistinguishable from a data problem, which is what this cost.
-    const REACT_SURFACE = {
-      version: React?.version,
-      hasUseEffect: typeof React?.useEffect,
-      hasUseState: typeof React?.useState,
-      hasUseRef: typeof React?.useRef,
-      hasUseCallback: typeof React?.useCallback,
-      hasCreateElement: typeof React?.createElement,
-      hasMemo: typeof React?.memo,
-    };
-
     const ROUTE = '/persona-shell';
 
     /**
@@ -32,10 +19,6 @@ window.__ModuleLoader__.load({
 
     /** sessionId → newest state payload from the host half. */
     const states = new Map();
-    /** One-shot diagnostic: what the chat renderer actually received. */
-    let probeSent = false;
-    /** One-shot diagnostic: whether the state lookup found the row. */
-    let branchProbeSent = false;
     const listeners = new Set();
     /** `${sessionId}` → poll handle, so several steps share one timer. */
     const pollers = new Map();
@@ -48,27 +31,20 @@ window.__ModuleLoader__.load({
       try {
         const response = await fetch(`${ROUTE}/state?session=${encodeURIComponent(sessionId)}`);
         if (!response.ok) {
-          // Report a rejected fetch: a non-ok answer here is the difference
-          // between "no data yet" and "the route refuses this request".
-          reportDiagnostics({ lastFetch: { ok: false, status: response.status, url: `${ROUTE}/state?session=${sessionId}` } });
+          // Only failures are reported. A rejected fetch is the difference
+          // between "no data yet" and "the route refuses this request", and it
+          // is the one case with no other symptom — the transcript just stays
+          // plain. Successes would be a write per poll for no extra insight.
+          reportDiagnostics({ lastFetchError: { status: response.status, at: Date.now() } });
           return;
         }
         const value = await response.json();
         const previous = states.get(sessionId);
         states.set(sessionId, value);
-        reportDiagnostics({
-          lastFetch: {
-            ok: true,
-            status: response.status,
-            rev: value?.rev,
-            rows: Array.isArray(value?.rows) ? value.rows.length : -1,
-            at: Date.now(),
-          },
-        });
         if (previous === undefined || previous.rev !== value.rev) emit();
       } catch (error) {
         reportDiagnostics({
-          lastFetch: { ok: false, error: error instanceof Error ? error.message : String(error), at: Date.now() },
+          lastFetchError: { error: error instanceof Error ? error.message : String(error), at: Date.now() },
         });
       }
     }
@@ -159,9 +135,6 @@ window.__ModuleLoader__.load({
     function useHostState(sessionId, seq) {
       const [version, setVersion] = React.useState(0);
       React.useEffect(() => {
-        // Prove the effect body actually runs: a hook that never executes leaves
-        // no trace, and "no state" then looks identical to "no effect".
-        reportDiagnostics({ watchStarted: { sessionId: String(sessionId).slice(0, 60), seq, at: Date.now() } });
         const listener = () => setVersion((value) => value + 1);
         listeners.add(listener);
         const stop = usableSessionId(sessionId) ? watch(sessionId, seq) : () => {};
@@ -540,29 +513,6 @@ window.__ModuleLoader__.load({
       const seq = finalNode?.seq;
       const status = data?.status;
       const original = textOf(data);
-      // Probe at the very top: anything below can return early, and the whole
-      // question is which of these values the shipped slot actually delivers.
-      if (probeSent === false) {
-        probeSent = true;
-        try {
-          reportDiagnostics({
-            probe: {
-              propKeys: Object.keys(props ?? {}),
-              sessionIdType: typeof sessionId,
-              sessionId: typeof sessionId === 'string' ? sessionId.slice(0, 60) : String(sessionId),
-              seq,
-              seqType: typeof seq,
-              status,
-              originalLen: original.length,
-              hasFinalNode: finalNode !== undefined,
-              dataKeys: Object.keys(data ?? {}),
-              nodeKeys: Object.keys(node ?? {}),
-            },
-          });
-        } catch (error) {
-          reportDiagnostics({ probeError: error instanceof Error ? error.message : String(error) });
-        }
-      }
       const { state } = useHostState(sessionId, seq);
       const [openOriginal, setOpenOriginal] = React.useState(false);
       const [conceded, setConceded] = React.useState(false);
@@ -579,25 +529,6 @@ window.__ModuleLoader__.load({
       if (hasNonText(data)) return null;
 
       const row = state?.rows?.find((candidate) => candidate.seq === seq);
-      // Second probe, one-shot: what the component resolved to. The first probe
-      // proved the inputs are right; this proves whether the lookup finds a row
-      // and which branch that produces.
-      if (branchProbeSent === false) {
-        branchProbeSent = true;
-        reportDiagnostics({
-          branchProbe: {
-            hasState: state !== undefined,
-            stateRev: state?.rev,
-            rowCount: state?.rows?.length,
-            foundRow: row !== undefined,
-            rowStatus: row?.status,
-            rowTextLen: typeof row?.text === 'string' ? row.text.length : -1,
-            seq,
-            branch: rowBranch(row, false, state !== undefined),
-            fetchUrl: `${ROUTE}/state?session=${sessionId}`,
-          },
-        });
-      }
       // A step is "fresh" when this session's state had already loaded before the
       // step appeared: then a rewrite is plausibly in flight and a short
       // placeholder is honest. On first paint `state` is undefined — that is the
@@ -1316,7 +1247,7 @@ window.__ModuleLoader__.load({
         // stale bundle from a broken one is a heartbeat that names the build:
         // without it, "my fix did nothing" and "my fix never loaded" look the
         // same, and that ambiguity cost this plugin several rounds.
-        reportDiagnostics({ applied: true, at: Date.now(), reactSurface: REACT_SURFACE });
+        reportDiagnostics({ applied: true, at: Date.now() });
         // Heartbeat so a stale bundle is distinguishable from a broken one. The
         // desktop client has no hard reload, so without this "my fix did nothing"
         // and "my fix never loaded" look identical.
