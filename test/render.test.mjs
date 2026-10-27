@@ -242,17 +242,15 @@ test('streaming draws no caret', () => {
   assert.ok(!/['"]▍['"]/.test(source), 'no block-caret character remains');
 });
 
-test('the chat renderer receives its session id through inject, not props', () => {
-  // Regression: `SessionStandardProps` is an empty interface, so a keyed chat
-  // renderer never receives `sessionId` as a prop. Reading it there produced
-  // `undefined`, the page fetched `/state?session=undefined`, got `rows: []`,
-  // and silently rendered the plain report on every row.
+test('the chat renderer does not declare inject for a standard prop', () => {
+  // `sessionId` is listed in this slot's `standardProps`, so it arrives as a
+  // normal prop. Declaring `inject` to return it was a guess made from a misread
+  // type, and it was the last change before rendering stopped entirely.
   const { registrations } = renderViaSlot();
   const step = registrations.find((entry) => entry.options.name === 'conversation.chat.node');
   assert.ok(step, 'the chat node registered');
-  assert.equal(typeof step.options.inject, 'function', 'an inject callback is declared');
-  const injected = step.options.inject('session-abc');
-  assert.equal(injected.sessionId, 'session-abc', 'the session id comes from the callback argument');
+  assert.equal(step.options.inject, undefined, 'no inject callback is declared');
+  assert.equal(step.options.priority, -1, 'the shipped entry is shadowed by priority');
 });
 
 test('the poller tracks every seq, not just the one that created it', () => {

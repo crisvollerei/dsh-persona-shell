@@ -6,6 +6,15 @@ window.__ModuleLoader__.load({
 
     const ROUTE = '/persona-shell';
 
+    /**
+     * Bumped whenever the client changes shape.
+     *
+     * Sent on load and on the first render, so "is the page running the code I
+     * just installed?" is answerable instead of assumed. A stale bundle and a
+     * broken one look identical otherwise.
+     */
+    const CLIENT_BUILD = 20241027;
+
     // --- host data -----------------------------------------------------------
 
     /** sessionId → newest state payload from the host half. */
@@ -475,12 +484,36 @@ window.__ModuleLoader__.load({
      * renderer keeps them; everything else goes through {@link rowBranch}.
      * @returns the persona block, or `null` to let the shipped renderer render.
      */
-    function PersonaStep({ node, sessionId, t }) {
+    function PersonaStep(props) {
+      const { node, sessionId, t } = props;
       const data = node?.data;
       const finalNode = data?.finalNode;
       const seq = finalNode?.seq;
       const status = data?.status;
       const original = textOf(data);
+      // Probe at the very top: anything below can return early, and the whole
+      // question is which of these values the shipped slot actually delivers.
+      if (probeSent === false) {
+        probeSent = true;
+        try {
+          reportDiagnostics({
+            probe: {
+              propKeys: Object.keys(props ?? {}),
+              sessionIdType: typeof sessionId,
+              sessionId: typeof sessionId === 'string' ? sessionId.slice(0, 60) : String(sessionId),
+              seq,
+              seqType: typeof seq,
+              status,
+              originalLen: original.length,
+              hasFinalNode: finalNode !== undefined,
+              dataKeys: Object.keys(data ?? {}),
+              nodeKeys: Object.keys(node ?? {}),
+            },
+          });
+        } catch (error) {
+          reportDiagnostics({ probeError: error instanceof Error ? error.message : String(error) });
+        }
+      }
       const { state } = useHostState(sessionId, seq);
       const [openOriginal, setOpenOriginal] = React.useState(false);
       const [conceded, setConceded] = React.useState(false);
@@ -497,26 +530,6 @@ window.__ModuleLoader__.load({
       if (hasNonText(data)) return null;
 
       const row = state?.rows?.find((candidate) => candidate.seq === seq);
-      // Probe: what the component actually receives. Guessing at this cost three
-      // rounds; recording it makes the next failure a fact instead of a theory.
-      if (probeSent === false) {
-        probeSent = true;
-        reportDiagnostics({
-          probe: {
-            sessionIdType: typeof sessionId,
-            sessionId: typeof sessionId === 'string' ? sessionId.slice(0, 60) : String(sessionId),
-            seqType: typeof seq,
-            seq,
-            hasState: state !== undefined,
-            rowCount: state?.rows?.length,
-            rowStatus: row?.status,
-            rowTextLen: row?.text?.length,
-            branch: rowBranch(row, conceded, state !== undefined),
-            nodeKeys: Object.keys(node ?? {}),
-            dataKeys: Object.keys(data ?? {}),
-          },
-        });
-      }
       // A step is "fresh" when this session's state had already loaded before the
       // step appeared: then a rewrite is plausibly in flight and a short
       // placeholder is honest. On first paint `state` is undefined — that is the
@@ -1230,20 +1243,22 @@ window.__ModuleLoader__.load({
        */
       __testing: { rowBranch, renderMarkdown, unmaskPartial, HOLD_PLACEHOLDER_MS },
       apply(ctx) {
+        // Announce this build as soon as the plugin is applied. The host keeps
+        // the last report, so "the page is running the installed code" becomes a
+        // fact to read rather than something to hope for.
+        reportDiagnostics({ clientBuild: CLIENT_BUILD, applied: true, at: Date.now() });
+
         // A lower priority than the shipped `assistant-step` entry shadows it;
         // disposing this registration restores the shipped renderer.
         //
-        // `inject` is how a session-scoped slot receives the session id. It is
-        // NOT a prop: `SessionStandardProps` is an empty interface, and the only
-        // place the id is handed to a keyed chat renderer is this callback's
-        // argument. Reading it from `props` yielded `undefined` on every row, so
-        // the page fetched `/state?session=undefined`, got an empty list, and
-        // fell back to the plain report everywhere — with no error to notice.
+        // No `inject` here: `sessionId` is one of this slot's `standardProps`,
+        // so it arrives as a normal prop. An `inject` callback that returns a
+        // key the slot already provides was a guess made from a misread type,
+        // and it is the last change made before rendering stopped working.
         ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
           name: 'conversation.chat.node',
           key: 'assistant-step',
           priority: -1,
-          inject: (sessionId) => ({ sessionId }),
         }, PersonaStep));
 
         ctx.slots.inject('settings.section', () => ctx.slots.register({
