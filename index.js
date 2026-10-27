@@ -1207,6 +1207,9 @@ export function apply(ctx, rawConfig) {
         heartbeatAge: typeof diagnostics.heartbeat === 'number'
           ? Date.now() - diagnostics.heartbeat
           : null,
+        // Which keys actually arrived. Without this, "the client never reported"
+        // and "the report was dropped" look the same from outside.
+        diagnosticKeys: Object.keys(diagnostics).slice(0, 24),
       });
       return;
     }
