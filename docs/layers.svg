@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="224" viewBox="0 0 960 224" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">A different voice. The same working prompt.</title>
+  <desc id="desc">A one-way connection from the working layer to the persona layer. Reports are read, masked, rewritten and restored. Persona text is never written back to the working session.</desc>
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" stroke="#456AA5" stroke-opacity=".07"/>
+    </pattern>
+    <clipPath id="frame">
+      <rect x=".5" y=".5" width="959" height="223" rx="16"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="960" height="224" fill="#F4F6FA"/>
+    <rect width="960" height="224" fill="url(#grid)"/>
+    <path d="M-42 169C85 61 231 268 424 182S744 72 1002 168" stroke="#DCE5F3" stroke-width="28"/>
+
+    <rect x="28" y="28" width="330" height="168" rx="10" fill="#FFFFFF" stroke="#D6DFED"/>
+    <path d="M52 55H68M60 47V63" stroke="#6884AE" stroke-width="1.5"/>
+    <text x="80" y="59" fill="#536B8E" font-family="Consolas, monospace" font-size="13" letter-spacing="1.4">01 / WORKING LAYER</text>
+    <text x="52" y="110" fill="#263B5E" font-family="Georgia, 'Times New Roman', serif" font-size="34">Do the work.</text>
+    <path d="M52 132H334" stroke="#E3E8F1"/>
+    <text x="52" y="158" fill="#536B8E" font-family="Consolas, monospace" font-size="13">prompt / tools / session</text>
+    <text x="52" y="179" fill="#536B8E" font-family="Consolas, monospace" font-size="13">untouched.</text>
+
+    <text x="465" y="82" text-anchor="middle" fill="#536B8E" font-family="Consolas, monospace" font-size="13">read only</text>
+    <path d="M382 105H548M538 99L548 105L538 111" stroke="#4C77BC" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="465" y="142" text-anchor="middle" fill="#536B8E" font-family="Consolas, monospace" font-size="12">no write-back</text>
+
+    <rect x="572" y="28" width="360" height="168" rx="10" fill="#253D67"/>
+    <path d="M851 29C797 67 929 77 878 112S839 167 933 174" stroke="#83A8E6" stroke-opacity=".17" stroke-width="24"/>
+    <path d="M877 29C823 67 955 77 904 112S865 167 959 174" stroke="#83A8E6" stroke-opacity=".12" stroke-width="8"/>
+    <circle cx="602" cy="55" r="4" fill="#A8C5F2"/>
+    <text x="620" y="59" fill="#BED2F2" font-family="Consolas, monospace" font-size="13" letter-spacing="1.4">02 / PERSONA LAYER</text>
+    <text x="596" y="110" fill="#F6F8FD" font-family="Georgia, 'Times New Roman', serif" font-size="34">Give it a voice.</text>
+    <path d="M596 132H908" stroke="#A8C5F2" stroke-opacity=".24"/>
+    <text x="596" y="158" fill="#BED2F2" font-family="Consolas, monospace" font-size="13">mask &gt; rewrite &gt; restore</text>
+    <text x="596" y="179" fill="#BED2F2" font-family="Consolas, monospace" font-size="13">a voice of your own.</text>
+  </g>
+  <rect x=".5" y=".5" width="959" height="223" rx="16" stroke="#DEE5F0"/>
+</svg>
