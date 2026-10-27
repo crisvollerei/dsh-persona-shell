@@ -186,19 +186,19 @@ test('restored history does not wait out a placeholder', () => {
   assert.equal(rowBranch(undefined, false), 'plain', 'unknown freshness is not treated as fresh');
 });
 
-test('freshness is latched once, so the row cannot oscillate', () => {
-  // Regression, observed as a 9ms `plain → placeholder → plain → placeholder`
-  // loop: `fresh` was derived from `state`, which arrives asynchronously, so the
-  // answer flipped mid-render and the row visibly changed body twice.
+test('freshness is latched once, and only once state is available', () => {
+  // Two regressions in one place, both seen as a visible flash:
+  // 1. `fresh` derived from live state flipped mid-render (9ms oscillation).
+  // 2. Latching on a render with no state marked every fresh step as history, so
+  //    the plain report appeared first and was replaced a moment later.
   const source = fs.readFileSync(SOURCE, 'utf8');
   const start = source.indexOf('const row = state?.rows?.find');
   const end = source.indexOf('const branch = rowBranch', start);
   assert.ok(start > 0 && end > start, 'the freshness computation is present');
   const block = source.slice(start, end);
 
-  assert.match(block, /if \(!freshDecided\.has\(seq\)\)/, 'the answer is decided once');
-  assert.match(block, /freshDecided\.set\(seq,/, 'and then remembered');
-  assert.match(block, /state !== undefined && row === undefined/, 'new means absent from a loaded state');
+  assert.match(block, /if \(!freshDecided\.has\(seq\) && state !== undefined\)/, 'the latch waits for state');
+  assert.match(block, /freshDecided\.set\(seq, row === undefined\)/, 'new means absent from a loaded state');
 });
 
 test('a row whose rewrite already failed shows the plain report immediately', () => {

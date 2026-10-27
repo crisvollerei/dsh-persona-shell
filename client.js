@@ -567,8 +567,8 @@ window.__ModuleLoader__.load({
       // not in it. That is precisely a step that just arrived and whose rewrite is
       // being computed now. A step present in the first state the page ever got is
       // history — nothing is coming for it, so it renders at once.
-      if (!freshDecided.has(seq)) {
-        freshDecided.set(seq, state !== undefined && row === undefined);
+      if (!freshDecided.has(seq) && state !== undefined) {
+        freshDecided.set(seq, row === undefined);
       }
       const fresh = freshDecided.get(seq) === true;
       const branch = rowBranch(row, conceded, fresh);

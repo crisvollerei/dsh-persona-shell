@@ -144,6 +144,33 @@ export function apply(ctx, rawConfig) {
   let profileTimer;
 
   /**
+   * Remove harness-injected context from a user message.
+   *
+   * `user/message` carries both the user's words and a block the harness prepends
+   * every turn: `Current runtime context.` followed by ~800 characters of English
+   * about the working directory, the GUI URL and the time. Counting that as the
+   * user's own writing made a Chinese writer measure as 5% Chinese.
+   *
+   * Stripped rather than skipped, because the same message usually contains what
+   * the user actually typed after it.
+   * @param {string} text
+   * @returns {string | undefined} the user's own words, or undefined if none.
+   */
+  function stripInjectedContext(text) {
+    if (typeof text !== 'string') return undefined;
+    // The injected block is a run of lines, each either a `Key: value` pair or a
+    // known harness sentence. Everything else is the user's own writing, so the
+    // rule is per line rather than one big match — a single block regex ate only
+    // the first line and left 560 characters of English behind.
+    const INJECTED_LINE = /^(?:Current runtime context\.|Current working directory:|Current DSH file policy:|Current DeepSeek Harness|Approval prompts are disabled|You are (?:the Team Lead|an AI agent)|Time sampled while preparing|Browser time zone for this request:|Elapsed since the preceding|\[model changed:|The runtime context)/;
+    const kept = text
+      .split('\n')
+      .filter((line) => !INJECTED_LINE.test(line.trim()));
+    const trimmed = kept.join('\n').replace(/\s+/g, ' ').trim();
+    return trimmed === '' ? undefined : trimmed;
+  }
+
+  /**
    * Whether a message is a pasted persona document rather than something the
    * user wrote about themselves.
    *
@@ -728,7 +755,7 @@ export function apply(ctx, rawConfig) {
     // evidence about the reader; assistant output and tool traffic say nothing
     // about how someone wants to be spoken to.
     if (isUserMessage(event)) {
-      const text = userTextOf(event);
+      const text = stripInjectedContext(userTextOf(event));
       if (text !== undefined && !looksLikePastedPersona(text)) observeUserText(text);
     }
 
