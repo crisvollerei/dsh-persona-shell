@@ -757,17 +757,32 @@ window.__ModuleLoader__.load({
 
       // Presets load once, and again whenever a preset operation returns a new
       // list: the host is the source of truth, the page only mirrors it.
-      const refreshPresets = async (list) => {
-        if (Array.isArray(list)) { setPresets(list); return; }
-        try {
-          const response = await fetch(`${ROUTE}/presets`);
-          if (!response.ok) return;
-          const value = await response.json();
-          setPresets(Array.isArray(value.presets) ? value.presets : []);
-          setActivePresetName(typeof value.active === 'string' ? value.active : '');
-          const match = (value.presets ?? []).find((preset) => preset.name === value.active);
-          if (match !== undefined) setActivePresetId(match.id);
-        } catch { /* ignore */ }
+      /**
+       * Mirror the host's preset state.
+       *
+       * Takes the whole payload, not just the array. The active name and id move
+       * whenever a preset is applied, renamed, deleted or saved, and updating the
+       * list without them left the page showing the previous selection — so
+       * 「启用」 looked like it did nothing until a reload.
+       * @param {{ presets?: unknown, active?: unknown }} [payload]
+       */
+      const refreshPresets = async (payload) => {
+        let value = payload;
+        if (value === undefined) {
+          try {
+            const response = await fetch(`${ROUTE}/presets`);
+            if (!response.ok) return;
+            value = await response.json();
+          } catch {
+            return;
+          }
+        }
+        const list = Array.isArray(value?.presets) ? value.presets : [];
+        setPresets(list);
+        const activeName = typeof value?.active === 'string' ? value.active : '';
+        setActivePresetName(activeName);
+        const match = list.find((preset) => preset.name === activeName);
+        setActivePresetId(match !== undefined ? match.id : '');
       };
 
       React.useEffect(() => { void refreshPresets(); }, []);
@@ -775,7 +790,9 @@ window.__ModuleLoader__.load({
       const presetAction = async (body) => {
         const result = await postPreset(body);
         if (result?.ok === true) {
-          if (Array.isArray(result.presets)) await refreshPresets(result.presets);
+          // The whole reply: it carries both the list and which preset is now
+          // active, and the selection must move with it or the button looks dead.
+          await refreshPresets({ presets: result.presets, active: result.active });
           if (result.settings !== undefined) setSettings(result.settings);
           setPresetStatus('');
         } else {
@@ -842,13 +859,9 @@ window.__ModuleLoader__.load({
           if (Array.isArray(result.memory)) setMemoryLines(result.memory);
           if (result.memoryStats !== undefined) setMemoryStats(result.memoryStats);
           // Editing the card writes back into a preset — or forks one from the
-          // builtin — so the list has to move with it or the page keeps showing
-          // a stale set of names.
+          // builtin — so the list and the selection both move with it.
           if (Array.isArray(result.presets)) {
-            setPresets(result.presets);
-            setActivePresetName(result.settings.presetName ?? '');
-            const match = result.presets.find((preset) => preset.name === result.settings.presetName);
-            if (match !== undefined) setActivePresetId(match.id);
+            await refreshPresets({ presets: result.presets, active: result.settings.presetName });
           }
           setStatus('已保存');
           setTimeout(() => setStatus(''), 1500);

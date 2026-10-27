@@ -296,6 +296,26 @@ test('the poller is started only after its first seq is registered', () => {
   assert.ok(!/pollers\.set\(key, poller\);\s*void tick\(\)/.test(body), 'no tick before registration');
 });
 
+test('the preset refresh updates the selection, not just the list', () => {
+  // Regression: `refreshPresets(list)` returned early when handed an array, so
+  // `activePresetName` and `activePresetId` never moved. Applying a preset
+  // changed the list but not the highlight — the button looked dead until a
+  // reload, which the desktop client cannot do without restarting.
+  const source = fs.readFileSync(SOURCE, 'utf8');
+  const start = source.indexOf('const refreshPresets =');
+  const end = source.indexOf('React.useEffect(() => { void refreshPresets', start);
+  assert.ok(start > 0 && end > start, 'refreshPresets is present');
+  const body = source.slice(start, end);
+
+  assert.match(body, /setActivePresetName\(/, 'the active name is updated');
+  assert.match(body, /setActivePresetId\(/, 'the active id is updated');
+  // The old early-return shape skipped both updates.
+  assert.ok(
+    !/if \(Array\.isArray\(list\)\) \{ setPresets\(list\); return; \}/.test(body),
+    'no early return that skips the selection',
+  );
+});
+
 test('the original is placed before the rewrite in the comparison row', () => {
   // Reading the two versions line by line only works if the original is the
   // left column; stacking it below the text forces the eye to travel.
