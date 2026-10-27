@@ -932,8 +932,15 @@ export function apply(ctx, rawConfig) {
         if (raw.length > 8 * 1024) { sendJson(res, 413, { error: 'too large' }); return; }
       }
       try {
-        diagnostics = JSON.parse(raw === '' ? '{}' : raw);
-        diagnostics.at = Date.now();
+        // Merge, never replace. Each report is a partial fact — the build id
+        // arrives at apply time, the renderer verdict at first render, a probe
+        // exactly once — so replacing meant the last report erased every earlier
+        // one. That is why a perfectly good `applied: true` kept disappearing.
+        const report = JSON.parse(raw === '' ? '{}' : raw);
+        if (report !== null && typeof report === 'object') {
+          diagnostics = { ...diagnostics, ...report };
+          diagnostics.at = Date.now();
+        }
       } catch { /* A malformed report changes nothing. */ }
       sendJson(res, 200, { ok: true });
       return;
