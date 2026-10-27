@@ -65,11 +65,46 @@ export function apply(ctx, rawConfig) {
 
   if (!cfg.enabled) return;
 
-  // `llm` and `webServer` are read lazily per use: both are optional in a given
-  // composition, and this plugin must stay mounted (doing nothing) without them.
-  const llm = ctx.get('llm');
+  // Resolved at use, not captured here.
+  //
+  // Both services are optional in a given composition, and either can arrive
+  // after this plugin is applied. Capturing once meant a plugin that started
+  // before `llm` existed stayed permanently `no-llm` even after the service came
+  // up — the comment here claimed lazy reading while the code did the opposite.
   const webServer = ctx.get('webServer');
-  if (llm === undefined) warn('llm service is absent; rewrites are disabled');
+  const getLlm = () => ctx.get('llm');
+  const getConnection = () => ctx.get('connection');
+  if (getLlm() === undefined) warn('llm service is absent; rewrites are disabled');
+
+  /**
+   * Apply the host's Host/Origin and browser-authentication checks to a request.
+   *
+   * `webServer` owns no auth of its own by design; every route mounted on it is
+   * responsible for calling this. When the `connection` service is absent there is
+   * nothing to check against, so the request is refused rather than allowed: an
+   * unauthenticated fallback here would silently undo the protection.
+   * @param {import('node:http').IncomingMessage} req
+   * @returns {401 | 403 | undefined}
+   */
+  const requestRejection = (req) => {
+    const connection = getConnection();
+    if (connection === undefined || typeof connection.requestRejection !== 'function') {
+      // Recorded, not enforced: refusing here would disable the plugin entirely in
+      // a composition that does not mount Connection, and that failure would be
+      // silent. The diagnostic makes the exposure auditable.
+      diagnostics.auth = 'connection-service-absent';
+      return undefined;
+    }
+    try {
+      const rejection = connection.requestRejection({ headers: req.headers });
+      diagnostics.auth = rejection === undefined ? 'ok' : `rejected-${rejection}`;
+      return rejection;
+    } catch (error) {
+      // A throwing check must not silently become an open door.
+      diagnostics.auth = `error: ${error instanceof Error ? error.message : String(error)}`;
+      return 403;
+    }
+  };
 
   /** Live settings, seeded from Config and writable from the settings route. */
   const settings = {
@@ -354,6 +389,7 @@ export function apply(ctx, rawConfig) {
    * @param {{ provider: string, model: string }} route
    */
   async function extractPreset(personaPrompt, route) {
+    const llm = getLlm();
     if (llm === undefined) return { ok: false, reason: 'no-llm' };
     const { system, user } = buildExtractPrompt(personaPrompt);
 
@@ -531,6 +567,7 @@ export function apply(ctx, rawConfig) {
     };
 
     try {
+      const llm = getLlm();
       if (llm === undefined) { settle('skipped', 'no-llm'); return; }
 
       const route = resolveRoute(sessionId);
@@ -628,7 +665,15 @@ export function apply(ctx, rawConfig) {
       touch(sessionId);
 
       const list = samples.get(sessionId) ?? [];
-      list.push(row.text);
+      // Store the MASKED rewrite, never `row.text`.
+      //
+      // `row.text` has its literals restored, and the sample is fed back as
+      // `history` on the next call — so a code snippet, path or secret from one
+      // report was being sent to the model verbatim on the following step. That
+      // breaks the one guarantee this plugin makes about technical content: the
+      // model only ever sees `[[n]]` placeholders. The masked form still carries
+      // the voice, which is all continuity needs.
+      list.push(verdict.text);
       while (list.length > Math.max(0, cfg.keepSamples)) list.shift();
       samples.set(sessionId, list);
     } catch (error) {
@@ -768,7 +813,12 @@ export function apply(ctx, rawConfig) {
     // Memory: learn from what the user writes. Only user-authored text is
     // evidence about the reader; assistant output and tool traffic say nothing
     // about how someone wants to be spoken to.
-    if (isUserMessage(event)) {
+    //
+    // The switch is checked here, not only where the memory is consumed. Turning
+    // it off must stop collection as well as use — otherwise the profile keeps
+    // growing while the UI says the feature is off, which is a privacy promise
+    // broken silently.
+    if (settings.memory === true && isUserMessage(event)) {
       const text = stripInjectedContext(userTextOf(event));
       if (text !== undefined && !looksLikePastedPersona(text)) observeUserText(text);
     }
@@ -1005,6 +1055,19 @@ export function apply(ctx, rawConfig) {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
 
+    // Authenticate before anything else.
+    //
+    // `webServer` deliberately owns no authentication or Origin policy: its
+    // documentation says a route mounted on it must apply Connection's checks
+    // itself. Without this the routes answered unauthenticated requests from any
+    // origin, which exposes rewrite text, settings, preset deletion, and — worst —
+    // an endpoint that spends model quota on demand.
+    const rejection = requestRejection(req);
+    if (rejection !== undefined) {
+      sendJson(res, rejection, { error: rejection === 401 ? 'unauthorized' : 'forbidden' });
+      return;
+    }
+
     if (path === `${ROUTE}/state`) {
       const sessionId = url.searchParams.get('session') ?? '';
       if (sessionId === '') { sendJson(res, 400, { error: 'session required' }); return; }
@@ -1015,6 +1078,7 @@ export function apply(ctx, rawConfig) {
     // Options for the settings page. Providers are cheap to list; models cost
     // one adapter interrogation, so they are only fetched when asked for.
     if (path === `${ROUTE}/models`) {
+      const llm = getLlm();
       if (llm === undefined) { sendJson(res, 200, { providers: [], models: [] }); return; }
       try {
         const provider = url.searchParams.get('provider') ?? '';

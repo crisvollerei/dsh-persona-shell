@@ -480,3 +480,25 @@ test('the two subagent switches are independent', async () => {
   assert.equal(step.status, 'skipped');
   assert.equal(report.status, 'ready');
 });
+
+test('history samples are masked, so literals never reach the model twice', async () => {
+  // The leak this guards: the sample list stored `row.text`, which has its
+  // literals restored, and it is replayed as `history` on the next call. A secret
+  // or path from one report was therefore sent verbatim on the following step,
+  // breaking the only guarantee this plugin makes about technical content.
+  const webServer = makeWebServer();
+  const llm = makeLlm('鲸鲸看了 [[0]]。');
+  const ctx = makeCtx({ llm, webServer });
+  apply(ctx, { enabled: true, keepSamples: 2 });
+
+  await deliver(ctx, null, { seq: 80, text: '看了 `private-key-secret`。' });
+  await deliver(ctx, null, { seq: 81, text: '又看了 `other.js`。' });
+
+  assert.equal(llm.calls.length, 2, 'both rewrites ran');
+  const secondPrompt = llm.calls[1].messages[0].content[0].text;
+  assert.ok(
+    !secondPrompt.includes('private-key-secret'),
+    'the first literal must not appear verbatim in the second call',
+  );
+  assert.ok(secondPrompt.includes('{{0}}') || secondPrompt.includes('[['), 'a placeholder carries the voice instead');
+});

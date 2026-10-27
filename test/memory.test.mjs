@@ -114,6 +114,30 @@ test('task instructions are not mistaken for style feedback', () => {
   assert.deepEqual(memoryLines(profile, 'p'), []);
 });
 
+test('the high-frequency task phrasings the review found are all refused', () => {
+  // Each of these was actually stored before: the old patterns matched `不要用`,
+  // `太长` and `不要…说`. Replaying them would carry database names, field limits
+  // and test status into a call that is supposed to see only prose.
+  const instructions = [
+    '不要用 Redis，改成 SQLite。',
+    '这个字段太长了，缩短到 32。',
+    '不要说任务完成，测试还没过。',
+  ];
+  for (const text of instructions) {
+    const profile = observeFeedback(emptyProfile(), text, 'p');
+    assert.deepEqual(memoryLines(profile, 'p'), [], `should refuse: ${text}`);
+  }
+});
+
+test('genuine style corrections are still recorded', () => {
+  // The tightening must not have thrown out the feature itself.
+  const corrections = ['太啰嗦了，简洁点。', '语气要严肃一点。', '称呼改成「您」。'];
+  for (const text of corrections) {
+    const profile = observeFeedback(emptyProfile(), text, 'p');
+    assert.ok(memoryLines(profile, 'p').length > 0, `should record: ${text}`);
+  }
+});
+
 test('stated corrections are capped so they cannot drown the report', () => {
   let profile = emptyProfile();
   for (let i = 0; i < 20; i += 1) profile = observeFeedback(profile, `第${i}点太啰嗦了。`, 'p');
