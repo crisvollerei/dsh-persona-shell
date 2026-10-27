@@ -13,7 +13,7 @@ window.__ModuleLoader__.load({
      * just installed?" is answerable instead of assumed. A stale bundle and a
      * broken one look identical otherwise.
      */
-    const CLIENT_BUILD = 20241027;
+    const CLIENT_BUILD = 20261027;
 
     // --- host data -----------------------------------------------------------
 
@@ -1358,26 +1358,26 @@ window.__ModuleLoader__.load({
        */
       __testing: { rowBranch, renderMarkdown, unmaskPartial, HOLD_PLACEHOLDER_MS },
       apply(ctx) {
+        // Owned by the plugin lifetime; both are cleared on unload below.
+        let heartbeatTimer;
         // Announce this build as soon as the plugin is applied, then keep saying
         // so. The desktop client has no hard reload, so the only way to tell a
         // stale bundle from a broken one is a heartbeat that names the build:
         // without it, "my fix did nothing" and "my fix never loaded" look the
         // same, and that ambiguity cost this plugin several rounds.
         reportDiagnostics({ applied: true, at: Date.now() });
-        // Heartbeat so a stale bundle is distinguishable from a broken one. The
-        // desktop client has no hard reload, so without this "my fix did nothing"
-        // and "my fix never loaded" look identical.
         //
         // Wrapped in try/catch on purpose: diagnostics are a convenience, and a
         // missing timer global must never take the whole plugin down with it.
         try {
-          const heartbeat = setInterval(() => {
+          heartbeatTimer = setInterval(() => {
             reportDiagnostics({ heartbeat: Date.now() });
           }, 30000);
-          if (typeof heartbeat?.unref === 'function') heartbeat.unref();
+          if (typeof heartbeatTimer?.unref === 'function') heartbeatTimer.unref();
         } catch {
           // No timers here; the apply-time report is still enough to prove a load.
         }
+
 
         // Take over the `assistant-step` renderer only while the plugin is on.
         //
@@ -1410,33 +1410,80 @@ window.__ModuleLoader__.load({
           }
         };
 
-        // Track the switch. The host is the source of truth, so the initial state
-        // is read once and then followed by polling already used for settings.
-        let lastEnabled = undefined;
+        // Track the switch. The host is the source of truth.
+        //
+        // Three rules, each from a real failure:
+        //
+        // 1. Start NOT taken over. Taking over unconditionally meant that if the
+        //    settings request kept failing (403, offline), the plugin stayed
+        //    shadowing the shipped renderer forever without ever confirming the
+        //    server wanted it. The shipped renderer is the safe default.
+        // 2. Only an explicit boolean counts. `enabled !== false` reads a missing
+        //    field or a malformed payload as "on".
+        // 3. One request at a time. `setInterval` allowed overlap, so a stale
+        //    `enabled:true` response could land after a newer `enabled:false` and
+        //    re-install the takeover — the switch would flip itself back.
+        let stopped = false;
+        let syncTimer;
+        let inFlightController;
+
+        const scheduleSync = (delay) => {
+          if (stopped) return;
+          clearTimeout(syncTimer);
+          syncTimer = setTimeout(() => { void syncEnabled(); }, delay);
+        };
+
         const syncEnabled = async () => {
+          if (stopped) return;
+          // `AbortController` is a host global, not part of the module sandbox.
+          // The guard is not paranoia: when it is missing the whole apply() throws
+          // and the plugin never registers anything, which looks exactly like "the
+          // plugin is off".
+          const controller = typeof AbortController === 'function' ? new AbortController() : undefined;
+          inFlightController = controller;
+          // A hung request must not stop the sync loop for good.
+          const timeout = setTimeout(() => controller?.abort(), 10000);
           try {
-            const response = await fetch(`${ROUTE}/settings`);
-            if (!response.ok) return;
-            const value = await response.json();
-            const enabled = value?.settings?.enabled !== false;
-            if (enabled === lastEnabled) return;
-            lastEnabled = enabled;
-            applyEnabled(enabled);
+            const response = await fetch(`${ROUTE}/settings`, controller === undefined ? undefined : { signal: controller.signal });
+            if (stopped) return;
+            if (response.ok) {
+              const value = await response.json();
+              if (stopped) return;
+              const enabled = value?.settings?.enabled;
+              if (typeof enabled === 'boolean') applyEnabled(enabled);
+            }
           } catch {
-            // The host half may be absent; keep the current state rather than
-            // flapping the registration on a transient failure.
+            // Keep the last confirmed state; a transient failure is not evidence
+            // of a switch change.
+          } finally {
+            clearTimeout(timeout);
+            if (inFlightController === controller) inFlightController = undefined;
+          }
+          scheduleSync(5000);
+        };
+
+        // Everything this controller owns is torn down with the plugin. Native
+        // timers are not part of Cordis's scope, so without this every reload left
+        // one more poller and one more heartbeat behind.
+        const removeTimers = () => {
+          stopped = true;
+          clearTimeout(syncTimer);
+          clearTimeout(heartbeatTimer);
+          if (inFlightController !== undefined) inFlightController.abort();
+          if (releaseChat !== undefined) {
+            const release = releaseChat;
+            releaseChat = undefined;
+            release();
           }
         };
-        void syncEnabled();
         try {
-          const sync = setInterval(() => { void syncEnabled(); }, 5000);
-          if (typeof sync?.unref === 'function') sync.unref();
+          ctx.effect(() => removeTimers, 'persona-shell.client-timers');
         } catch {
-          // No timers; the initial read still applies.
+          // No effect scope here; the timers still stop on the next stop().
         }
-        // Default to enabled so the first paint is not missing the persona view;
-        // the read above corrects it within one round trip if the user disabled it.
-        applyEnabled(true);
+
+        // Start the loop; the first response decides whether to take over.
+        void syncEnabled();
 
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',

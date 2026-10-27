@@ -38,6 +38,16 @@ const DEFAULT_PRESET_NAME = '大肥鱼（默认）';
 const MAX_PRESETS = 30;
 
 /**
+ * Host build marker, bumped whenever the Host half changes shape.
+ *
+ * Mirrors the Client half's `CLIENT_BUILD`. The desktop client cannot reload its
+ * bundles, so after a deploy "the fix did nothing" and "the new Host half never
+ * loaded" are indistinguishable from the transcript alone; the public probe
+ * publishes both ids so a restart can be verified with one request.
+ */
+const HOST_BUILD = 20261027;
+
+/**
  * How often a streaming rewrite may publish a new partial revision.
  *
  * The page polls for changes, so a token-by-token rate would spend the whole
@@ -48,6 +58,32 @@ const MAX_PRESETS = 30;
  * was two visible frames, which reads as "no streaming at all".
  */
 const STREAM_INTERVAL_MS = 120;
+
+/**
+ * Diagnostic keys the public probe may name.
+ *
+ * A whitelist, not a slice of whatever happens to be present: internal reports
+ * can carry free-form text (`reason`, error messages), and publishing key names
+ * from an open set would leak the existence and shape of internal state.
+ */
+const PUBLIC_DIAGNOSTIC_KEYS = new Set([
+  'applied',
+  'authCounts',
+  'authStatus',
+  'clientBuild',
+  'heartbeat',
+  'shippedMarkdown',
+]);
+
+/**
+ * Coerce a value to a member of a fixed set.
+ * @param {unknown} value
+ * @param {readonly string[]} allowed
+ * @param {string} fallback
+ */
+function pickEnum(value, allowed, fallback) {
+  return typeof value === 'string' && allowed.includes(value) ? value : fallback;
+}
 
 /** Runtime schema for the row: a Standard Schema resolver with no dependencies. */
 export { Config };
@@ -98,9 +134,11 @@ export function apply(ctx, rawConfig) {
       // has to mean "do not serve". `allowUnauthenticatedRoutes` is the explicit
       // opt-out for a deployment that knowingly runs without that service.
       if (cfg.allowUnauthenticatedRoutes === true) {
+        diagnostics.authStatus = 'unavailable';
         diagnostics.auth = 'connection-service-absent-allowed-by-config';
         return undefined;
       }
+      diagnostics.authStatus = 'unavailable';
       diagnostics.auth = 'connection-service-absent-denied';
       return 403;
     }
@@ -112,10 +150,14 @@ export function apply(ctx, rawConfig) {
       if (rejection === undefined) counters.ok += 1;
       else counters.rejected += 1;
       diagnostics.authCounts = counters;
+      // Split for the public probe. `authStatus` is a fixed enum safe to publish;
+      // `authDetail` may carry internal text and stays behind authentication.
+      diagnostics.authStatus = rejection === undefined ? 'ok' : 'rejected';
       diagnostics.auth = rejection === undefined ? 'ok' : `rejected-${rejection}`;
       return rejection;
     } catch (error) {
       // A throwing check must not silently become an open door.
+      diagnostics.authStatus = 'error';
       diagnostics.auth = `error: ${error instanceof Error ? error.message : String(error)}`;
       return 403;
     }
@@ -163,15 +205,17 @@ export function apply(ctx, rawConfig) {
   let diagnostics = {};
 
   /** Storage lifecycle, surfaced through the diagnostics route. */
-  let storeState = 'opening';
+  let storeState = 'unavailable';
   let storeError = '';
 
   /**
    * Whether the persisted switches have been applied.
    *
-   * False until the storage facility has been read (or has definitively failed).
-   * Memory collection waits for it: the defaults are permissive, so collecting
-   * before the real values arrive violates a switch the user already turned off.
+   * False until storage actually reports the saved values. Memory collection
+   * waits for it: the defaults are permissive, so collecting on a guess would
+   * violate a `memory:false` the user already chose. A storage facility that is
+   * absent, still opening, or failed therefore keeps collection off — none of
+   * those states is evidence that the switch was never turned off.
    */
   let settingsRestored = false;
 
@@ -1035,9 +1079,30 @@ export function apply(ctx, rawConfig) {
   // A failure is recorded rather than swallowed — a memory-only plugin looks
   // identical to a persisting one until a restart throws the history away.
   let storeClosing = false;
+  /**
+   * Every open attempt, so unload can wait for the facility to be released.
+   *
+   * Tracking only the resolved handle left a hole: an unload during the open
+   * returned immediately because `store` was still undefined, the new instance
+   * then found the domain staged by the first one and failed with `already-open`,
+   * and nothing retries — that process stayed memory-only for good.
+   */
+  const openingTasks = new Set();
+
   const openWhenAvailable = () => {
-    void openStore(ctx).then((opened) => {
-      if (storeClosing) { void opened.close(); return; }
+    // Close the collection gate before anything asynchronous starts. The saved
+    // switches are still unknown at this moment, and their defaults are
+    // permissive: collecting now would violate a `memory:false` the user already
+    // chose. Re-opening the gate is the last step of a successful restore.
+    settingsRestored = false;
+    storeState = 'opening';
+
+    const task = openStore(ctx).then((opened) => {
+      if (storeClosing) {
+        // Shutting down: close what arrived and report nothing. The close is part
+        // of this task, so the unload chain waits for the domain to be released.
+        return opened.close().catch((error) => warn('late store close failed', error));
+      }
       store = opened;
       storeState = 'open';
       storeError = '';
@@ -1089,26 +1154,26 @@ export function apply(ctx, rawConfig) {
           if (typeof savedSettings[key] === 'string') settings[key] = savedSettings[key];
         }
       }
-      // The switches are now authoritative; memory collection may resume.
-      settingsRestored = true;
+      // The switches are now authoritative; memory collection may resume — but
+      // never during shutdown, where nothing should keep publishing state.
+      if (!storeClosing) settingsRestored = true;
     }, (error) => {
-      storeState = 'failed';
       storeError = error instanceof Error ? error.message : String(error);
-      // Nothing can be restored, so the in-memory defaults are the truth. Holding
-      // collection back forever would disable a feature the user may want, and
-      // there is no saved value to contradict them.
-      settingsRestored = true;
-      warn('storage failed; rewrites are memory-only', error);
+      // Nothing can be restored. The question is what "unknown" should mean, and
+      // the safe answer is "do not collect": a missing facility is not evidence
+      // that the user never saved `memory:false`, and collecting on a guess breaks
+      // a privacy switch. Collection stays off until storage actually reports.
+      if (!storeClosing) {
+        storeState = 'failed';
+        warn('storage failed; rewrites are memory-only and memory collection stays off', error);
+      }
     });
+    openingTasks.add(task);
+    task.finally(() => { openingTasks.delete(task); }).catch(() => {});
   };
   ctx.inject(['storageDomain'], () => {
     openWhenAvailable();
   });
-  // If the facility is already present, `inject` runs synchronously and the flag
-  // is settled by the callback above. When it is absent there is nothing to
-  // restore, so the defaults are authoritative and collection may proceed —
-  // otherwise a composition without storage would never learn anything.
-  if (ctx.get('storageDomain') === undefined) settingsRestored = true;
 
   // ---------------------------------------------------------------------------
   // Client route: same-origin JSON, so the page needs no Remote codegen.
@@ -1184,32 +1249,32 @@ export function apply(ctx, rawConfig) {
 
     // Authenticate before anything else.
     //
-    // `webServer` deliberately owns no authentication or Origin policy: its
-    // documentation says a route mounted on it must apply Connection's checks
-    // itself. Without this the routes answered unauthenticated requests from any
-    // origin, which exposes rewrite text, settings, preset deletion, and — worst —
-    // an endpoint that spends model quota on demand.
     // Unauthenticated liveness probe, answered before the auth check.
     //
-    // It exposes no rewrite text, no settings and no session ids: only whether the
-    // plugin is mounted, whether the renderer resolved, and version markers. The
-    // full diagnostics endpoint stays behind authentication, but without this the
-    // plugin's health is unobservable from outside the page — and "the plugin is
-    // broken" and "the page cannot authenticate" look identical from here.
+    // This is a PUBLIC response, so it is built from a fixed shape rather than by
+    // forwarding diagnostic values. An earlier version passed `diagnostics.auth`
+    // straight through, which is normally `ok` or `rejected-401` — but on a
+    // throwing auth check it carried the internal `error.message`, and that text
+    // crossed the authentication boundary. Every field below is validated against
+    // an enum or a range; anything unexpected becomes a neutral value.
     if (path === `${ROUTE}/ping`) {
+      const authStatus = diagnostics.authStatus;
       sendJson(res, 200, {
         ok: true,
-        clientBuild: diagnostics.clientBuild ?? null,
-        shippedMarkdown: diagnostics.shippedMarkdown ?? 'unknown',
-        storage: storeState,
-        rows: rows.size,
-        auth: diagnostics.auth ?? null,
-        heartbeatAge: typeof diagnostics.heartbeat === 'number'
+        hostBuild: HOST_BUILD,
+        clientBuild: Number.isInteger(diagnostics.clientBuild) ? diagnostics.clientBuild : null,
+        shippedMarkdown: pickEnum(diagnostics.shippedMarkdown, ['ok', 'missing', 'unresolvable'], 'unknown'),
+        storage: pickEnum(storeState, ['unavailable', 'opening', 'open', 'failed'], 'unknown'),
+        rows: Number.isInteger(rows.size) && rows.size >= 0 ? rows.size : 0,
+        auth: pickEnum(authStatus, ['ok', 'rejected', 'unavailable', 'error'], 'unknown'),
+        heartbeatAge: typeof diagnostics.heartbeat === 'number' && diagnostics.heartbeat <= Date.now()
           ? Date.now() - diagnostics.heartbeat
           : null,
-        // Which keys actually arrived. Without this, "the client never reported"
-        // and "the report was dropped" look the same from outside.
-        diagnosticKeys: Object.keys(diagnostics).slice(0, 24),
+        // Only key names from a known set: "the client never reported" and "the
+        // report was dropped" look the same from outside otherwise.
+        diagnosticKeys: Object.keys(diagnostics)
+          .filter((key) => PUBLIC_DIAGNOSTIC_KEYS.has(key))
+          .sort(),
       });
       return;
     }
@@ -1518,11 +1583,23 @@ export function apply(ctx, rawConfig) {
 
     const closing = store;
     store = undefined;
-    if (closing === undefined) return;
-    // Return the promise: the Cordis unload path awaits a returned thenable, which
-    // is what makes "closed" mean closed. Without it a reload races the teardown.
-    return Promise.allSettled(pending)
-      .then(() => closing.close())
-      .catch((error) => warn('store close failed', error));
+    // Wait for the whole teardown, including an open that is still in flight.
+    //
+    // Handling only a resolved handle left a real hole: an unload during the open
+    // returned immediately, the facility kept the domain staged, and a reload
+    // straight afterwards failed with `already-open` — then stayed memory-only for
+    // the life of that process, because nothing retries an open failure.
+    //
+    // A task whose open lands during shutdown closes its own handle (see the
+    // `storeClosing` branch), so awaiting these tasks is what makes "closed" mean
+    // closed rather than merely "we called close".
+    const tasks = [...openingTasks];
+    const owned = closing === undefined
+      ? Promise.resolve()
+      : Promise.allSettled(pending)
+        .then(() => closing.close())
+        .catch((error) => warn('store close failed', error));
+    return Promise.all([owned, Promise.allSettled(tasks)])
+      .catch((error) => warn('store teardown failed', error));
   }, 'persona-shell.dispose');
 }

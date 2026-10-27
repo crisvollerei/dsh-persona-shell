@@ -5,7 +5,7 @@
 // absent) and separately assert that the shipped component is preferred
 // whenever it is reachable.
 // Run with: node --test persona-shell/test/render.test.mjs
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,6 +44,14 @@ function loadClient(options = {}) {
           json: async () => options.hostState,
         };
       }
+      // The chat takeover is installed only after the host confirms the switch is
+      // on, so the stub must answer the settings read the way a live host would.
+      if (String(url).includes('/persona-shell/settings')) {
+        return {
+          ok: true,
+          json: async () => ({ settings: { enabled: options.enabled !== false } }),
+        };
+      }
       throw new Error('no host in tests');
     },
   };
@@ -63,29 +71,80 @@ function loadClient(options = {}) {
 }
 
 /**
+ * Every context created by these tests, so the file's `after` hook can stop the
+ * plugin's timers.
+ *
+ * `apply` owns two native timers that are not part of the mocked slot registry:
+ * a heartbeat interval and — more importantly — a 5 s settings-sync loop that
+ * re-arms itself forever. The plugin releases both through `ctx.effect`; a stub
+ * without `effect` would leave the loop running after the last test and the test
+ * process would never exit (the suite printed every ✔ and then hung).
+ */
+const appliedContexts = [];
+
+after(() => {
+  for (const ctx of appliedContexts) {
+    for (const dispose of ctx.effects.splice(0)) dispose();
+  }
+});
+
+/**
  * Register the client half against a stub slot registry.
  * @param {{ primitives?: unknown }} options - forwarded to `loadClient`.
  */
 function renderViaSlot(options = {}) {
   const { module } = loadClient(options);
   const registrations = [];
+  /** Disposers returned by `inject` callbacks, kept so teardown can be tested. */
+  const injectedDisposers = [];
+  /** Teardown callbacks the plugin hands to `ctx.effect`. */
+  const effects = [];
   const ctx = {
+    // Cordis calls the effect callback and keeps whatever disposer it returns.
+    // Calling the callback without invoking that disposer would leave the
+    // plugin's settings-sync timer running forever.
+    effect: (fn) => {
+      const dispose = fn();
+      if (typeof dispose === 'function') effects.push(dispose);
+    },
+    effects,
     slots: {
-      // The real `inject` runs the callback and takes ownership of the disposer
-      // it returns, so the stub must call it rather than keep it.
+      // `inject` runs the callback for every declaration lifetime and takes
+      // ownership of whatever disposer it returns. The stub must NOT invoke that
+      // disposer: the takeover registration returns one, and calling it would
+      // register and immediately unregister — leaving an empty list that makes
+      // every assertion below pass against nothing.
       inject: (_key, callback) => {
         const dispose = callback();
-        if (typeof dispose === 'function') dispose();
+        if (typeof dispose === 'function') injectedDisposers.push(dispose);
         return () => {};
       },
       register: (options, component) => {
         registrations.push({ options, component });
-        return () => {};
+        return () => {
+          const index = registrations.findIndex((entry) => entry.options === options);
+          if (index >= 0) registrations.splice(index, 1);
+        };
       },
     },
   };
+  appliedContexts.push(ctx);
   module.apply(ctx);
   return { registrations, module };
+}
+
+/**
+ * Apply the plugin and let the deferred takeover decision run.
+ *
+ * The shipped renderer keeps the cell until the host confirms the plugin is on, so
+ * a synchronous read sees no registration — and every assertion would then pass
+ * against nothing.
+ */
+async function applyAndSettle(options = {}) {
+  const result = renderViaSlot(options);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return result;
 }
 
 /** Flatten a React-ish tree into readable text, marking the tags that were produced. */
@@ -109,8 +168,8 @@ function outline(node, depth = 0) {
  * @param {object} [options]
  * @param {object} [options.primitives] - the shipped renderer, when present.
  */
-function renderNode(text, options = {}) {
-  const { registrations } = renderViaSlot(options);
+async function renderNode(text, options = {}) {
+  const { registrations } = await applyAndSettle(options);
   const registered = registrations.find((entry) => entry.options.key === 'assistant-step');
   assert.ok(registered, 'the assistant-step renderer registered');
   const element = registered.component({
@@ -128,8 +187,8 @@ function renderNode(text, options = {}) {
 }
 
 /** Render a row whose rewrite is already available, which is the normal case. */
-function renderReady(personaText, options = {}) {
-  const { registrations, module } = renderViaSlot(options);
+async function renderReady(personaText, options = {}) {
+  const { registrations, module } = await applyAndSettle(options);
   // Prime the component's view of the host: a ready row means the component
   // skips its placeholder branch on the very first render.
   const registered = registrations.find((entry) => entry.options.key === 'assistant-step');
@@ -157,8 +216,8 @@ function renderReady(personaText, options = {}) {
  * @param {string} text
  * @returns {string[]}
  */
-function renderMarkdownOf(text) {
-  const { module } = renderViaSlot();
+async function renderMarkdownOf(text) {
+  const { module } = await applyAndSettle();
   return outline(module.__testing.renderMarkdown(text));
 }
 
@@ -167,7 +226,7 @@ function stateWith(rows) {
   return { rev: 1, rows, settings: undefined };
 }
 
-test('a row still waiting for its rewrite shows a placeholder, not the plain text', () => {
+test('a row still waiting for its rewrite shows a placeholder, not the plain text', async () => {
   // This is the flicker fix. The rewrite is asynchronous, so a freshly settled
   // step briefly has no persona text; rendering the original in that window
   // means the reader starts one version and finishes another.
@@ -177,7 +236,7 @@ test('a row still waiting for its rewrite shows a placeholder, not the plain tex
   assert.equal(rowBranch(undefined, false, true), 'placeholder', 'a fresh unknown row is in flight');
 });
 
-test('restored history does not wait out a placeholder', () => {
+test('restored history does not wait out a placeholder', async () => {
   // Regression: opening a session put every row through the placeholder branch,
   // so a restored transcript was a screen of blank boxes until the state fetch
   // landed. Nothing is coming for those rows, so the report is the honest body.
@@ -187,8 +246,8 @@ test('restored history does not wait out a placeholder', () => {
 });
 
 /** Render the registered chat component with explicit props. */
-function renderStep(props) {
-  const { registrations } = renderViaSlot();
+async function renderStep(props) {
+  const { registrations } = await applyAndSettle();
   const component = registrations.find((entry) => entry.options.key === 'assistant-step').component;
   assert.ok(component, 'the chat node registered');
   return component({
@@ -198,7 +257,7 @@ function renderStep(props) {
   });
 }
 
-test('the reasoning partition renders nothing — a documented loss, not a handoff', () => {
+test('the reasoning partition renders nothing — a documented loss, not a handoff', async () => {
   // `groupPart: 'reasoning'` selects which blocks a pass owns. This entry replaced
   // `AssistantNodeView` wholesale, so returning null renders nothing for that pass;
   // it does NOT call the shipped `ReasoningRow`. Serving it correctly would mean
@@ -216,10 +275,10 @@ test('the reasoning partition renders nothing — a documented loss, not a hando
       finalNode: { seq: 7, blocks: [] },
     },
   };
-  assert.equal(renderStep({ node, groupPart: 'reasoning' }), null, 'the reasoning pass renders nothing');
+  assert.equal(await renderStep({ node, groupPart: 'reasoning' }), null, 'the reasoning pass renders nothing');
 });
 
-test('a running or interrupted step is left to the shipped renderer', () => {
+test('a running or interrupted step is left to the shipped renderer', async () => {
   const make = (status) => ({
     data: {
       status,
@@ -227,11 +286,11 @@ test('a running or interrupted step is left to the shipped renderer', () => {
       finalNode: { seq: 8, blocks: [{ kind: 'text', text: '正文。' }] },
     },
   });
-  assert.equal(renderStep({ node: make('running') }), null);
-  assert.equal(renderStep({ node: make('interrupted') }), null);
+  assert.equal(await renderStep({ node: make('running') }), null);
+  assert.equal(await renderStep({ node: make('interrupted') }), null);
 });
 
-test('freshness is cached per session, not per seq', () => {
+test('freshness is cached per session, not per seq', async () => {
   // `seq` is only unique inside a session. Keying the cache by `seq` alone let one
   // session's verdict be reused by another session's unrelated row with the same
   // number.
@@ -244,7 +303,7 @@ test('freshness is cached per session, not per seq', () => {
   );
 });
 
-test('a row whose rewrite already failed shows the plain report immediately', () => {
+test('a row whose rewrite already failed shows the plain report immediately', async () => {
   // A settled-without-text row will never produce persona text, so promising one
   // and making the reader wait out the hold window would be worse than useless.
   const { rowBranch } = loadClient().module.__testing;
@@ -252,7 +311,7 @@ test('a row whose rewrite already failed shows the plain report immediately', ()
   assert.equal(rowBranch({ status: 'skipped', text: '' }, true), 'plain');
 });
 
-test('a ready row shows the persona text', () => {
+test('a ready row shows the persona text', async () => {
   const { rowBranch } = loadClient().module.__testing;
   assert.equal(rowBranch({ status: 'ready', text: '鲸鲸换了个说法。' }, false), 'persona');
   // A ready row wins even after the hold window expired.
@@ -261,14 +320,14 @@ test('a ready row shows the persona text', () => {
   assert.equal(rowBranch({ status: 'ready', text: '' }, true), 'plain');
 });
 
-test('a rewrite that never lands concedes to the plain report', () => {
+test('a rewrite that never lands concedes to the plain report', async () => {
   const { rowBranch, HOLD_PLACEHOLDER_MS } = loadClient().module.__testing;
   assert.equal(rowBranch({ status: 'pending', text: '' }, false), 'placeholder');
   assert.equal(rowBranch({ status: 'pending', text: '' }, true), 'plain', 'the hold window is finite');
   assert.ok(HOLD_PLACEHOLDER_MS >= 1000 && HOLD_PLACEHOLDER_MS <= 20000, 'a sane hold window');
 });
 
-test('partial text streams while the row is still pending', () => {
+test('partial text streams while the row is still pending', async () => {
   // Before this, the reader waited for the whole rewrite to land and then
   // watched it appear at once. A long report made that a visible stall.
   const { rowBranch } = loadClient().module.__testing;
@@ -279,7 +338,7 @@ test('partial text streams while the row is still pending', () => {
   assert.equal(rowBranch({ status: 'pending', text: '', partial: '' }, false), 'placeholder');
 });
 
-test('streamed markers are restored so code never shows as [[0]]', () => {
+test('streamed markers are restored so code never shows as [[0]]', async () => {
   const { unmaskPartial } = loadClient().module.__testing;
   const literals = ['`npm run build`', 'D:\\work\\a.js'];
   assert.equal(
@@ -292,7 +351,7 @@ test('streamed markers are restored so code never shows as [[0]]', () => {
   assert.equal(unmaskPartial('原样返回', undefined), '原样返回');
 });
 
-test('streaming draws no caret', () => {
+test('streaming draws no caret', async () => {
   // The shipped renderer never draws one, and the text already grows visibly as
   // chunks land. A caret would be a second, competing "still typing" signal.
   const source = fs.readFileSync(SOURCE, 'utf8');
@@ -300,18 +359,18 @@ test('streaming draws no caret', () => {
   assert.ok(!/['"]▍['"]/.test(source), 'no block-caret character remains');
 });
 
-test('the chat renderer does not declare inject for a standard prop', () => {
+test('the chat renderer does not declare inject for a standard prop', async () => {
   // `sessionId` is listed in this slot's `standardProps`, so it arrives as a
   // normal prop. Declaring `inject` to return it was a guess made from a misread
   // type, and it was the last change before rendering stopped entirely.
-  const { registrations } = renderViaSlot();
+  const { registrations } = await applyAndSettle();
   const step = registrations.find((entry) => entry.options.name === 'conversation.chat.node');
   assert.ok(step, 'the chat node registered');
   assert.equal(step.options.inject, undefined, 'no inject callback is declared');
   assert.equal(step.options.priority, -1, 'the shipped entry is shadowed by priority');
 });
 
-test('the takeover is registered and released with the enabled switch', () => {
+test('the takeover is registered and released with the enabled switch', async () => {
   // Shadowing `assistant-step` hides whatever the shipped renderer drew there —
   // reasoning, images, interrupted markers. That is acceptable while the persona
   // view replaces the body, but it must not be unconditional: disabling the plugin
@@ -328,7 +387,7 @@ test('the takeover is registered and released with the enabled switch', () => {
   assert.match(body, /release\(\)/, 'the disposer is actually called');
 });
 
-test('the poller tracks every seq, not just the one that created it', () => {
+test('the poller tracks every seq, not just the one that created it', async () => {
   // Regression: the poller captured a single seq at creation and kept it. Once
   // that row settled the cadence fell to the slow tail interval, so every later
   // rewrite in the same session finished between two polls and appeared as one
@@ -350,7 +409,7 @@ test('the poller tracks every seq, not just the one that created it', () => {
   );
 });
 
-test('the poller keeps at most one request and one timer', () => {
+test('the poller keeps at most one request and one timer', async () => {
   // Two separate regressions lived here.
   //
   // 1. The poller was started before its first seq was registered, so `tick` saw
@@ -377,7 +436,7 @@ test('the poller keeps at most one request and one timer', () => {
   );
 });
 
-test('the preset refresh updates the selection, not just the list', () => {
+test('the preset refresh updates the selection, not just the list', async () => {
   // Regression: `refreshPresets(list)` returned early when handed an array, so
   // `activePresetName` and `activePresetId` never moved. Applying a preset
   // changed the list but not the highlight — the button looked dead until a
@@ -397,7 +456,7 @@ test('the preset refresh updates the selection, not just the list', () => {
   );
 });
 
-test('the original is placed before the rewrite in the comparison row', () => {
+test('the original is placed before the rewrite in the comparison row', async () => {
   // Reading the two versions line by line only works if the original is the
   // left column; stacking it below the text forces the eye to travel.
   const source = fs.readFileSync(SOURCE, 'utf8');
@@ -409,7 +468,7 @@ test('the original is placed before the rewrite in the comparison row', () => {
   assert.match(block, /auto-fit/, 'the grid collapses by itself when the chat column is narrow');
 });
 
-test('the poller starts without touching an uninitialised binding', () => {
+test('the poller starts without touching an uninitialised binding', async () => {
   // Regression: `startedAt` was declared *after* the `tick` that reads it while
   // `tick` runs immediately, so the first poll threw a TDZ ReferenceError and no
   // state ever arrived. The symptom was the flicker this work exists to remove.
@@ -426,8 +485,8 @@ test('the poller starts without touching an uninitialised binding', () => {
 });
 
 
-test('both slots register, and assistant-step shadows the shipped renderer', () => {
-  const { registrations } = renderViaSlot();
+test('both slots register, and assistant-step shadows the shipped renderer', async () => {
+  const { registrations } = await applyAndSettle();
   const step = registrations.find((entry) => entry.options.name === 'conversation.chat.node');
   assert.ok(step, 'assistant-step registered');
   assert.equal(step.options.key, 'assistant-step');
@@ -437,12 +496,12 @@ test('both slots register, and assistant-step shadows the shipped renderer', () 
   assert.equal(settings.options.id, 'persona-shell');
 });
 
-test('the shipped MarkdownText is used whenever the module table provides it', () => {
+test('the shipped MarkdownText is used whenever the module table provides it', async () => {
   // The point of the design: the persona view must run the host's real
   // renderer, not a look-alike, whenever it is reachable. The element tree is
   // inspected because a mocked React creates elements without invoking them.
   const shipped = function ShippedMarkdownText() { return null; };
-  const element = renderViaSlot({ primitives: { MarkdownText: shipped } })
+  const element = (await applyAndSettle({ primitives: { MarkdownText: shipped } }))
     .module.__testing.renderMarkdown('## 标题\n\n| a | b |\n|---|---|\n| 1 | 2 |');
 
   /** Every element node in the tree. */
@@ -464,12 +523,12 @@ test('the shipped MarkdownText is used whenever the module table provides it', (
   assert.ok(!nodes.some((node) => node.type === 'h2'), 'the local renderer did not also draw the heading');
 });
 
-test('a memo-wrapped renderer is accepted, not rejected as "not a function"', () => {
+test('a memo-wrapped renderer is accepted, not rejected as "not a function"', async () => {
   // Regression: `MarkdownText` is `React.memo(...)`, whose runtime value is an
   // exotic object. An earlier `typeof === 'function'` check rejected it, so the
   // plugin quietly fell back to its local renderer while reporting "missing".
   const memoObject = { $$typeof: Symbol.for('react.memo'), type: function Inner() { return null; } };
-  const element = renderViaSlot({ primitives: { MarkdownText: memoObject } }).module.__testing.renderMarkdown('## 标题');
+  const element = (await applyAndSettle({ primitives: { MarkdownText: memoObject } })).module.__testing.renderMarkdown('## 标题');
 
   const nodes = [];
   const visit = (node) => {
@@ -484,18 +543,18 @@ test('a memo-wrapped renderer is accepted, not rejected as "not a function"', ()
   assert.ok(!nodes.some((node) => node.type === 'h2'), 'the local renderer did not take over');
 });
 
-test('a missing module table degrades to plain text instead of a look-alike', () => {
+test('a missing module table degrades to plain text instead of a look-alike', async () => {
   // No local markdown re-implementation exists any more. What replaces it must
   // be obviously degraded: preformatted plain text, not a fake renderer that
   // silently lacks highlighting, KaTeX and footnotes.
-  const element = renderViaSlot().module.__testing.renderMarkdown('## 标题');
+  const element = (await applyAndSettle()).module.__testing.renderMarkdown('## 标题');
   assert.ok(element !== null, 'the row still renders something');
   assert.equal(element.type, 'div', 'it is a plain container');
   assert.equal(element.props.style.whiteSpace, 'pre-wrap', 'the text keeps its line breaks');
   assert.ok(!JSON.stringify(element).includes('h2'), 'it does not pretend to be markdown');
 });
 
-test('the plugin ships no markdown renderer of its own', () => {
+test('the plugin ships no markdown renderer of its own', async () => {
   // Guard against the implementation creeping back: a copy of the shipped
   // renderer never keeps up, and its gaps are invisible.
   const source = fs.readFileSync(SOURCE, 'utf8');

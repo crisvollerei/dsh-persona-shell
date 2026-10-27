@@ -423,9 +423,30 @@ test('user messages are observed through the data.content path', async () => {
   // Regression: `user/message` carries content at `data.content`, not at
   // `data.message.content`. The wrong path returns undefined without any error,
   // so the memory silently stayed empty while appearing to be wired up.
+  //
+  // Collection needs a storage facility: without one the saved switches are
+  // unknown, and "unknown" must not be read as "the user left memory on".
   const webServer = makeWebServer();
-  const ctx = makeCtx({ llm: makeLlm('好。'), webServer });
+  const storage = {
+    async open() {
+      return {
+        table() {
+          const backing = new Map();
+          return {
+            get: (key) => backing.get(key),
+            entries: () => backing.entries(),
+            keys: () => backing.keys(),
+            put: async (key, value) => { backing.set(key, value); },
+            delete: async (key) => backing.delete(key),
+          };
+        },
+        close: async () => {},
+      };
+    },
+  };
+  const ctx = makeCtx({ llm: makeLlm('好。'), webServer, storageDomain: storage });
   apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
 
   await deliverUser(ctx, { seq: 5, text: '帮我看一下这个配置文件对不对劲，我怀疑端口写错了。' });
 
