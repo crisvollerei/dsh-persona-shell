@@ -1379,18 +1379,64 @@ window.__ModuleLoader__.load({
           // No timers here; the apply-time report is still enough to prove a load.
         }
 
-        // A lower priority than the shipped `assistant-step` entry shadows it;
-        // disposing this registration restores the shipped renderer.
+        // Take over the `assistant-step` renderer only while the plugin is on.
         //
-        // No `inject` here: `sessionId` is one of this slot's `standardProps`,
-        // so it arrives as a normal prop. An `inject` callback that returns a
-        // key the slot already provides was a guess made from a misread type,
-        // and it is the last change made before rendering stopped working.
-        ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-          name: 'conversation.chat.node',
-          key: 'assistant-step',
-          priority: -1,
-        }, PersonaStep));
+        // Shadowing a keyed cell hides whatever the shipped renderer would have
+        // drawn there — reasoning, images, interrupted markers — and that loss is
+        // acceptable only when the persona view is actually replacing it with
+        // something. When the plugin is switched off the entry is disposed, the
+        // shipped `AssistantNodeView` takes the cell back, and the complete
+        // rendering returns. Without this the loss was unconditional: disabling
+        // the plugin still left every row without its reasoning pane.
+        //
+        // A lower priority than the shipped entry shadows it; disposing restores it.
+        //
+        // No `inject` here: `sessionId` is one of this slot's `standardProps`, so it
+        // arrives as a normal prop.
+        let releaseChat = undefined;
+        const applyEnabled = (enabled) => {
+          if (enabled === true && releaseChat === undefined) {
+            releaseChat = ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+              name: 'conversation.chat.node',
+              key: 'assistant-step',
+              priority: -1,
+            }, PersonaStep));
+            return;
+          }
+          if (enabled !== true && releaseChat !== undefined) {
+            const release = releaseChat;
+            releaseChat = undefined;
+            release();
+          }
+        };
+
+        // Track the switch. The host is the source of truth, so the initial state
+        // is read once and then followed by polling already used for settings.
+        let lastEnabled = undefined;
+        const syncEnabled = async () => {
+          try {
+            const response = await fetch(`${ROUTE}/settings`);
+            if (!response.ok) return;
+            const value = await response.json();
+            const enabled = value?.settings?.enabled !== false;
+            if (enabled === lastEnabled) return;
+            lastEnabled = enabled;
+            applyEnabled(enabled);
+          } catch {
+            // The host half may be absent; keep the current state rather than
+            // flapping the registration on a transient failure.
+          }
+        };
+        void syncEnabled();
+        try {
+          const sync = setInterval(() => { void syncEnabled(); }, 5000);
+          if (typeof sync?.unref === 'function') sync.unref();
+        } catch {
+          // No timers; the initial read still applies.
+        }
+        // Default to enabled so the first paint is not missing the persona view;
+        // the read above corrects it within one round trip if the user disabled it.
+        applyEnabled(true);
 
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',

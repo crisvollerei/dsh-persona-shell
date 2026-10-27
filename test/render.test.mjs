@@ -311,6 +311,23 @@ test('the chat renderer does not declare inject for a standard prop', () => {
   assert.equal(step.options.priority, -1, 'the shipped entry is shadowed by priority');
 });
 
+test('the takeover is registered and released with the enabled switch', () => {
+  // Shadowing `assistant-step` hides whatever the shipped renderer drew there —
+  // reasoning, images, interrupted markers. That is acceptable while the persona
+  // view replaces the body, but it must not be unconditional: disabling the plugin
+  // has to give the shipped renderer its cell back, or the loss can never be undone.
+  const source = fs.readFileSync(SOURCE, 'utf8');
+  const start = source.indexOf('const applyEnabled =');
+  const end = source.indexOf('void syncEnabled();', start);
+  assert.ok(start > 0 && end > start, 'the enable gate is present');
+  const body = source.slice(start, end);
+
+  assert.match(body, /enabled === true && releaseChat === undefined/, 'registration is conditional');
+  assert.match(body, /releaseChat = ctx\.slots\.inject/, 'the disposer is kept');
+  assert.match(body, /enabled !== true && releaseChat !== undefined/, 'disable releases it');
+  assert.match(body, /release\(\)/, 'the disposer is actually called');
+});
+
 test('the poller tracks every seq, not just the one that created it', () => {
   // Regression: the poller captured a single seq at creation and kept it. Once
   // that row settled the cadence fell to the slow tail interval, so every later

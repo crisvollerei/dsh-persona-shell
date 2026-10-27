@@ -243,7 +243,7 @@ persona-shell/
   lib/config.js       Config（Standard Schema）
   lib/store.js        套壳结果的持久化
   cordis.patch.yml    行定义
-  test/               88 项离线测试
+  test/               89 项离线测试
 ```
 
 ## 配置
@@ -283,7 +283,7 @@ cd persona-shell
 node --test 'test/*.test.mjs'
 ```
 
-88 项：
+89 项：
 
 | 文件                 | 覆盖                                                                                |
 | ------------------ | --------------------------------------------------------------------------------- |
@@ -375,9 +375,13 @@ node --test 'test/*.test.mjs'
 
 ## 已知限制
 
-- **全局生效**：槽注册是页级的，所有会话（包括关掉人格的）都走这个渲染器。
-- **接管会隐藏部分官方内容（已接受的风险）**：`conversation.chat.node` 是 keyed 槽，`null` 就是该行不渲染，不会回退到官方 `AssistantNodeView`。因此 **reasoning 折叠面板、图片块、中断标记、运行中状态目前都不显示**。代价是真实的，不是"交给官方处理"；修复它需要复刻官方渲染器，本项目选择不做。
+- **全局生效**：槽注册是页级的，所有会话都走这个渲染器；没有会话级开关。
+- **接管会隐藏部分官方内容**：`conversation.chat.node` 是 keyed 槽，`null` 就是该行不渲染，不会回退到官方 `AssistantNodeView`。因此 **reasoning 折叠面板、图片块、中断标记、运行中状态在接管期间都不显示**。
+  - **「原文」按钮不能恢复它们**：那个面板渲染的是 `textOf()` 的结果，只含 `text` block，不含 reasoning/图片。
+  - **关掉插件开关可以恢复**：注册跟随 `settings.enabled`，关闭时释放槽位，官方渲染器拿回完整显示。这是目前唯一的回退途径。
+  - 修复接管期间的损失需要复刻官方渲染器，本项目选择不做。
 - **依赖模块表存在**：若未来版本把 `ui-primitives` 移出基座表，`require` 会失败并降级为明显的纯文本（设置有警告，诊断端点可查）。
 - **轮询取数**：Client → Host 无推送，单一调度轮询（pending 时 100ms，就绪后 6s）。
 - **路由默认拒绝无认证请求**：`webServer` 不提供认证，插件调用 `connection.requestRejection()`。服务缺失时返回 403，除非显式设置 `allowUnauthenticatedRoutes: true`。
+- **`/persona-shell/ping` 免认证**：只返回非敏感运行状态（版本号、存储状态、行数、认证结果），用于外部自检。
 - **未验证**：长会话性能、多会话并发、真实 Desktop 下的交互时序。
