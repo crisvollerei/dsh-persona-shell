@@ -143,10 +143,58 @@ export function apply(ctx, rawConfig) {
   /** Debounced writer for the profile row. */
   let profileTimer;
 
+  /**
+   * Whether a message is a pasted persona document rather than something the
+   * user wrote about themselves.
+   *
+   * This exists because the memory feature read a pasted 1800-character persona
+   * as if every line of it were a personal preference, stored a dozen of them,
+   * and fed them into *other* personas' prompts. A pasted document is content,
+   * not a statement about the reader.
+   *
+   * Detected by shape, not by a keyword: persona documents are long, use numbered
+   * or titled sections, and are mostly not conversational. All three are cheap
+   * and none of them match a normal message.
+   * @param {string} text
+   * @returns {boolean}
+   */
+  function looksLikePastedPersona(text) {
+    if (typeof text !== 'string') return false;
+    // Ordinary messages are short. A paragraph is already unusual; a document is
+    // unambiguous.
+    if (text.length < 300) return false;
+
+    // Section headings: "一、身份", "## 说话风格", "1. 角色设定".
+    const headings = (text.match(/(?:^|\n)\s*(?:[一二三四五六七八九十]+、|#{1,4}\s|\d+[.、]\s*)/g) ?? []).length;
+    if (headings >= 3) return true;
+
+    // Very long text with no question and no first-person reference to the user's
+    // own situation reads as supplied material rather than a request.
+    const looksLikeDocument = text.length > 800
+      && !/[?？]/.test(text.slice(0, 200))
+      && (text.match(/[。\n]/g) ?? []).length > 20;
+    return looksLikeDocument;
+  }
+
+  /**
+   * Learn from one user message.
+   *
+   * The shared counters always update. Corrections are recorded against the
+   * preset that is active *now*, because a complaint about the current voice does
+   * not describe how the user wants a different character to speak.
+   * @param {string} text
+   */
   function observeUserText(text) {
     profile = observeMessage(profile, text);
-    profile = observeFeedback(profile, text);
+    const presetId = activePresetId();
+    profile = observeFeedback(profile, text, presetId);
     scheduleProfileSave();
+  }
+
+  /** Id of the preset currently in force, used to scope corrections. */
+  function activePresetId() {
+    const active = presets.find((preset) => preset.name === settings.presetName);
+    return active?.id ?? DEFAULT_PRESET_NAME;
   }
 
   function scheduleProfileSave() {
@@ -440,7 +488,7 @@ export function apply(ctx, rawConfig) {
         literalCount: literals.length,
         history: samples.get(sessionId) ?? [],
         stage: turnState.get(sessionId)?.stage,
-        memory: settings.memory === true ? memoryLines(profile) : [],
+        memory: settings.memory === true ? memoryLines(profile, activePresetId()) : [],
       });
 
       const abort = new AbortController();
@@ -662,7 +710,7 @@ export function apply(ctx, rawConfig) {
     // about how someone wants to be spoken to.
     if (isUserMessage(event)) {
       const text = userTextOf(event);
-      if (text !== undefined) observeUserText(text);
+      if (text !== undefined && !looksLikePastedPersona(text)) observeUserText(text);
     }
 
     if (event.type === 'request/header') {
@@ -959,7 +1007,7 @@ export function apply(ctx, rawConfig) {
         // rather than taken on faith.
         memory: {
           messages: profile.messages,
-          lines: memoryLines(profile),
+          lines: memoryLines(profile, activePresetId()),
           enabled: settings.memory === true,
         },
       });
@@ -1097,7 +1145,7 @@ export function apply(ctx, rawConfig) {
     if (path === `${ROUTE}/settings` && req.method === 'GET') {
       sendJson(res, 200, {
         settings,
-        memory: memoryLines(profile),
+        memory: memoryLines(profile, activePresetId()),
         memoryStats: memoryStats(),
         presets: presets.map(presetForClient),
       });
@@ -1140,7 +1188,7 @@ export function apply(ctx, rawConfig) {
       }
       sendJson(res, 200, {
         settings,
-        memory: memoryLines(profile),
+        memory: memoryLines(profile, activePresetId()),
         memoryStats: memoryStats(),
         // Returned so the page can show which preset the edit landed in — an
         // edit to the builtin forks a new preset, and the user has to see that.
