@@ -21,6 +21,8 @@ window.__ModuleLoader__.load({
     const states = new Map();
     /** One-shot diagnostic: what the chat renderer actually received. */
     let probeSent = false;
+    /** One-shot diagnostic: whether the state lookup found the row. */
+    let branchProbeSent = false;
     const listeners = new Set();
     /** `${sessionId}` → poll handle, so several steps share one timer. */
     const pollers = new Map();
@@ -530,6 +532,25 @@ window.__ModuleLoader__.load({
       if (hasNonText(data)) return null;
 
       const row = state?.rows?.find((candidate) => candidate.seq === seq);
+      // Second probe, one-shot: what the component resolved to. The first probe
+      // proved the inputs are right; this proves whether the lookup finds a row
+      // and which branch that produces.
+      if (branchProbeSent === false) {
+        branchProbeSent = true;
+        reportDiagnostics({
+          branchProbe: {
+            hasState: state !== undefined,
+            stateRev: state?.rev,
+            rowCount: state?.rows?.length,
+            foundRow: row !== undefined,
+            rowStatus: row?.status,
+            rowTextLen: typeof row?.text === 'string' ? row.text.length : -1,
+            seq,
+            branch: rowBranch(row, false, state !== undefined),
+            fetchUrl: `${ROUTE}/state?session=${sessionId}`,
+          },
+        });
+      }
       // A step is "fresh" when this session's state had already loaded before the
       // step appeared: then a rewrite is plausibly in flight and a short
       // placeholder is honest. On first paint `state` is undefined — that is the
