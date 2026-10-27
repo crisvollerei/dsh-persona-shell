@@ -185,11 +185,30 @@ export function apply(ctx, rawConfig) {
    * @param {string} text
    */
   function observeUserText(text) {
+    // Record what was actually sampled, so a surprising ratio can be traced to a
+    // specific message instead of guessed at. Lengths and counts only: this is a
+    // debugging aid, and it must not become a second copy of the user's words.
+    const sample = {
+      len: text.length,
+      han: (text.match(/[\u4e00-\u9fff]/g) ?? []).length,
+      latin: (text.match(/[A-Za-z]/g) ?? []).length,
+      head: text.slice(0, 24).replace(/\s+/g, ' '),
+      at: Date.now(),
+    };
+    memorySamples.push(sample);
+    while (memorySamples.length > 12) memorySamples.shift();
+    // Written straight into the host's diagnostics bag: `reportDiagnostics` is the
+    // client-side poster and does not exist here.
+    diagnostics.memorySamples = memorySamples;
+
     profile = observeMessage(profile, text);
     const presetId = activePresetId();
     profile = observeFeedback(profile, text, presetId);
     scheduleProfileSave();
   }
+
+  /** Recent memory samples, for diagnosing a surprising ratio. */
+  const memorySamples = [];
 
   /** Id of the preset currently in force, used to scope corrections. */
   function activePresetId() {

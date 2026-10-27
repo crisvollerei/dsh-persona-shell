@@ -21,6 +21,16 @@ window.__ModuleLoader__.load({
     const states = new Map();
     /** seq → last rendered branch, for spotting a visible flash. */
     const branchHistory = new Map();
+    /** seq → whether the step was new when first seen; decided once. */
+    const freshDecided = new Map();
+    /**
+     * sessionId → the highest seq the page had already seen for it.
+     *
+     * Updated on every state fetch, so a step that arrives later can be compared
+     * against what the page knew *before* it appeared. This is what makes
+     * "new step" a stable answer instead of one that flips when state lands.
+     */
+    const newestSeenSeq = new Map();
     /** seq → the branch sequence, capped. */
     const diagnosticsTrail = new Map();
     const listeners = new Set();
@@ -45,6 +55,15 @@ window.__ModuleLoader__.load({
         const value = await response.json();
         const previous = states.get(sessionId);
         states.set(sessionId, value);
+        // Remember the highest seq this session has ever shown. A step rendered
+        // later compares against it to decide whether it is new; recording it here
+        // keeps that answer stable once state has landed.
+        const rows = Array.isArray(value?.rows) ? value.rows : [];
+        if (rows.length > 0) {
+          const highest = rows.reduce((best, entry) => (entry.seq > best ? entry.seq : best), rows[0].seq);
+          const seen = newestSeenSeq.get(sessionId);
+          if (seen === undefined || highest > seen) newestSeenSeq.set(sessionId, highest);
+        }
         if (previous === undefined || previous.rev !== value.rev) emit();
       } catch (error) {
         reportDiagnostics({
@@ -536,18 +555,22 @@ window.__ModuleLoader__.load({
       if (hasNonText(data)) return null;
 
       const row = state?.rows?.find((candidate) => candidate.seq === seq);
-      // A step is "fresh" when it is newer than anything the state has reported:
-      // that is exactly the moment its rewrite is being computed, and the only
-      // window where a placeholder is honest. Older steps already have their row
-      // (or are history whose rewrite will never come), so they render at once.
+      // Whether this step is new, decided ONCE and remembered.
       //
-      // Using `state !== undefined` here was too broad: every restored row counted
-      // as fresh, and every new row rendered plain text first and swapped to the
-      // persona a moment later — the flash this is meant to prevent.
-      const newestKnown = state?.rows?.length > 0
-        ? Math.max(...state.rows.map((entry) => entry.seq))
-        : undefined;
-      const fresh = newestKnown !== undefined && seq > newestKnown;
+      // Every derived answer flips as `state` arrives — `seq > newestKnown` was
+      // false while state was undefined and true a moment later, so the row
+      // re-rendered `plain → placeholder → plain → placeholder` within 9ms. That
+      // oscillation is the flash this whole mechanism exists to prevent, so the
+      // answer is latched the first time the step is seen.
+      //
+      // "New" means: the page already had this session's state, and this seq was
+      // not in it. That is precisely a step that just arrived and whose rewrite is
+      // being computed now. A step present in the first state the page ever got is
+      // history — nothing is coming for it, so it renders at once.
+      if (!freshDecided.has(seq)) {
+        freshDecided.set(seq, state !== undefined && row === undefined);
+      }
+      const fresh = freshDecided.get(seq) === true;
       const branch = rowBranch(row, conceded, fresh);
       // Record the first branch a row takes, and any change after it. "Plain
       // first, persona later" is a visible flash, and this is the only way to see

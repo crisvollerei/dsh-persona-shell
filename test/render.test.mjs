@@ -186,18 +186,19 @@ test('restored history does not wait out a placeholder', () => {
   assert.equal(rowBranch(undefined, false), 'plain', 'unknown freshness is not treated as fresh');
 });
 
-test('freshness is decided by seq, not by having any state at all', () => {
-  // Regression: `fresh` used to be `state !== undefined`, so every restored row
-  // counted as fresh and every new row rendered plain text first, swapping to the
-  // persona a moment later — the flash the placeholder exists to prevent.
+test('freshness is latched once, so the row cannot oscillate', () => {
+  // Regression, observed as a 9ms `plain → placeholder → plain → placeholder`
+  // loop: `fresh` was derived from `state`, which arrives asynchronously, so the
+  // answer flipped mid-render and the row visibly changed body twice.
   const source = fs.readFileSync(SOURCE, 'utf8');
-  const start = source.indexOf('const newestKnown');
+  const start = source.indexOf('const row = state?.rows?.find');
   const end = source.indexOf('const branch = rowBranch', start);
   assert.ok(start > 0 && end > start, 'the freshness computation is present');
   const block = source.slice(start, end);
 
-  assert.match(block, /Math\.max\(\.\.\.state\.rows\.map/, 'the newest known seq is computed');
-  assert.match(block, /seq > newestKnown/, 'a step is fresh only when newer than that');
+  assert.match(block, /if \(!freshDecided\.has\(seq\)\)/, 'the answer is decided once');
+  assert.match(block, /freshDecided\.set\(seq,/, 'and then remembered');
+  assert.match(block, /state !== undefined && row === undefined/, 'new means absent from a loaded state');
 });
 
 test('a row whose rewrite already failed shows the plain report immediately', () => {
