@@ -97,6 +97,12 @@ export function apply(ctx, rawConfig) {
     }
     try {
       const rejection = connection.requestRejection({ headers: req.headers });
+      // Counters, not a single last value: an unauthenticated probe would
+      // otherwise overwrite the evidence that the page itself is working.
+      const counters = diagnostics.authCounts ?? { ok: 0, rejected: 0 };
+      if (rejection === undefined) counters.ok += 1;
+      else counters.rejected += 1;
+      diagnostics.authCounts = counters;
       diagnostics.auth = rejection === undefined ? 'ok' : `rejected-${rejection}`;
       return rejection;
     } catch (error) {
@@ -348,6 +354,21 @@ export function apply(ctx, rawConfig) {
     return name;
   }
 
+  /** Persist the durable switches and route. */
+  function saveSettings() {
+    if (store === undefined) return;
+    store.putSettings({
+      enabled: settings.enabled,
+      includeToolSteps: settings.includeToolSteps,
+      memory: settings.memory,
+      subagentSteps: settings.subagentSteps,
+      subagentReports: settings.subagentReports,
+      provider: settings.provider,
+      model: settings.model,
+      reasoningEffort: settings.reasoningEffort,
+    }).catch((error) => warn('settings persist failed', error));
+  }
+
   /** Persist one preset; a failed write must not break the live settings. */
   function savePreset(preset) {
     if (store === undefined) return;
@@ -424,29 +445,43 @@ export function apply(ctx, rawConfig) {
 
   /** Coalesce persistence so a burst of settles writes one blob per session. */
   const persistTimers = new Map();
+
+  /**
+   * Write one session's rows now.
+   *
+   * Separate from the debounce so the unload path can drain instead of merely
+   * cancelling: cancelling a pending write discarded a rewrite that had already
+   * settled and been shown to the reader.
+   * @param {string} sessionId
+   */
+  function flushPersist(sessionId) {
+    if (store === undefined) return;
+    // Pull the stored rows in first. The write replaces the whole session blob,
+    // so persisting a session that was never hydrated would erase every row this
+    // process has not touched yet — which is exactly what a restart plus one new
+    // message used to do.
+    hydrate(sessionId);
+    const own = [];
+    for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
+    own.sort((a, b) => a.seq - b.seq);
+    store.put(sessionId, own.map((row) => ({
+      seq: row.seq,
+      status: row.status,
+      text: row.text,
+      reason: row.reason,
+      model: row.model,
+      distance: row.distance,
+      final: row.final === true,
+      time: row.time,
+    }))).catch((error) => warn(`persist failed for ${sessionId}`, error));
+  }
+
   function schedulePersist(sessionId) {
     if (store === undefined) return;
     if (persistTimers.has(sessionId)) return;
     persistTimers.set(sessionId, setTimeout(() => {
       persistTimers.delete(sessionId);
-      // Pull the stored rows in first. The write replaces the whole session blob,
-      // so persisting a session that was never hydrated would erase every row
-      // this process has not touched yet — which is exactly what a restart plus
-      // one new message used to do.
-      hydrate(sessionId);
-      const own = [];
-      for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
-      own.sort((a, b) => a.seq - b.seq);
-      store.put(sessionId, own.map((row) => ({
-        seq: row.seq,
-        status: row.status,
-        text: row.text,
-        reason: row.reason,
-        model: row.model,
-        distance: row.distance,
-        final: row.final === true,
-        time: row.time,
-      }))).catch((error) => warn(`persist failed for ${sessionId}`, error));
+      flushPersist(sessionId);
     }, 400));
   }
 
@@ -533,7 +568,12 @@ export function apply(ctx, rawConfig) {
   }
 
   function resolveRoute(sessionId) {
-    if (settings.provider !== '' && settings.model !== '') {
+    // A provider without a model means "this provider's default", not "ignore the
+    // setting". The old test required both to be non-empty, so choosing
+    // 「该提供方的默认模型」 silently fell through to the session's route — the
+    // page showed a provider the rewrite was not using, and the user could not
+    // tell where their requests were going.
+    if (settings.provider !== '') {
       return { provider: settings.provider, model: settings.model };
     }
     const state = turnState.get(sessionId);
@@ -541,6 +581,33 @@ export function apply(ctx, rawConfig) {
       return { provider: state.provider, model: state.model };
     }
     return undefined;
+  }
+
+  /**
+   * Resolve the model route, filling in a provider's default model when the user
+   * chose a provider but no model.
+   *
+   * The synchronous `resolveRoute` cannot ask the provider for its default, and
+   * passing an empty model through would either fail or pick something
+   * unexpected. Asking here keeps the promise the settings page makes: choosing
+   * 「该提供方的默认模型」 uses that provider.
+   * @param {string | undefined} sessionId
+   */
+  async function resolveRouteAsync(sessionId) {
+    const route = resolveRoute(sessionId);
+    if (route === undefined) return undefined;
+    if (route.model !== '') return route;
+
+    const llm = getLlm();
+    if (llm === undefined || typeof llm.listModels !== 'function') return undefined;
+    try {
+      const listed = await llm.listModels(route.provider);
+      const first = Array.isArray(listed) ? listed[0] : undefined;
+      if (first === undefined || typeof first.id !== 'string' || first.id === '') return undefined;
+      return { provider: route.provider, model: first.id };
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -570,7 +637,7 @@ export function apply(ctx, rawConfig) {
       const llm = getLlm();
       if (llm === undefined) { settle('skipped', 'no-llm'); return; }
 
-      const route = resolveRoute(sessionId);
+      const route = await resolveRouteAsync(sessionId);
       if (route === undefined) { settle('skipped', 'no-route'); return; }
 
       const { masked, literals } = mask(text);
@@ -705,6 +772,10 @@ export function apply(ctx, rawConfig) {
     rows.set(`${sessionId}:${seq}`, {
       sessionId, seq, status: 'skipped', text: '', reason, model: '', time: Date.now(),
     });
+    // Trim here too. `trim()` used to run only in `rewrite()`'s finally, so every
+    // skipped row — subagent output by default — accumulated without ever being
+    // bounded by `maxRowsPerSession`.
+    trim(sessionId);
     touch(sessionId);
   }
 
@@ -872,6 +943,14 @@ export function apply(ctx, rawConfig) {
         candidates.delete(sessionId);
         if (candidate !== undefined && event.data?.reason?.kind === 'completed') {
           enqueue(sessionId, candidate.seq, candidate.text);
+          // `enqueue` is what creates the row, so the `final` marking above runs
+          // before the row exists and silently does nothing in this mode. Mark it
+          // here instead, after creation.
+          const created = rows.get(`${sessionId}:${candidate.seq}`);
+          if (created !== undefined) {
+            created.final = true;
+            touch(sessionId);
+          }
         }
       }
       return;
@@ -971,6 +1050,19 @@ export function apply(ctx, rawConfig) {
         if (active !== undefined) {
           settings.pack = normalizePack(active.pack);
           settings.presetName = active.name;
+        }
+      }
+
+      // Restore the durable switches and route. The page reports 「已保存」 for
+      // these, so losing them on restart is a promise broken — and re-enabling
+      // memory for someone who switched it off is worse than an inconvenience.
+      const savedSettings = opened.getSettings();
+      if (savedSettings !== null && typeof savedSettings === 'object') {
+        for (const key of ['enabled', 'includeToolSteps', 'memory', 'subagentSteps', 'subagentReports']) {
+          if (typeof savedSettings[key] === 'boolean') settings[key] = savedSettings[key];
+        }
+        for (const key of ['provider', 'model', 'reasoningEffort']) {
+          if (typeof savedSettings[key] === 'string') settings[key] = savedSettings[key];
         }
       }
     }, (error) => {
@@ -1164,7 +1256,7 @@ export function apply(ctx, rawConfig) {
         const personaPrompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
         if (personaPrompt.length < 20) { sendJson(res, 400, { error: 'prompt too short' }); return; }
         if (personaPrompt.length > 24000) { sendJson(res, 400, { error: 'prompt too long' }); return; }
-        const route = resolveRoute(currentSessionHint());
+        const route = await resolveRouteAsync(currentSessionHint());
         if (route === undefined) { sendJson(res, 200, { ok: false, reason: 'no-route' }); return; }
         const result = await extractPreset(personaPrompt, route);
         if (result.ok !== true) { sendJson(res, 200, { ok: false, reason: result.reason }); return; }
@@ -1308,6 +1400,9 @@ export function apply(ctx, rawConfig) {
           profile = emptyProfile();
           scheduleProfileSave();
         }
+        // Persist the switches and the route. The page reports 「已保存」, so a
+        // restart that restored the defaults would make that a lie.
+        saveSettings();
         for (const id of revisions.keys()) touch(id);
       }
       sendJson(res, 200, {
@@ -1330,7 +1425,20 @@ export function apply(ctx, rawConfig) {
 
   ctx.effect(() => () => {
     storeClosing = true;
-    for (const timer of persistTimers.values()) clearTimeout(timer);
+    // Stop accepting new work first, then drain.
+    //
+    // Two separate bugs lived here: the memory timer was never cleared, so it
+    // fired after `store` was undefined and threw `Cannot read properties of
+    // undefined (reading 'putProfile')`; and the 400ms coalesced writes were
+    // cancelled without flushing, so a row that had just settled was simply lost.
+    if (profileTimer !== undefined) {
+      clearTimeout(profileTimer);
+      profileTimer = undefined;
+    }
+    for (const [sessionId, timer] of persistTimers) {
+      clearTimeout(timer);
+      flushPersist(sessionId);
+    }
     persistTimers.clear();
     if (store !== undefined) {
       void store.close().catch((error) => warn('store close failed', error));

@@ -316,9 +316,10 @@ test('the poller tracks every seq, not just the one that created it', () => {
   assert.ok(start > 0 && end > start, 'watch() is present');
   const body = source.slice(start, end);
 
-  assert.match(body, /const watched = new Set\(\)/, 'the poller keeps a set of seqs');
-  assert.match(body, /watched\.add\(/, 'a new seq can join an existing poller');
-  assert.match(body, /\.some\(\(candidate\)/, 'the eager cadence considers all of them');
+  assert.match(body, /const watched = new Map\(\)/, 'the poller refcounts seqs');
+  assert.match(body, /watched\.set\(candidate, next\)/, 'a new seq can join an existing poller');
+  assert.match(body, /\.\.\.watched\.keys\(\)/, 'the eager cadence considers all of them');
+  assert.match(body, /wake\(\)/, 'a new subscriber wakes a slow timer');
 
   // The old shape returned early without registering the new seq.
   assert.ok(

@@ -80,7 +80,8 @@ window.__ModuleLoader__.load({
       const key = sessionId;
       let poller = pollers.get(key);
       if (poller === undefined) {
-        const watched = new Set();
+        /** seq → subscriber count. Refcounted because several rows share a session. */
+        const watched = new Map();
         let stopped = false;
         let timer;
         const startedAt = Date.now();
@@ -99,7 +100,7 @@ window.__ModuleLoader__.load({
           // Anything still owing keeps the eager cadence: a new step starts
           // owing, and the slow interval must not resume just because an older
           // row already settled.
-          const owe = [...watched].some((candidate) => {
+          const owe = [...watched.keys()].some((candidate) => {
             const row = rows.find((entry) => entry.seq === candidate);
             return row === undefined || row.status === 'pending';
           });
@@ -108,10 +109,36 @@ window.__ModuleLoader__.load({
           timer = setTimeout(tick, interval);
         };
 
+        /** Restart the timer at the eager cadence, cancelling any slow wait. */
+        const wake = () => {
+          if (stopped) return;
+          clearTimeout(timer);
+          timer = setTimeout(tick, 0);
+        };
+
         poller = {
           add(candidate) {
-            if (typeof candidate === 'number') watched.add(candidate);
-            return () => { watched.delete(candidate); };
+            if (typeof candidate !== 'number') return () => {};
+            // Refcount, not a Set of ids.
+            //
+            // Two subscribers can watch the same seq — the shipped chat renders
+            // one assistant node for both its reasoning and response partitions,
+            // and this entry is asked about both. With a Set, the first unmount
+            // removed the id and stopped polling while the other subscriber was
+            // still displaying it.
+            const next = (watched.get(candidate) ?? 0) + 1;
+            watched.set(candidate, next);
+            // A newly watched row must not wait behind an existing slow timer:
+            // its rewrite may finish entirely before the next 6s poll.
+            wake();
+            let released = false;
+            return () => {
+              if (released) return;
+              released = true;
+              const remaining = (watched.get(candidate) ?? 1) - 1;
+              if (remaining <= 0) watched.delete(candidate);
+              else watched.set(candidate, remaining);
+            };
           },
         };
         pollers.set(key, poller);

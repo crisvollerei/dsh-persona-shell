@@ -23,6 +23,27 @@ test('mask shields fenced code, inline code, paths, versions and urls', () => {
   assert.equal(unmask(masked, literals), input);
 });
 
+test('the review counterexamples are shielded too', () => {
+  // Each of these leaked as prose before: a bare command has no backticks, a
+  // single-segment path failed the two-level rule, a URL with parentheses was cut
+  // short, and a four-backtick fence closed at the inner triple and exposed the
+  // rest of the code.
+  const cases = [
+    ['npm run build', '执行 npm run build 后继续。'],
+    ['/tmp', '看 /tmp 目录'],
+    ['./src/main.js', '打开 ./src/main.js 这个文件'],
+    ['https://example.com/a(b)c', '见 https://example.com/a(b)c 这里'],
+    ['````js\nconst a = 1;\n```\ninner\n````', '标题\n\n````js\nconst a = 1;\n```\ninner\n````\n\n结束'],
+  ];
+
+  for (const [literal, input] of cases) {
+    const { masked, literals } = mask(input);
+    assert.ok(literals.includes(literal), `should shield: ${literal}`);
+    assert.ok(!masked.includes(literal), `must not leak: ${literal}`);
+    assert.equal(unmask(masked, literals), input, 'and restore exactly');
+  }
+});
+
 test('unmask restores the exact original bytes', () => {
   const input = 'run `a b` then D:\\x\\y.txt';
   const { masked, literals } = mask(input);
@@ -98,6 +119,10 @@ test('validateRewrite refuses dropped, invented and bloated output', () => {
   assert.equal(validateRewrite({ ...base, candidate: '已经改好了。' }).ok, false);
   assert.equal(validateRewrite({ ...base, candidate: '好了 [[0]] [[1]]' }).ok, false);
   assert.equal(validateRewrite({ ...base, candidate: '好了 [[0]]\n```\nx\n```' }).ok, false);
+  // Tail fences count too: the input side protects `~~~`, so the output side has
+  // to reject a block the model invents with the same syntax.
+  assert.equal(validateRewrite({ ...base, candidate: '好了 [[0]]\n~~~sh\nx\n~~~' }).ok, false);
+  assert.equal(validateRewrite({ ...base, candidate: '好了 [[0]]\n\n~~~\nx\n~~~' }).ok, false);
   assert.equal(validateRewrite({ ...base, candidate: '' }).ok, false);
   assert.equal(validateRewrite({ ...base, candidate: '好'.repeat(400) + '[[0]]' }).ok, false);
 });

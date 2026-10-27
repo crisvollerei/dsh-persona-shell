@@ -168,11 +168,11 @@ dsh.client.inject 里加 @deepseek-ai/dsh-client-ui-chat
   → 我们的 require 直接命中基座表
 ```
 
-**不打包、不复制、不维护副本。** 插件体积只有 ~110 KB。
+**不打包、不复制、不维护副本。**
 
-`lib/` 里仍保留一个自研渲染器，但它的角色变了：**只在模块表缺失时兜底**，避免整行变成空白。它按官方样式表逐条复刻（行内码用 `markdown-inline-code`、代码块用 `markdown-code-block`、表头 `text-align:start`、首列去左内边距等），但不再是主路径。
+**没有自研渲染器。** 曾经有一个 526 行的复刻版本，后来删掉了：复刻永远追不上官方，而且「看起来差不多但缺高亮、公式、脚注」会掩盖问题。现在模块表缺失时降级为**明显的纯文本**（`PLAIN_FALLBACK_STYLE`），设置页同时显示警告——宁可一眼看出不对，也不要看起来正常却在偷偷降级。
 
-同时加了一个自检端点：页面首次渲染时会 `POST /persona-shell/diagnostics` 报告 `shippedMarkdown: ok | missing | unresolvable`，`GET` 同一路径可查。因为“静默回退”和“正常工作”从外部看是一样的，必须让它是可查询的事实。
+同时有自检端点：`GET /persona-shell/diagnostics` 可查 `shippedMarkdown`、`storage`、`auth`、`clientBuild` 等运行事实。因为“静默回退”和“正常工作”从外部看是一样的，必须让它是可查询的。
 
 `test/render.test.mjs` 里两条关键契约：模块表存在时**元素类型必须是官方组件**；模块表缺失时**必须仍渲染出内容**，不能空白。
 
@@ -236,7 +236,7 @@ persona-shell/
   lib/config.js       Config（Standard Schema）
   lib/store.js        套壳结果的持久化
   cordis.patch.yml    行定义
-  test/               70 项离线测试
+  test/               84 项离线测试
 ```
 
 ## 配置
@@ -276,7 +276,7 @@ cd persona-shell
 node --test 'test/*.test.mjs'
 ```
 
-70 项：
+84 项：
 
 | 文件                 | 覆盖                                                                                |
 | ------------------ | --------------------------------------------------------------------------------- |
@@ -368,7 +368,9 @@ node --test 'test/*.test.mjs'
 ## 已知限制
 
 - **全局生效**：槽注册是页级的，所有会话（包括关掉人格的）都走这个渲染器。因此渲染器在未就绪时必须完整渲染原文。
-- **正文交给官方渲染器**：reasoning 折叠、图片块、unknown block 仍返回 `null` 交回官方 `assistant-step`。纯正文部分是宿主同一份 `MarkdownText`，所以 CommonMark、shiki 高亮、KaTeX、脚注、表格排版全部一致。
-- **依赖模块表存在**：若未来版本把 `ui-primitives` 移出基座表，`require` 会失败并回退到自研渲染器（功能会退化，但有自检端点能看到）。这是可观测的，不是静默的。
-- **轮询取数**：Client → Host 无推送，用去抖轮询（pending 时 900ms，就绪后 6s）。属于本地 IPC，开销可忽略。
-- **未验证**：长会话性能、多会话并发。已实测：插件激活、三个路由可达、官方渲染器 `accepted: true`、真实套壳产出 `ready`、存储 `open` 且文件落盘。
+- **只接管正文分区**：`groupPart === 'reasoning'` 时返回 `null`，思考面板仍由官方 `conversation.chat.reasoning.body` 渲染。图片块、unknown block 同理交回官方。
+- **返回 `null` 不会交回官方**：`conversation.chat.node` 是 keyed 槽，不是 chain 槽，`null` 意味着该行不渲染。这是有意接受的取舍——官方渲染器处理不了的情况，插件也不兜底。
+- **依赖模块表存在**：若未来版本把 `ui-primitives` 移出基座表，`require` 会失败并降级为明显的纯文本（设置有警告，诊断端点可查）。
+- **轮询取数**：Client → Host 无推送，用去抖轮询（pending 时 100ms，就绪后 6s）。
+- **路由需自行认证**：`webServer` 不提供认证，插件自己调用 `connection.requestRejection()`。若该服务缺失，诊断会显示 `auth: connection-service-absent`。
+- **未验证**：长会话性能、多会话并发、真实 Desktop 下的交互时序。
