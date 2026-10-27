@@ -83,18 +83,42 @@ window.__ModuleLoader__.load({
         /** seq → subscriber count. Refcounted because several rows share a session. */
         const watched = new Map();
         let stopped = false;
+        /** The single pending timer, or undefined when a request is in flight. */
         let timer;
+        /** Whether a request is running. At most one, always. */
+        let inFlight = false;
+        /** Set when a sooner wake arrived while a request was running. */
+        let wakePending = false;
         const startedAt = Date.now();
 
+        /** Schedule the next poll, never creating a second timer. */
+        const schedule = (delay) => {
+          if (stopped) return;
+          if (inFlight) {
+            // A request is running; remember the request to poll again as soon as
+            // it returns rather than starting a second one.
+            wakePending = true;
+            return;
+          }
+          if (timer !== undefined) clearTimeout(timer);
+          timer = setTimeout(tick, delay);
+        };
+
         const tick = async () => {
+          timer = undefined;
           if (stopped) return;
           if (watched.size === 0) {
-            // Nothing needs this session any more; release the timer.
+            // Nothing needs this session any more; release the poller.
             stopped = true;
             pollers.delete(key);
             return;
           }
-          await refresh(sessionId);
+          inFlight = true;
+          try {
+            await refresh(sessionId);
+          } finally {
+            inFlight = false;
+          }
           if (stopped) return;
           const rows = states.get(sessionId)?.rows ?? [];
           // Anything still owing keeps the eager cadence: a new step starts
@@ -106,14 +130,12 @@ window.__ModuleLoader__.load({
           });
           const waited = Date.now() - startedAt;
           const interval = owe ? (waited < 8000 ? 100 : 300) : 6000;
-          timer = setTimeout(tick, interval);
-        };
-
-        /** Restart the timer at the eager cadence, cancelling any slow wait. */
-        const wake = () => {
-          if (stopped) return;
-          clearTimeout(timer);
-          timer = setTimeout(tick, 0);
+          if (wakePending) {
+            wakePending = false;
+            schedule(0);
+            return;
+          }
+          schedule(interval);
         };
 
         poller = {
@@ -130,7 +152,7 @@ window.__ModuleLoader__.load({
             watched.set(candidate, next);
             // A newly watched row must not wait behind an existing slow timer:
             // its rewrite may finish entirely before the next 6s poll.
-            wake();
+            schedule(0);
             let released = false;
             return () => {
               if (released) return;
@@ -142,19 +164,8 @@ window.__ModuleLoader__.load({
           },
         };
         pollers.set(key, poller);
-        // Do NOT start ticking here. `tick` exits immediately when nothing is
-        // watching, and at this point `watched` is still empty — the caller adds
-        // its seq only after `watch` returns. Starting first made every poller
-        // kill itself on its first tick, so no state was ever fetched and the
-        // whole persona view silently fell back to the plain report.
-        poller.start = () => { void tick(); };
       }
       const release = poller.add(seq);
-      if (typeof poller.start === 'function') {
-        const start = poller.start;
-        poller.start = undefined;
-        start();
-      }
       return release;
     }
 
@@ -562,12 +573,19 @@ window.__ModuleLoader__.load({
       const [openOriginal, setOpenOriginal] = React.useState(false);
       const [conceded, setConceded] = React.useState(false);
 
-      // The same assistant node is rendered twice by the shipped chat: once with
-      // `groupPart: 'reasoning'` for the folded thinking block, once as the
-      // response body. This entry only owns the response. Ignoring the partition
-      // put the *answer* inside the reasoning pane and hid the real reasoning —
-      // the two panes showed the same prose, and expanding the fold showed the
-      // report twice.
+      // The shipped chat renders the same assistant node twice, and `groupPart`
+      // selects which blocks belong to which pass:
+      //
+      //   groupPart === 'reasoning' → only `reasoning` blocks
+      //   groupPart === 'response'  → everything except `reasoning`
+      //
+      // This entry replaces `AssistantNodeView` wholesale, so the reasoning pass
+      // is *not* handed back to the shipped component — returning `null` simply
+      // renders nothing for it. That is a deliberate, documented loss: showing the
+      // reasoning correctly would mean reimplementing `ProcessReasoning` and
+      // `ReasoningRow`, which is the "copy the shipped renderer" work this project
+      // decided against. Without this guard the answer appeared inside the
+      // thinking pane as well, which was strictly worse than showing nothing.
       if (groupPart === 'reasoning') return null;
 
       // The hold window must measure the wait for a rewrite, not the lifetime of

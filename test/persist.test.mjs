@@ -156,7 +156,7 @@ test('a rewrite survives a restart', async () => {
   // First run: rewrite one step and let persistence settle.
   const web1 = makeWebServer();
   const ctx1 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 });
-  apply(ctx1, { enabled: true });
+  apply(ctx1, {enabled: true,  allowUnauthenticatedRoutes: true });
   await deliver(ctx1, { seq: 5, text: '原文 `a.js`。' });
   const first = await readState(web1);
   assert.equal(first.rows.find((row) => row.seq === 5).status, 'ready');
@@ -165,7 +165,7 @@ test('a rewrite survives a restart', async () => {
   // Second run: same storage, no rewriting needed; the page still sees the row.
   const web2 = makeWebServer();
   const ctx2 = makeCtx({ llm: makeLlm('不会用到'), storage, webServer: web2 });
-  apply(ctx2, { enabled: true });
+  apply(ctx2, {enabled: true,  allowUnauthenticatedRoutes: true });
   await new Promise((resolve) => setTimeout(resolve, 60));
 
   const second = await readState(web2);
@@ -182,7 +182,7 @@ test('the domain name satisfies the storage facility rule', async () => {
   const seen = [];
   const web = makeWebServer();
   const ctx = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage: makeStrictStorage(seen), webServer: web });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
   await deliver(ctx, { seq: 11, text: '原文 `d.js`。' });
   await new Promise((resolve) => setTimeout(resolve, 60));
 
@@ -194,7 +194,7 @@ test('a broken storage service degrades to memory-only', async () => {
   const web = makeWebServer();
   const llm = makeLlm('壳版 [[0]]。');
   const ctx = makeCtx({ llm, storage: makeBrokenStorage(), webServer: web });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
 
   await deliver(ctx, { seq: 7, text: '原文 `b.js`。' });
   const state = await readState(web);
@@ -206,7 +206,7 @@ test('a broken storage service degrades to memory-only', async () => {
 test('no storage service at all still rewrites', async () => {
   const web = makeWebServer();
   const ctx = makeCtx({ llm: makeLlm('壳版 [[0]]。'), webServer: web });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
   await deliver(ctx, { seq: 9, text: '原文 `c.js`。' });
   const state = await readState(web);
   assert.equal(state.rows.find((row) => row.seq === 9).status, 'ready');
@@ -221,7 +221,7 @@ test('the active preset survives a restart', async () => {
 
   const web1 = makeWebServer();
   const ctx1 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 });
-  apply(ctx1, { enabled: true });
+  apply(ctx1, {enabled: true,  allowUnauthenticatedRoutes: true });
   await new Promise((resolve) => setTimeout(resolve, 40));
 
   const route1 = web1.routes.find((candidate) => candidate.path === '/persona-shell');
@@ -246,7 +246,7 @@ test('the active preset survives a restart', async () => {
   // Second run: same storage, fresh process.
   const web2 = makeWebServer();
   const ctx2 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 });
-  apply(ctx2, { enabled: true });
+  apply(ctx2, {enabled: true,  allowUnauthenticatedRoutes: true });
   await new Promise((resolve) => setTimeout(resolve, 60));
 
   const route2 = web2.routes.find((candidate) => candidate.path === '/persona-shell');
@@ -302,7 +302,7 @@ test('a new message after a restart does not erase the stored history', async ()
 
   const web1 = makeWebServer();
   const ctx1 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 });
-  apply(ctx1, { enabled: true });
+  apply(ctx1, {enabled: true,  allowUnauthenticatedRoutes: true });
   await deliver(ctx1, { seq: 5, text: '原文 `a.js`。' });
   await deliver(ctx1, { seq: 9, text: '原文 `b.js`。' });
   await new Promise((resolve) => setTimeout(resolve, 600));
@@ -313,7 +313,7 @@ test('a new message after a restart does not erase the stored history', async ()
   // Second run: one new message, without opening the old session first.
   const web2 = makeWebServer();
   const ctx2 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 });
-  apply(ctx2, { enabled: true });
+  apply(ctx2, {enabled: true,  allowUnauthenticatedRoutes: true });
   await deliver(ctx2, { seq: 13, text: '原文 `c.js`。' });
   await new Promise((resolve) => setTimeout(resolve, 600));
 
@@ -330,7 +330,7 @@ test('editing the card is written back into the active preset', async () => {
   const storage = makeStorage(blobs);
 
   const web1 = makeWebServer();
-  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 }), { enabled: true });
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 }), { enabled: true, allowUnauthenticatedRoutes: true });
   await new Promise((resolve) => setTimeout(resolve, 40));
 
   await postJson(web1, '/persona-shell/presets', {
@@ -348,7 +348,7 @@ test('editing the card is written back into the active preset', async () => {
 
   // Fresh process, same storage.
   const web2 = makeWebServer();
-  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 }), { enabled: true });
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 }), { enabled: true, allowUnauthenticatedRoutes: true });
   await new Promise((resolve) => setTimeout(resolve, 60));
 
   const restored = await getJson(web2, '/persona-shell/settings');
@@ -364,7 +364,7 @@ test('editing the builtin preset forks a new one instead of overwriting it', asy
   // character. An edit therefore lands in a new preset.
   const blobs = new Map();
   const web = makeWebServer();
-  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage: makeStorage(blobs), webServer: web }), { enabled: true });
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage: makeStorage(blobs), webServer: web }), { enabled: true, allowUnauthenticatedRoutes: true });
   await new Promise((resolve) => setTimeout(resolve, 40));
 
   const before = await getJson(web, '/persona-shell/presets');

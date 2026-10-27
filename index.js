@@ -89,11 +89,20 @@ export function apply(ctx, rawConfig) {
   const requestRejection = (req) => {
     const connection = getConnection();
     if (connection === undefined || typeof connection.requestRejection !== 'function') {
-      // Recorded, not enforced: refusing here would disable the plugin entirely in
-      // a composition that does not mount Connection, and that failure would be
-      // silent. The diagnostic makes the exposure auditable.
-      diagnostics.auth = 'connection-service-absent';
-      return undefined;
+      // Deny by default.
+      //
+      // An earlier version allowed the request and only recorded the absence,
+      // which kept the plugin usable in a composition without Connection but left
+      // the routes open — the security hole this was meant to close, merely
+      // logged. `webServer` owns no authentication of its own, so "cannot check"
+      // has to mean "do not serve". `allowUnauthenticatedRoutes` is the explicit
+      // opt-out for a deployment that knowingly runs without that service.
+      if (cfg.allowUnauthenticatedRoutes === true) {
+        diagnostics.auth = 'connection-service-absent-allowed-by-config';
+        return undefined;
+      }
+      diagnostics.auth = 'connection-service-absent-denied';
+      return 403;
     }
     try {
       const rejection = connection.requestRejection({ headers: req.headers });
@@ -1434,6 +1443,15 @@ export function apply(ctx, rawConfig) {
     if (profileTimer !== undefined) {
       clearTimeout(profileTimer);
       profileTimer = undefined;
+    }
+    // Drain the profile too, not just the session rows.
+    //
+    // Clearing the timer alone discarded pending observations — and worse,
+    // resurrected memory the user had just cleared: the cleared profile was
+    // scheduled to be written, the timer was cancelled on unload, and the stored
+    // samples came back on the next start.
+    if (store !== undefined) {
+      store.putProfile(profile).catch((error) => warn('profile flush failed', error));
     }
     for (const [sessionId, timer] of persistTimers) {
       clearTimeout(timer);

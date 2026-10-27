@@ -173,7 +173,7 @@ test('a plain assistant message becomes a ready rewrite', async () => {
   // The model answers in the masked vocabulary: it keeps the marker it was given.
   const llm = makeLlm('我看了看，改好了 [[0]]。');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
 
   // No request header at all: the route comes from the message itself.
   await deliver(ctx, null, { seq: 10, text: '我看了一下，改好了 `npm run build`。', route: { provider: 'magpie', model: 'w/x' } });
@@ -198,7 +198,7 @@ test('a tool-carrying step is rewritten by default', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('鲸鲸先看看 [[0]]。');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
   ctx.bus.emit('session/event', { id: 's1' }, {
     type: 'request/header', seq: 1, time: 0,
     data: { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' },
@@ -216,7 +216,7 @@ test('includeToolSteps: false keeps mid-turn narration plain', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('不会用到');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true, includeToolSteps: false });
+  apply(ctx, {enabled: true, includeToolSteps: false,  allowUnauthenticatedRoutes: true });
   ctx.bus.emit('session/event', { id: 's1' }, {
     type: 'request/header', seq: 1, time: 0,
     data: { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' },
@@ -233,7 +233,7 @@ test('an interrupted step is never rewritten', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('不会用到');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
   ctx.bus.emit('session/event', { id: 's1' }, {
     type: 'request/header', seq: 1, time: 0,
     data: { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' },
@@ -251,7 +251,7 @@ test('a rewrite that drops a literal is refused and the plain report stands', as
   // Drops the [[0]] marker entirely.
   const llm = makeLlm('我改好了。');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
   ctx.bus.emit('session/event', { id: 's1' }, {
     type: 'request/header', seq: 1, time: 0,
     data: { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' },
@@ -270,7 +270,7 @@ test('no route means no call and an explicit skip', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('不会用到');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
 
   // A message with no model source and no header: the route is unknown.
   ctx.bus.emit('session/event', { id: 's1' }, {
@@ -296,7 +296,7 @@ test('no route means no call and an explicit skip', async () => {
 test('report mode only rewrites the last report of a completed turn', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('套壳版 [[0]]。');  const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true, trigger: 'report' });
+  apply(ctx, {enabled: true, trigger: 'report',  allowUnauthenticatedRoutes: true });
   ctx.bus.emit('session/event', { id: 's1' }, {
     type: 'request/header', seq: 1, time: 0,
     data: { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' },
@@ -323,7 +323,7 @@ test('settings posted to the route change the route and the pack', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('套壳。');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
   ctx.bus.emit('session/event', { id: 's1' }, {
     type: 'request/header', seq: 1, time: 0,
     data: { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' },
@@ -354,7 +354,7 @@ test('disabling the row stops all rewriting', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('不会用到');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: false });
+  apply(ctx, {enabled: false,  allowUnauthenticatedRoutes: true });
   await deliver(ctx, null, { seq: 40, text: '一段汇报。' });
   assert.equal(llm.calls.length, 0);
   assert.equal(webServer.routes.length, 0);
@@ -364,7 +364,7 @@ test('a slow rewrite streams partial text before it settles', async () => {
   const webServer = makeWebServer();
   const llm = makeStreamingLlm(['鲸鲸看了', '一下配置，', '改好了 [[0]]。']);
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
   ctx.bus.emit('session/event', { id: 's1' }, {
     type: 'request/header', seq: 1, time: 0,
     data: { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' },
@@ -396,7 +396,7 @@ test('only the step that closes a turn is marked final', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('鲸鲸看了 [[0]]。');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
 
   ctx.bus.emit('session/event', { id: 's1' }, { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } });
   await deliver(ctx, null, { seq: 60, text: '我看一下 `a.js`。', toolCall: true });
@@ -425,7 +425,7 @@ test('user messages are observed through the data.content path', async () => {
   // so the memory silently stayed empty while appearing to be wired up.
   const webServer = makeWebServer();
   const ctx = makeCtx({ llm: makeLlm('好。'), webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
 
   await deliverUser(ctx, { seq: 5, text: '帮我看一下这个配置文件对不对劲，我怀疑端口写错了。' });
 
@@ -450,7 +450,7 @@ test('a subagent session is left alone by default, steps AND reports', async () 
   const webServer = makeWebServer();
   const llm = makeLlm('不该被调用。');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true });
+  apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
 
   await deliver(ctx, null, { seq: 70, text: '我先看一下。', toolCall: true, delegationDepth: 1 });
   await deliver(ctx, null, { seq: 71, text: '看完了，结论是好的。', delegationDepth: 1 });
@@ -468,7 +468,7 @@ test('the two subagent switches are independent', async () => {
   const webServer = makeWebServer();
   const llm = makeLlm('鲸鲸看完了 [[0]]。');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true, subagentReports: true });
+  apply(ctx, {enabled: true, subagentReports: true,  allowUnauthenticatedRoutes: true });
 
   await deliver(ctx, null, { seq: 72, text: '我先看一下 `a.js`。', toolCall: true, delegationDepth: 1 });
   await deliver(ctx, null, { seq: 73, text: '看完了 `a.js`。', delegationDepth: 1 });
@@ -489,7 +489,7 @@ test('history samples are masked, so literals never reach the model twice', asyn
   const webServer = makeWebServer();
   const llm = makeLlm('鲸鲸看了 [[0]]。');
   const ctx = makeCtx({ llm, webServer });
-  apply(ctx, { enabled: true, keepSamples: 2 });
+  apply(ctx, {enabled: true, keepSamples: 2,  allowUnauthenticatedRoutes: true });
 
   await deliver(ctx, null, { seq: 80, text: '看了 `private-key-secret`。' });
   await deliver(ctx, null, { seq: 81, text: '又看了 `other.js`。' });
@@ -501,4 +501,37 @@ test('history samples are masked, so literals never reach the model twice', asyn
     'the first literal must not appear verbatim in the second call',
   );
   assert.ok(secondPrompt.includes('{{0}}') || secondPrompt.includes('[['), 'a placeholder carries the voice instead');
+});
+
+test('routes are refused when no authentication service is available', async () => {
+  // Deny by default. `webServer` owns no authentication, so a route that cannot
+  // check a request must not serve it — recording the absence while answering 200
+  // left the exposure in place, merely logged.
+  const webServer = makeWebServer();
+  const ctx = makeCtx({ llm: makeLlm('不会用到。'), webServer });
+  // No `allowUnauthenticatedRoutes`, and `makeCtx` mounts no `connection`.
+  apply(ctx, { enabled: true });
+
+  const { status } = await readState(webServer, 's1');
+  assert.equal(status, 403, 'the route refuses rather than answering');
+
+  const route = webServer.routes.find((candidate) => candidate.path === '/persona-shell');
+  const response = {
+    statusCode: 0, body: '',
+    writeHead(code) { this.statusCode = code; },
+    end(body) { this.body = body ?? ''; },
+  };
+  await route.handler({ url: '/persona-shell/diagnostics', method: 'GET' }, response);
+  assert.equal(response.statusCode, 403, 'diagnostics refuses too');
+});
+
+test('the explicit opt-out serves unauthenticated routes', async () => {
+  // The one case where a deployment knowingly runs without Connection.
+  const webServer = makeWebServer();
+  const ctx = makeCtx({ llm: makeLlm('壳版 [[0]]。'), webServer });
+  apply(ctx, { enabled: true, allowUnauthenticatedRoutes: true });
+
+  await deliver(ctx, null, { seq: 90, text: '原文 `a.js`。' });
+  const { status } = await readState(webServer);
+  assert.equal(status, 200, 'the opt-out is honoured');
 });

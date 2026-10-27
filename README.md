@@ -93,12 +93,19 @@ Studio 插件拿不到动态包的 `host.call`，也不便走 `@Remote` 代码�
 
 渲染规则（优先级从高到低）：
 
-1. `status === 'running' | 'interrupted'` → 交回官方渲染器（返回 `null`）
-2. 有 `image`/未知 block → 交回官方渲染器
-3. 套壳就绪 → 人格版；**只有该轮最后一条**带徽章和「原文」按钮
-4. **已有部分改写文本 → 流式渲染**，不显示原文
-5. 还在等第一段文本 → **占位**
-6. 改写已失败 / 等了 8 秒还没来 → 原文
+| 情况 | 渲染 |
+|---|---|
+| `groupPart === 'reasoning'` | **什么都不渲染**（见下方说明） |
+| `status === 'running' \| 'interrupted'` | 什么都不渲染 |
+| 有 `image`/未知 block | 什么都不渲染 |
+| 套壳就绪 | 人格版；**只有该轮最后一条**带徽章和「原文」按钮 |
+| 已有部分改写文本 | **流式渲染**，不显示原文 |
+| 还在等第一段文本 | **占位**（2.5 秒后认输） |
+| 改写已失败 / 超时 | 原文 |
+
+> **返回 `null` 不会交回官方渲染器。** `conversation.chat.node` 是 keyed 槽，不是 chain 槽：官方文档说 chain 才会在"全部拒绝时渲染 owner fallback"，keyed 的 `null` 就是该行不渲染。
+>
+> 所以上表前三行是**真实的显示损失**，不是"交给官方处理"。这是有意的取舍：正确渲染 reasoning 需要复刻 `ProcessReasoning` 和 `ReasoningRow`，正是本项目拒绝的方向。
 
 ### 3a. 徽章只出现在每轮最后一条
 
@@ -236,7 +243,7 @@ persona-shell/
   lib/config.js       Config（Standard Schema）
   lib/store.js        套壳结果的持久化
   cordis.patch.yml    行定义
-  test/               84 项离线测试
+  test/               86 项离线测试
 ```
 
 ## 配置
@@ -276,7 +283,7 @@ cd persona-shell
 node --test 'test/*.test.mjs'
 ```
 
-84 项：
+86 项：
 
 | 文件                 | 覆盖                                                                                |
 | ------------------ | --------------------------------------------------------------------------------- |
@@ -367,10 +374,9 @@ node --test 'test/*.test.mjs'
 
 ## 已知限制
 
-- **全局生效**：槽注册是页级的，所有会话（包括关掉人格的）都走这个渲染器。因此渲染器在未就绪时必须完整渲染原文。
-- **只接管正文分区**：`groupPart === 'reasoning'` 时返回 `null`，思考面板仍由官方 `conversation.chat.reasoning.body` 渲染。图片块、unknown block 同理交回官方。
-- **返回 `null` 不会交回官方**：`conversation.chat.node` 是 keyed 槽，不是 chain 槽，`null` 意味着该行不渲染。这是有意接受的取舍——官方渲染器处理不了的情况，插件也不兜底。
+- **全局生效**：槽注册是页级的，所有会话（包括关掉人格的）都走这个渲染器。
+- **接管会隐藏部分官方内容（已接受的风险）**：`conversation.chat.node` 是 keyed 槽，`null` 就是该行不渲染，不会回退到官方 `AssistantNodeView`。因此 **reasoning 折叠面板、图片块、中断标记、运行中状态目前都不显示**。代价是真实的，不是"交给官方处理"；修复它需要复刻官方渲染器，本项目选择不做。
 - **依赖模块表存在**：若未来版本把 `ui-primitives` 移出基座表，`require` 会失败并降级为明显的纯文本（设置有警告，诊断端点可查）。
-- **轮询取数**：Client → Host 无推送，用去抖轮询（pending 时 100ms，就绪后 6s）。
-- **路由需自行认证**：`webServer` 不提供认证，插件自己调用 `connection.requestRejection()`。若该服务缺失，诊断会显示 `auth: connection-service-absent`。
+- **轮询取数**：Client → Host 无推送，单一调度轮询（pending 时 100ms，就绪后 6s）。
+- **路由默认拒绝无认证请求**：`webServer` 不提供认证，插件调用 `connection.requestRejection()`。服务缺失时返回 403，除非显式设置 `allowUnauthenticatedRoutes: true`。
 - **未验证**：长会话性能、多会话并发、真实 Desktop 下的交互时序。

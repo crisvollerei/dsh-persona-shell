@@ -198,19 +198,25 @@ function renderStep(props) {
   });
 }
 
-test('the reasoning partition is left to the shipped renderer', () => {
-  // The shipped chat renders the same assistant node twice: once with
-  // `groupPart: 'reasoning'` for the folded thinking block, once for the answer.
-  // This entry owns only the answer. Claiming the reasoning pane put the answer
-  // inside it and hid the real reasoning.
+test('the reasoning partition renders nothing — a documented loss, not a handoff', () => {
+  // `groupPart: 'reasoning'` selects which blocks a pass owns. This entry replaced
+  // `AssistantNodeView` wholesale, so returning null renders nothing for that pass;
+  // it does NOT call the shipped `ReasoningRow`. Serving it correctly would mean
+  // reimplementing that component, which this project deliberately does not do.
+  //
+  // The property asserted is therefore "the answer no longer leaks into the
+  // thinking pane", not "the shipped reasoning is restored".
   const node = {
     data: {
       status: 'settled',
-      blocks: [{ kind: 'text', text: '这是正文。' }],
-      finalNode: { seq: 7, blocks: [{ kind: 'text', text: '这是正文。' }] },
+      blocks: [
+        { kind: 'reasoning', text: '这里是思考过程。' },
+        { kind: 'text', text: '这是正文。' },
+      ],
+      finalNode: { seq: 7, blocks: [] },
     },
   };
-  assert.equal(renderStep({ node, groupPart: 'reasoning' }), null, 'the reasoning pane is not ours');
+  assert.equal(renderStep({ node, groupPart: 'reasoning' }), null, 'the reasoning pass renders nothing');
 });
 
 test('a running or interrupted step is left to the shipped renderer', () => {
@@ -319,7 +325,6 @@ test('the poller tracks every seq, not just the one that created it', () => {
   assert.match(body, /const watched = new Map\(\)/, 'the poller refcounts seqs');
   assert.match(body, /watched\.set\(candidate, next\)/, 'a new seq can join an existing poller');
   assert.match(body, /\.\.\.watched\.keys\(\)/, 'the eager cadence considers all of them');
-  assert.match(body, /wake\(\)/, 'a new subscriber wakes a slow timer');
 
   // The old shape returned early without registering the new seq.
   assert.ok(
@@ -328,25 +333,31 @@ test('the poller tracks every seq, not just the one that created it', () => {
   );
 });
 
-test('the poller is started only after its first seq is registered', () => {
-  // Regression, and the one that made the whole plugin look broken: `tick` exits
-  // immediately when nothing is watching, and it was called before the caller's
-  // seq was added. Every poller killed itself on its first tick, so no state was
-  // ever fetched — every row fell back to the plain report, with no error.
+test('the poller keeps at most one request and one timer', () => {
+  // Two separate regressions lived here.
+  //
+  // 1. The poller was started before its first seq was registered, so `tick` saw
+  //    nothing watching, killed itself, and no state was ever fetched.
+  // 2. After that was fixed, `add()` scheduled a zero-delay tick *and* `start()`
+  //    ran one immediately — two chains for one subscriber, each scheduling its
+  //    own next timer.
+  //
+  // The invariant now is a single scheduler: `schedule()` owns the only timer and
+  // defers to `wakePending` while a request is running.
   const source = fs.readFileSync(SOURCE, 'utf8');
   const start = source.indexOf('function watch(');
   const end = source.indexOf('function useHostState(');
   assert.ok(start > 0 && end > start, 'watch() is present');
   const body = source.slice(start, end);
 
-  const addAt = body.indexOf('poller.add(seq)');
-  const startAt = body.indexOf('start()');
-  assert.ok(addAt > 0, 'the seq is registered');
-  assert.ok(startAt > 0, 'the poller is started');
-  assert.ok(addAt < startAt, 'registration must come before the first tick');
-
-  // The old shape started ticking inside the creation branch.
-  assert.ok(!/pollers\.set\(key, poller\);\s*void tick\(\)/.test(body), 'no tick before registration');
+  assert.match(body, /const schedule = \(delay\) =>/, 'one scheduler owns the timer');
+  assert.match(body, /if \(inFlight\) \{/, 'a running request defers instead of overlapping');
+  assert.match(body, /wakePending = true/, 'the deferral is remembered');
+  assert.ok(!/poller\.start/.test(body), 'no second entry point into tick');
+  assert.ok(
+    !/pollers\.set\(key, poller\);\s*void tick\(\)/.test(body),
+    'no tick before registration',
+  );
 });
 
 test('the preset refresh updates the selection, not just the list', () => {
