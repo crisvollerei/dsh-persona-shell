@@ -4,6 +4,19 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
 
+    // Report the React surface once. If `useEffect` is missing or is a different
+    // shape here, every hook-based feature silently does nothing — and that is
+    // indistinguishable from a data problem, which is what this cost.
+    const REACT_SURFACE = {
+      version: React?.version,
+      hasUseEffect: typeof React?.useEffect,
+      hasUseState: typeof React?.useState,
+      hasUseRef: typeof React?.useRef,
+      hasUseCallback: typeof React?.useCallback,
+      hasCreateElement: typeof React?.createElement,
+      hasMemo: typeof React?.memo,
+    };
+
     const ROUTE = '/persona-shell';
 
     /**
@@ -34,13 +47,29 @@ window.__ModuleLoader__.load({
     async function refresh(sessionId) {
       try {
         const response = await fetch(`${ROUTE}/state?session=${encodeURIComponent(sessionId)}`);
-        if (!response.ok) return;
+        if (!response.ok) {
+          // Report a rejected fetch: a non-ok answer here is the difference
+          // between "no data yet" and "the route refuses this request".
+          reportDiagnostics({ lastFetch: { ok: false, status: response.status, url: `${ROUTE}/state?session=${sessionId}` } });
+          return;
+        }
         const value = await response.json();
         const previous = states.get(sessionId);
         states.set(sessionId, value);
+        reportDiagnostics({
+          lastFetch: {
+            ok: true,
+            status: response.status,
+            rev: value?.rev,
+            rows: Array.isArray(value?.rows) ? value.rows.length : -1,
+            at: Date.now(),
+          },
+        });
         if (previous === undefined || previous.rev !== value.rev) emit();
-      } catch {
-        // The host half may be absent or restarting; the plain report stands.
+      } catch (error) {
+        reportDiagnostics({
+          lastFetch: { ok: false, error: error instanceof Error ? error.message : String(error), at: Date.now() },
+        });
       }
     }
 
@@ -119,6 +148,9 @@ window.__ModuleLoader__.load({
     function useHostState(sessionId, seq) {
       const [version, setVersion] = React.useState(0);
       React.useEffect(() => {
+        // Prove the effect body actually runs: a hook that never executes leaves
+        // no trace, and "no state" then looks identical to "no effect".
+        reportDiagnostics({ watchStarted: { sessionId: String(sessionId).slice(0, 60), seq, at: Date.now() } });
         const listener = () => setVersion((value) => value + 1);
         listeners.add(listener);
         const stop = usableSessionId(sessionId) ? watch(sessionId, seq) : () => {};
@@ -1273,7 +1305,7 @@ window.__ModuleLoader__.load({
         // stale bundle from a broken one is a heartbeat that names the build:
         // without it, "my fix did nothing" and "my fix never loaded" look the
         // same, and that ambiguity cost this plugin several rounds.
-        reportDiagnostics({ applied: true, at: Date.now() });
+        reportDiagnostics({ applied: true, at: Date.now(), reactSurface: REACT_SURFACE });
         // Heartbeat so a stale bundle is distinguishable from a broken one. The
         // desktop client has no hard reload, so without this "my fix did nothing"
         // and "my fix never loaded" look identical.
