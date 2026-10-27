@@ -162,10 +162,24 @@ export function apply(ctx, rawConfig) {
     // known harness sentence. Everything else is the user's own writing, so the
     // rule is per line rather than one big match — a single block regex ate only
     // the first line and left 560 characters of English behind.
+    //
+    // The tail of the block is prose about the agent's own tooling ("Use
+    // list_agents({}) to find your teammates…"), which has no stable prefix. It is
+    // caught by shape instead: a line that is mostly Latin and mentions a tool
+    // call is harness prose, not something a user types.
     const INJECTED_LINE = /^(?:Current runtime context\.|Current working directory:|Current DSH file policy:|Current DeepSeek Harness|Approval prompts are disabled|You are (?:the Team Lead|an AI agent)|Time sampled while preparing|Browser time zone for this request:|Elapsed since the preceding|\[model changed:|The runtime context)/;
+    const HARNESS_PROSE = /\b[A-Za-z_]+\(\{?[^)]*\}?\)|\b(?:use|Use) [a-z][A-Za-z_]+\(/;
     const kept = text
       .split('\n')
-      .filter((line) => !INJECTED_LINE.test(line.trim()));
+      .filter((line) => {
+        const trimmed = line.trim();
+        if (trimmed === '') return false;
+        if (INJECTED_LINE.test(trimmed)) return false;
+        // Mostly-Latin lines that talk about calling a tool are harness prose.
+        const han = (trimmed.match(/[\u4e00-\u9fff]/g) ?? []).length;
+        if (han === 0 && HARNESS_PROSE.test(trimmed)) return false;
+        return true;
+      });
     const trimmed = kept.join('\n').replace(/\s+/g, ' ').trim();
     return trimmed === '' ? undefined : trimmed;
   }
