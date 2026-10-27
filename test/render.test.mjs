@@ -275,6 +275,27 @@ test('the poller tracks every seq, not just the one that created it', () => {
   );
 });
 
+test('the poller is started only after its first seq is registered', () => {
+  // Regression, and the one that made the whole plugin look broken: `tick` exits
+  // immediately when nothing is watching, and it was called before the caller's
+  // seq was added. Every poller killed itself on its first tick, so no state was
+  // ever fetched — every row fell back to the plain report, with no error.
+  const source = fs.readFileSync(SOURCE, 'utf8');
+  const start = source.indexOf('function watch(');
+  const end = source.indexOf('function useHostState(');
+  assert.ok(start > 0 && end > start, 'watch() is present');
+  const body = source.slice(start, end);
+
+  const addAt = body.indexOf('poller.add(seq)');
+  const startAt = body.indexOf('start()');
+  assert.ok(addAt > 0, 'the seq is registered');
+  assert.ok(startAt > 0, 'the poller is started');
+  assert.ok(addAt < startAt, 'registration must come before the first tick');
+
+  // The old shape started ticking inside the creation branch.
+  assert.ok(!/pollers\.set\(key, poller\);\s*void tick\(\)/.test(body), 'no tick before registration');
+});
+
 test('the original is placed before the rewrite in the comparison row', () => {
   // Reading the two versions line by line only works if the original is the
   // left column; stacking it below the text forces the eye to travel.

@@ -124,9 +124,20 @@ window.__ModuleLoader__.load({
           },
         };
         pollers.set(key, poller);
-        void tick();
+        // Do NOT start ticking here. `tick` exits immediately when nothing is
+        // watching, and at this point `watched` is still empty — the caller adds
+        // its seq only after `watch` returns. Starting first made every poller
+        // kill itself on its first tick, so no state was ever fetched and the
+        // whole persona view silently fell back to the plain report.
+        poller.start = () => { void tick(); };
       }
-      return poller.add(seq);
+      const release = poller.add(seq);
+      if (typeof poller.start === 'function') {
+        const start = poller.start;
+        poller.start = undefined;
+        start();
+      }
+      return release;
     }
 
     /**
