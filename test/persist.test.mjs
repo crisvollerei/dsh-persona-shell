@@ -1,0 +1,390 @@
+// Durable behaviour: a rewrite survives a host restart, and a storage failure
+// degrades to memory-only instead of breaking rewriting.
+// Run with: node --test persona-shell/test/persist.test.mjs
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { apply } from '../index.js';
+
+/** A fake cordis context with an in-memory storageDomain shared across runs. */
+/**
+ * A fake Cordis context.
+ *
+ * `inject` runs the callback only when every named service is present, exactly
+ * like the real contract; the storage path is opened through it.
+ */
+function makeCtx({ llm, storage, webServer } = {}) {
+  const bus = new EventEmitter();
+  const services = new Map();
+  if (llm !== undefined) services.set('llm', llm);
+  if (webServer !== undefined) services.set('webServer', webServer);
+  if (storage !== undefined) services.set('storageDomain', storage);
+  return {
+    bus,
+    get: (key) => services.get(key),
+    on: (name, listener) => { bus.on(name, listener); return () => bus.off(name, listener); },
+    inject: (names, callback) => {
+      if (names.every((name) => services.has(name))) callback({ get: (key) => services.get(key) });
+      return () => {};
+    },
+    effect: (callback) => { const dispose = callback(); return typeof dispose === 'function' ? dispose : () => {}; },
+    logger: { warn: () => {}, info: () => {}, error: () => {} },
+  };
+}
+
+/**
+ * A storageDomain stand-in.
+ *
+ * Each table gets its own Map: sharing one between `sessions` and `presets`
+ * would make a preset overwrite a session row with the same key and hide the
+ * mistake behind a passing test.
+ */
+function makeStorage(blobs) {
+  const tables = new Map();
+  return {
+    async open() {
+      return {
+        table(name) {
+          if (!tables.has(name)) tables.set(name, name === 'sessions' ? blobs : new Map());
+          const backing = tables.get(name);
+          return {
+            get: (key) => backing.get(key),
+            entries: () => backing.entries(),
+            keys: () => backing.keys(),
+            put: async (key, value) => { backing.set(key, value); },
+            delete: async (key) => backing.delete(key),
+          };
+        },
+        close: async () => {},
+      };
+    },
+  };
+}
+
+/** A storageDomain whose open always rejects. */
+function makeBrokenStorage() {
+  return { open: async () => { throw new Error('storage offline'); } };
+}
+
+/** The storage facility's own unit-name rule, copied from its source. */
+const UNIT_NAME_RE = /^[a-z][a-z0-9_]*$/;
+
+/** A storageDomain that enforces the real name rule, like the shipped backend. */
+function makeStrictStorage(seen) {
+  return {
+    async open(spec) {
+      seen.push(spec.name);
+      if (!UNIT_NAME_RE.test(spec.name)) {
+        throw new Error(`invalid unit name '${spec.name}'`);
+      }
+      return {
+        table() {
+          return {
+            get: () => undefined,
+            entries: () => new Map().entries(),
+            keys: () => new Map().keys(),
+            put: async () => {},
+            delete: async () => false,
+          };
+        },
+        close: async () => {},
+      };
+    },
+  };
+}
+
+function makeLlm(answer) {
+  const calls = [];
+  return {
+    calls,
+    stream(options) {
+      calls.push(options);
+      const text = typeof answer === 'function' ? answer(options, calls.length) : answer;
+      return (async function* generate() {
+        yield { type: 'text-delta', index: 0, text };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      })();
+    },
+  };
+}
+
+function makeWebServer() {
+  const routes = [];
+  return {
+    routes,
+    register: (route) => { routes.push(route); return () => {}; },
+  };
+}
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+async function deliver(ctx, { sessionId = 's1', seq, text, provider = 'p', model = 'm' }) {
+  ctx.bus.emit('session/event', { id: sessionId }, {
+    type: 'assistant/message',
+    seq,
+    time: Date.now(),
+    data: {
+      turn: 1,
+      step: seq,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text }],
+        source: { kind: 'model', provider, model },
+      },
+      stream: [],
+    },
+  });
+  await flush();
+}
+
+async function readState(webServer, session = 's1') {
+  const route = webServer.routes.find((candidate) => candidate.path === '/persona-shell');
+  assert.ok(route, 'route registered');
+  const response = {
+    statusCode: 0, body: '',
+    writeHead(code) { this.statusCode = code; },
+    end(body) { this.body = body ?? ''; },
+  };
+  await route.handler({ url: `/persona-shell/state?session=${session}`, method: 'GET' }, response);
+  return JSON.parse(response.body);
+}
+
+test('a rewrite survives a restart', async () => {
+  const blobs = new Map();
+  const storage = makeStorage(blobs);
+
+  // First run: rewrite one step and let persistence settle.
+  const web1 = makeWebServer();
+  const ctx1 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 });
+  apply(ctx1, { enabled: true });
+  await deliver(ctx1, { seq: 5, text: '原文 `a.js`。' });
+  const first = await readState(web1);
+  assert.equal(first.rows.find((row) => row.seq === 5).status, 'ready');
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  // Second run: same storage, no rewriting needed; the page still sees the row.
+  const web2 = makeWebServer();
+  const ctx2 = makeCtx({ llm: makeLlm('不会用到'), storage, webServer: web2 });
+  apply(ctx2, { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const second = await readState(web2);
+  const restored = second.rows.find((row) => row.seq === 5);
+  assert.ok(restored, 'the row came back from storage');
+  assert.equal(restored.status, 'ready');
+  assert.ok(restored.text.includes('`a.js`'), 'the restored text is the rewrite, literals intact');
+});
+
+test('the domain name satisfies the storage facility rule', async () => {
+  // Regression: `persona-shell` and `personaShell` are both rejected by the
+  // shipped backend with "invalid unit name", which left the plugin silently
+  // memory-only. This asserts the declared name against the real rule.
+  const seen = [];
+  const web = makeWebServer();
+  const ctx = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage: makeStrictStorage(seen), webServer: web });
+  apply(ctx, { enabled: true });
+  await deliver(ctx, { seq: 11, text: '原文 `d.js`。' });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  assert.equal(seen.length, 1, 'the domain was opened');
+  assert.match(seen[0], UNIT_NAME_RE, `domain name "${seen[0]}" must match the facility rule`);
+});
+
+test('a broken storage service degrades to memory-only', async () => {
+  const web = makeWebServer();
+  const llm = makeLlm('壳版 [[0]]。');
+  const ctx = makeCtx({ llm, storage: makeBrokenStorage(), webServer: web });
+  apply(ctx, { enabled: true });
+
+  await deliver(ctx, { seq: 7, text: '原文 `b.js`。' });
+  const state = await readState(web);
+  const row = state.rows.find((candidate) => candidate.seq === 7);
+  assert.equal(row.status, 'ready', 'rewriting still works without storage');
+  assert.equal(llm.calls.length, 1);
+});
+
+test('no storage service at all still rewrites', async () => {
+  const web = makeWebServer();
+  const ctx = makeCtx({ llm: makeLlm('壳版 [[0]]。'), webServer: web });
+  apply(ctx, { enabled: true });
+  await deliver(ctx, { seq: 9, text: '原文 `c.js`。' });
+  const state = await readState(web);
+  assert.equal(state.rows.find((row) => row.seq === 9).status, 'ready');
+});
+
+test('the active preset survives a restart', async () => {
+  // Regression: the selection lived only in memory. Switching persona worked
+  // until the process restarted and then silently reverted to the default, which
+  // is indistinguishable from the switch never having taken effect.
+  const blobs = new Map();
+  const storage = makeStorage(blobs);
+
+  const web1 = makeWebServer();
+  const ctx1 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 });
+  apply(ctx1, { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const route1 = web1.routes.find((candidate) => candidate.path === '/persona-shell');
+  const saveResponse = {
+    statusCode: 0, body: '',
+    writeHead(code) { this.statusCode = code; },
+    end(body) { this.body = body ?? ''; },
+  };
+  const payload = JSON.stringify({
+    action: 'save',
+    name: '测试预设',
+    pack: { identity: '测试用身份，自称「吾」。' },
+  });
+  await route1.handler({
+    url: '/persona-shell/presets',
+    method: 'POST',
+    async *[Symbol.asyncIterator]() { yield payload; },
+  }, saveResponse);
+  assert.equal(saveResponse.statusCode, 200);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  // Second run: same storage, fresh process.
+  const web2 = makeWebServer();
+  const ctx2 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 });
+  apply(ctx2, { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const route2 = web2.routes.find((candidate) => candidate.path === '/persona-shell');
+  const settingsResponse = {
+    statusCode: 0, body: '',
+    writeHead(code) { this.statusCode = code; },
+    end(body) { this.body = body ?? ''; },
+  };
+  await route2.handler({ url: '/persona-shell/settings', method: 'GET' }, settingsResponse);
+  const restored = JSON.parse(settingsResponse.body);
+
+  assert.equal(restored.settings.presetName, '测试预设', 'the selection came back');
+  assert.ok(restored.settings.pack.identity.includes('吾'), 'and so did its pack');
+});
+
+/** POST a JSON body to one of the plugin's routes and return the parsed reply. */
+async function postJson(webServer, path, body) {
+  const route = webServer.routes.find((candidate) => candidate.path === '/persona-shell');
+  assert.ok(route, 'route registered');
+  const response = {
+    statusCode: 0, body: '',
+    writeHead(code) { this.statusCode = code; },
+    end(payload) { this.body = payload ?? ''; },
+  };
+  const text = JSON.stringify(body);
+  await route.handler({
+    url: path,
+    method: 'POST',
+    async *[Symbol.asyncIterator]() { yield text; },
+  }, response);
+  return { status: response.statusCode, value: JSON.parse(response.body) };
+}
+
+/** GET one of the plugin's routes and return the parsed reply. */
+async function getJson(webServer, path) {
+  const route = webServer.routes.find((candidate) => candidate.path === '/persona-shell');
+  assert.ok(route, 'route registered');
+  const response = {
+    statusCode: 0, body: '',
+    writeHead(code) { this.statusCode = code; },
+    end(payload) { this.body = payload ?? ''; },
+  };
+  await route.handler({ url: path, method: 'GET' }, response);
+  return { status: response.statusCode, value: JSON.parse(response.body) };
+}
+
+test('a new message after a restart does not erase the stored history', async () => {
+  // Regression: the persist write replaces the whole session blob, but it wrote
+  // whatever was in memory. After a restart that is only the rows this process
+  // created, so the first new message wiped every stored row for that session.
+  const blobs = new Map();
+  const storage = makeStorage(blobs);
+
+  const web1 = makeWebServer();
+  const ctx1 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 });
+  apply(ctx1, { enabled: true });
+  await deliver(ctx1, { seq: 5, text: '原文 `a.js`。' });
+  await deliver(ctx1, { seq: 9, text: '原文 `b.js`。' });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  const stored = blobs.get('s1');
+  assert.equal(stored.length, 2, 'both rows were stored');
+
+  // Second run: one new message, without opening the old session first.
+  const web2 = makeWebServer();
+  const ctx2 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 });
+  apply(ctx2, { enabled: true });
+  await deliver(ctx2, { seq: 13, text: '原文 `c.js`。' });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  const after = blobs.get('s1');
+  assert.equal(after.length, 3, 'the older rows survived the write');
+  assert.deepEqual(after.map((row) => row.seq), [5, 9, 13], 'and kept their order');
+});
+
+test('editing the card is written back into the active preset', async () => {
+  // Regression: a pack edit changed only the in-memory settings. The presets
+  // table kept the old card, so the next restart restored it and the edit looked
+  // like it had never been saved.
+  const blobs = new Map();
+  const storage = makeStorage(blobs);
+
+  const web1 = makeWebServer();
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 }), { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  await postJson(web1, '/persona-shell/presets', {
+    action: 'save',
+    name: '可编辑预设',
+    pack: { identity: '初始身份。', report: ['原始规则。'] },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  // The user edits the report rules, exactly as the settings page does.
+  await postJson(web1, '/persona-shell/settings', {
+    pack: { identity: '初始身份。', report: ['改过的规则。'] },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // Fresh process, same storage.
+  const web2 = makeWebServer();
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 }), { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const restored = await getJson(web2, '/persona-shell/settings');
+  assert.deepEqual(
+    restored.value.settings.pack.report,
+    ['改过的规则。'],
+    'the edit survived the restart',
+  );
+});
+
+test('editing the builtin preset forks a new one instead of overwriting it', async () => {
+  // The builtin has to stay pristine: it is the way back to the shipped
+  // character. An edit therefore lands in a new preset.
+  const blobs = new Map();
+  const web = makeWebServer();
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage: makeStorage(blobs), webServer: web }), { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const before = await getJson(web, '/persona-shell/presets');
+  const builtin = before.value.presets.find((preset) => preset.builtin === true);
+  assert.ok(builtin, 'a builtin preset exists');
+
+  await postJson(web, '/persona-shell/settings', {
+    pack: { identity: '改过的内置身份。', report: ['改过的规则。'] },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const after = await getJson(web, '/persona-shell/presets');
+  const stillBuiltin = after.value.presets.find((preset) => preset.builtin === true);
+  assert.ok(
+    !stillBuiltin.pack.identity.includes('改过的内置身份'),
+    'the builtin card was not overwritten',
+  );
+  assert.notEqual(after.value.active, builtin.name, 'the edit moved to a new preset');
+  assert.ok(
+    after.value.presets.some((preset) => preset.name === after.value.active),
+    'the new preset is in the list',
+  );
+});

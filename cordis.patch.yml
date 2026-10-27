@@ -1,0 +1,13 @@
+- insert:
+    - id: persona-shell
+      name: '@local/dsh-persona-shell'
+      config:
+        enabled: true
+        trigger: step
+        provider: ''
+        model: ''
+        reasoningEffort: ''
+        maxRewriteChars: 6000
+        maxRatio: 1.35
+        timeoutMs: 45000
+        keepSamples: 2

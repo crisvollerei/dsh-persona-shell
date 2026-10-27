@@ -1,0 +1,14 @@
+{
+  "meta": {
+    "title": "Persona Shell",
+    "description": "Re-speaks each assistant report in a persona, outside the working prompt, with the original shown side by side."
+  },
+  "shell": {
+    "showOriginal": "Original",
+    "hideOriginal": "Hide original",
+    "rewriting": "…",
+    "failed": "kept the plain report",
+    "originalLabel": "Original",
+    "personaLabel": "Persona"
+  }
+}

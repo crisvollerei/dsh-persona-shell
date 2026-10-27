@@ -1,0 +1,14 @@
+{
+  "meta": {
+    "title": "人格套壳",
+    "description": "在系统提示词之外，为每条助手汇报套一层人格化转述，原文并排可查。"
+  },
+  "shell": {
+    "showOriginal": "原文",
+    "hideOriginal": "收起原文",
+    "rewriting": "…",
+    "failed": "已保留原汇报",
+    "originalLabel": "原文",
+    "personaLabel": "人格版"
+  }
+}
