@@ -251,7 +251,11 @@ window.__ModuleLoader__.load({
         void fetch(`${ROUTE}/diagnostics`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
+          // Every report carries the build id. The page cannot be force-reloaded
+          // in the desktop client, so "is the running code the installed code?"
+          // is otherwise unanswerable — and a stale bundle silently invalidates
+          // every fix made since the last restart.
+          body: JSON.stringify({ clientBuild: CLIENT_BUILD, ...payload }),
         }).catch(() => {});
       } catch {
         // Diagnostics must never interfere with rendering.
@@ -1264,10 +1268,26 @@ window.__ModuleLoader__.load({
        */
       __testing: { rowBranch, renderMarkdown, unmaskPartial, HOLD_PLACEHOLDER_MS },
       apply(ctx) {
-        // Announce this build as soon as the plugin is applied. The host keeps
-        // the last report, so "the page is running the installed code" becomes a
-        // fact to read rather than something to hope for.
-        reportDiagnostics({ clientBuild: CLIENT_BUILD, applied: true, at: Date.now() });
+        // Announce this build as soon as the plugin is applied, then keep saying
+        // so. The desktop client has no hard reload, so the only way to tell a
+        // stale bundle from a broken one is a heartbeat that names the build:
+        // without it, "my fix did nothing" and "my fix never loaded" look the
+        // same, and that ambiguity cost this plugin several rounds.
+        reportDiagnostics({ applied: true, at: Date.now() });
+        // Heartbeat so a stale bundle is distinguishable from a broken one. The
+        // desktop client has no hard reload, so without this "my fix did nothing"
+        // and "my fix never loaded" look identical.
+        //
+        // Wrapped in try/catch on purpose: diagnostics are a convenience, and a
+        // missing timer global must never take the whole plugin down with it.
+        try {
+          const heartbeat = setInterval(() => {
+            reportDiagnostics({ heartbeat: Date.now() });
+          }, 30000);
+          if (typeof heartbeat?.unref === 'function') heartbeat.unref();
+        } catch {
+          // No timers here; the apply-time report is still enough to prove a load.
+        }
 
         // A lower priority than the shipped `assistant-step` entry shadows it;
         // disposing this registration restores the shipped renderer.
