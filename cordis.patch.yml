@@ -1,6 +1,6 @@
 - insert:
     - id: persona-shell
-      name: '@local/dsh-persona-shell'
+      name: 'dsh-persona-shell'
       config:
         enabled: true
         trigger: step

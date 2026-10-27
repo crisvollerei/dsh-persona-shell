@@ -1,14 +1,32 @@
 {
-  "name": "@local/dsh-persona-shell",
+  "name": "dsh-persona-shell",
   "version": "0.1.0",
-  "private": true,
+  "description": "Layer every assistant report in a persona outside the working prompt, with the original one click away.",
   "type": "module",
-  "description": "Layer the final assistant report in a persona without injecting persona text into the working prompt.",
+  "main": "index.js",
+  "license": "MIT",
+  "author": "crisvollerei",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/crisvollerei/dsh-persona-shell.git"
+  },
+  "homepage": "https://github.com/crisvollerei/dsh-persona-shell#readme",
+  "bugs": {
+    "url": "https://github.com/crisvollerei/dsh-persona-shell/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "persona",
+    "plugin"
+  ],
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.png"
+    "./icon": "./icon.png",
+    "./package.json": "./package.json"
   },
   "files": [
     "index.js",

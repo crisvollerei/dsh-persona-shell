@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-persona-shell',
+  id: 'dsh-persona-shell',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
