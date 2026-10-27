@@ -186,6 +186,20 @@ test('restored history does not wait out a placeholder', () => {
   assert.equal(rowBranch(undefined, false), 'plain', 'unknown freshness is not treated as fresh');
 });
 
+test('freshness is decided by seq, not by having any state at all', () => {
+  // Regression: `fresh` used to be `state !== undefined`, so every restored row
+  // counted as fresh and every new row rendered plain text first, swapping to the
+  // persona a moment later — the flash the placeholder exists to prevent.
+  const source = fs.readFileSync(SOURCE, 'utf8');
+  const start = source.indexOf('const newestKnown');
+  const end = source.indexOf('const branch = rowBranch', start);
+  assert.ok(start > 0 && end > start, 'the freshness computation is present');
+  const block = source.slice(start, end);
+
+  assert.match(block, /Math\.max\(\.\.\.state\.rows\.map/, 'the newest known seq is computed');
+  assert.match(block, /seq > newestKnown/, 'a step is fresh only when newer than that');
+});
+
 test('a row whose rewrite already failed shows the plain report immediately', () => {
   // A settled-without-text row will never produce persona text, so promising one
   // and making the reader wait out the hold window would be worse than useless.

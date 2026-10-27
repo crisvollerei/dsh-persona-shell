@@ -137,6 +137,21 @@ test('a version-1 profile is rejected instead of half-read', () => {
   assert.deepEqual(memoryLines(legacy, 'p'), [], 'the stale shape yields nothing');
 });
 
+test('a pasted document does not skew the shared proportions', () => {
+  // Real bug: a long block of English technical text outweighed the user's own
+  // short Chinese messages, so a Chinese writer measured as 5% Chinese. The
+  // proportions must come from ordinary messages only.
+  let profile = emptyProfile();
+  for (let i = 0; i < 25; i += 1) profile = observeMessage(profile, '帮我看一下这个配置文件对不对。');
+  const before = profile.totalChars;
+
+  const document = 'The quick brown fox jumps over the lazy dog. '.repeat(60);
+  profile = observeMessage(profile, document);
+
+  assert.equal(profile.totalChars, before, 'the document contributed nothing');
+  assert.equal(summarizeProfile(profile).language, '中文', 'the writer is still Chinese');
+});
+
 test('the profile stores counters, never message text', () => {
   // Privacy boundary: a restart may lose the numbers, but nothing stored can
   // reconstruct what the user actually wrote.

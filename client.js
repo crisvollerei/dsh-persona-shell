@@ -19,6 +19,10 @@ window.__ModuleLoader__.load({
 
     /** sessionId → newest state payload from the host half. */
     const states = new Map();
+    /** seq → last rendered branch, for spotting a visible flash. */
+    const branchHistory = new Map();
+    /** seq → the branch sequence, capped. */
+    const diagnosticsTrail = new Map();
     const listeners = new Set();
     /** `${sessionId}` → poll handle, so several steps share one timer. */
     const pollers = new Map();
@@ -468,12 +472,15 @@ window.__ModuleLoader__.load({
       // A rewrite that already failed will never arrive, so the report is the
       // honest answer immediately.
       if (row !== undefined && row.status !== 'pending') return 'plain';
-      // No row yet: either a rewrite is in flight, or this session was just
-      // opened and the state has not arrived. Only the first deserves a
-      // placeholder — using one for the second filled a whole restored
-      // transcript with blank boxes until the state caught up.
-      if (row === undefined) return fresh && !conceded ? 'placeholder' : 'plain';
-      return conceded ? 'plain' : 'placeholder';
+      // A pending row is the only case where text is genuinely on its way.
+      if (row !== undefined) return conceded ? 'plain' : 'placeholder';
+      // No row at all: the state has not caught up with this step yet. Showing
+      // the report here is what produced the flash — the row is new, its rewrite
+      // is being computed, and the plain text appeared first and was replaced a
+      // moment later. A placeholder is the honest body for that gap, but only for
+      // a step that just arrived; a restored history row would otherwise sit on a
+      // blank box until its fetch landed.
+      return fresh && !conceded ? 'placeholder' : 'plain';
     }
 
     /**
@@ -529,13 +536,34 @@ window.__ModuleLoader__.load({
       if (hasNonText(data)) return null;
 
       const row = state?.rows?.find((candidate) => candidate.seq === seq);
-      // A step is "fresh" when this session's state had already loaded before the
-      // step appeared: then a rewrite is plausibly in flight and a short
-      // placeholder is honest. On first paint `state` is undefined — that is the
-      // restored-history case, where nothing is coming and a placeholder would
-      // blank the whole transcript until the fetch lands.
-      const fresh = state !== undefined;
+      // A step is "fresh" when it is newer than anything the state has reported:
+      // that is exactly the moment its rewrite is being computed, and the only
+      // window where a placeholder is honest. Older steps already have their row
+      // (or are history whose rewrite will never come), so they render at once.
+      //
+      // Using `state !== undefined` here was too broad: every restored row counted
+      // as fresh, and every new row rendered plain text first and swapped to the
+      // persona a moment later — the flash this is meant to prevent.
+      const newestKnown = state?.rows?.length > 0
+        ? Math.max(...state.rows.map((entry) => entry.seq))
+        : undefined;
+      const fresh = newestKnown !== undefined && seq > newestKnown;
       const branch = rowBranch(row, conceded, fresh);
+      // Record the first branch a row takes, and any change after it. "Plain
+      // first, persona later" is a visible flash, and this is the only way to see
+      // whether it came from a placeholder timeout, a transient skipped row, or a
+      // second render with different data.
+      const branchKey = `${seq}`;
+      const previousBranch = branchHistory.get(branchKey);
+      if (previousBranch !== branch) {
+        branchHistory.set(branchKey, branch);
+        const trace = diagnosticsTrail.get(branchKey) ?? [];
+        trace.push({ branch, at: Date.now() });
+        diagnosticsTrail.set(branchKey, trace.slice(-4));
+        if (trace.length <= 4) {
+          reportDiagnostics({ branchTrail: { [branchKey]: trace } });
+        }
+      }
 
       if (branch === 'placeholder') {
         return h('div', null, h('div', { style: placeholderStyle }, placeholderText(t)));
