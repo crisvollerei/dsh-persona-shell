@@ -243,7 +243,7 @@ persona-shell/
   lib/config.js       Config（Standard Schema）
   lib/store.js        套壳结果的持久化
   cordis.patch.yml    行定义
-  test/               86 项离线测试
+  test/               88 项离线测试
 ```
 
 ## 配置
@@ -283,7 +283,7 @@ cd persona-shell
 node --test 'test/*.test.mjs'
 ```
 
-86 项：
+88 项：
 
 | 文件                 | 覆盖                                                                                |
 | ------------------ | --------------------------------------------------------------------------------- |
@@ -293,6 +293,7 @@ node --test 'test/*.test.mjs'
 | `persist.test.mjs` | 重启后结果恢复、**域名符合存储设施规则**、存储损坏降级、无存储仍可用                                              |
 | `memory.test.mjs`  | **样本不足不下结论**、**技术内容不稀释语言判定**、任务指令不被当成风格反馈、**只存计数不存原文**                               |
 | `preset.test.mjs`  | **提取提示词要求翻译而非总结**、JSON 容错、缺 identity 拒绝、错类型字段丢弃                                    |
+| `lifecycle.test.mjs` | **启动窗口内不采集记忆**（保存的开关未恢复前）、**卸载返回的 Promise 在存储真正关闭后才 resolve**                          |
 
 ## 人格卡（`lib/pack.js`）
 

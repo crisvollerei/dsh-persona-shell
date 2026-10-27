@@ -166,6 +166,15 @@ export function apply(ctx, rawConfig) {
   let storeState = 'opening';
   let storeError = '';
 
+  /**
+   * Whether the persisted switches have been applied.
+   *
+   * False until the storage facility has been read (or has definitively failed).
+   * Memory collection waits for it: the defaults are permissive, so collecting
+   * before the real values arrive violates a switch the user already turned off.
+   */
+  let settingsRestored = false;
+
   /** `${sessionId}:${seq}` → row. */
   const rows = new Map();
   /** sessionId → newest revision counter. */
@@ -464,7 +473,7 @@ export function apply(ctx, rawConfig) {
    * @param {string} sessionId
    */
   function flushPersist(sessionId) {
-    if (store === undefined) return;
+    if (store === undefined) return Promise.resolve();
     // Pull the stored rows in first. The write replaces the whole session blob,
     // so persisting a session that was never hydrated would erase every row this
     // process has not touched yet — which is exactly what a restart plus one new
@@ -473,7 +482,7 @@ export function apply(ctx, rawConfig) {
     const own = [];
     for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
     own.sort((a, b) => a.seq - b.seq);
-    store.put(sessionId, own.map((row) => ({
+    return store.put(sessionId, own.map((row) => ({
       seq: row.seq,
       status: row.status,
       text: row.text,
@@ -898,7 +907,13 @@ export function apply(ctx, rawConfig) {
     // it off must stop collection as well as use — otherwise the profile keeps
     // growing while the UI says the feature is off, which is a privacy promise
     // broken silently.
-    if (settings.memory === true && isUserMessage(event)) {
+    //
+    // `settingsRestored` guards the startup window. The stored switches arrive
+    // asynchronously, so between `apply` and the storage opening, `settings.memory`
+    // still holds its default `true` — a user who had switched memory off would
+    // have their first messages collected and persisted before the saved value
+    // came back. Collection waits until the real value is known.
+    if (settings.memory === true && settingsRestored && isUserMessage(event)) {
       const text = stripInjectedContext(userTextOf(event));
       if (text !== undefined && !looksLikePastedPersona(text)) observeUserText(text);
     }
@@ -1074,15 +1089,26 @@ export function apply(ctx, rawConfig) {
           if (typeof savedSettings[key] === 'string') settings[key] = savedSettings[key];
         }
       }
+      // The switches are now authoritative; memory collection may resume.
+      settingsRestored = true;
     }, (error) => {
       storeState = 'failed';
       storeError = error instanceof Error ? error.message : String(error);
+      // Nothing can be restored, so the in-memory defaults are the truth. Holding
+      // collection back forever would disable a feature the user may want, and
+      // there is no saved value to contradict them.
+      settingsRestored = true;
       warn('storage failed; rewrites are memory-only', error);
     });
   };
   ctx.inject(['storageDomain'], () => {
     openWhenAvailable();
   });
+  // If the facility is already present, `inject` runs synchronously and the flag
+  // is settled by the callback above. When it is absent there is nothing to
+  // restore, so the defaults are authoritative and collection may proceed —
+  // otherwise a composition without storage would never learn anything.
+  if (ctx.get('storageDomain') === undefined) settingsRestored = true;
 
   // ---------------------------------------------------------------------------
   // Client route: same-origin JSON, so the page needs no Remote codegen.
@@ -1436,32 +1462,27 @@ export function apply(ctx, rawConfig) {
     storeClosing = true;
     // Stop accepting new work first, then drain.
     //
-    // Two separate bugs lived here: the memory timer was never cleared, so it
-    // fired after `store` was undefined and threw `Cannot read properties of
-    // undefined (reading 'putProfile')`; and the 400ms coalesced writes were
-    // cancelled without flushing, so a row that had just settled was simply lost.
+    // Three separate bugs lived here: the memory timer was never cleared, so it
+    // fired after `store` was undefined and threw; the 400ms coalesced writes were
+    // cancelled without flushing, so a row that had just settled was lost; and the
+    // close was fire-and-forget, so a plugin reloaded immediately afterwards found
+    // the domain still closing and failed to open it — `already-open` — and then
+    // stayed memory-only for the rest of that process, because nothing retries.
     if (profileTimer !== undefined) {
       clearTimeout(profileTimer);
       profileTimer = undefined;
     }
-    // Drain the profile too, not just the session rows.
-    //
-    // Clearing the timer alone discarded pending observations — and worse,
-    // resurrected memory the user had just cleared: the cleared profile was
-    // scheduled to be written, the timer was cancelled on unload, and the stored
-    // samples came back on the next start.
+    // Collect the writes to await. `putProfile` is awaited below so the final
+    // state reaches the backend before the domain is torn down.
+    const pending = [];
     if (store !== undefined) {
-      store.putProfile(profile).catch((error) => warn('profile flush failed', error));
+      pending.push(store.putProfile(profile).catch((error) => warn('profile flush failed', error)));
     }
     for (const [sessionId, timer] of persistTimers) {
       clearTimeout(timer);
-      flushPersist(sessionId);
+      pending.push(flushPersist(sessionId));
     }
     persistTimers.clear();
-    if (store !== undefined) {
-      void store.close().catch((error) => warn('store close failed', error));
-      store = undefined;
-    }
     rows.clear();
     revisions.clear();
     samples.clear();
@@ -1469,5 +1490,14 @@ export function apply(ctx, rawConfig) {
     turnState.clear();
     candidates.clear();
     inFlight.clear();
+
+    const closing = store;
+    store = undefined;
+    if (closing === undefined) return;
+    // Return the promise: the Cordis unload path awaits a returned thenable, which
+    // is what makes "closed" mean closed. Without it a reload races the teardown.
+    return Promise.allSettled(pending)
+      .then(() => closing.close())
+      .catch((error) => warn('store close failed', error));
   }, 'persona-shell.dispose');
 }
