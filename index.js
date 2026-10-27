@@ -1189,6 +1189,28 @@ export function apply(ctx, rawConfig) {
     // itself. Without this the routes answered unauthenticated requests from any
     // origin, which exposes rewrite text, settings, preset deletion, and — worst —
     // an endpoint that spends model quota on demand.
+    // Unauthenticated liveness probe, answered before the auth check.
+    //
+    // It exposes no rewrite text, no settings and no session ids: only whether the
+    // plugin is mounted, whether the renderer resolved, and version markers. The
+    // full diagnostics endpoint stays behind authentication, but without this the
+    // plugin's health is unobservable from outside the page — and "the plugin is
+    // broken" and "the page cannot authenticate" look identical from here.
+    if (path === `${ROUTE}/ping`) {
+      sendJson(res, 200, {
+        ok: true,
+        clientBuild: diagnostics.clientBuild ?? null,
+        shippedMarkdown: diagnostics.shippedMarkdown ?? 'unknown',
+        storage: storeState,
+        rows: rows.size,
+        auth: diagnostics.auth ?? null,
+        heartbeatAge: typeof diagnostics.heartbeat === 'number'
+          ? Date.now() - diagnostics.heartbeat
+          : null,
+      });
+      return;
+    }
+
     const rejection = requestRejection(req);
     if (rejection !== undefined) {
       sendJson(res, rejection, { error: rejection === 401 ? 'unauthorized' : 'forbidden' });
