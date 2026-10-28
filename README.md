@@ -53,6 +53,28 @@
 
 需要已支持插件管理的 **DSH Desktop 或 Web**。开发与验证基于 `0.2.1-rc.3`，其他版本的兼容性请以实际使用为准。
 
+### 从 npm 安装（推荐）
+
+```bash
+dsh plugin --profile <profile> add dsh-persona-shell
+```
+
+也可以在侧边栏 **Plugins → Add plugin** 中选择 **Install a third-party plugin**，填入包名 `dsh-persona-shell`。
+
+### 从 GitHub Release 安装（Tarball）
+
+从 [Releases](https://github.com/crisvollerei/dsh-persona-shell/releases) 下载当前版本的 `dsh-persona-shell-<version>.tgz`，然后在 **Plugins → Add plugin** 中选择 **Install a third-party plugin**，填入下载链接，例如：
+
+```text
+https://github.com/crisvollerei/dsh-persona-shell/releases/download/v0.4.4/dsh-persona-shell-0.4.4.tgz
+```
+
+也可以下载后通过 CLI 安装本地 tarball：
+
+```bash
+dsh plugin --profile <profile> add ./dsh-persona-shell-0.4.4.tgz
+```
+
 ### 从 Git 仓库安装
 
 1. 在侧边栏打开 **Plugins → Add plugin**。
@@ -197,7 +219,7 @@ node --test 'test/*.test.mjs'
 
 ### 版本约定
 
-每次改动只递增补丁号（`0.0.1`），不跳 minor：当前 `0.4.3`，下一次变更版本为 `0.4.4`。
+每次改动只递增补丁号（`0.0.1`），不跳 minor：当前 `0.4.4`，下一次变更版本为 `0.4.5`。
 
 <details>
 <summary>源码导览</summary>
