@@ -18,7 +18,7 @@
  */
 
 import { mask, unmask } from './lib/mask.js';
-import { DEFAULT_PACK, normalizePack } from './lib/pack.js';
+import { BUILTIN_PRESETS, normalizePack } from './lib/pack.js';
 import { buildExtractPrompt, parseExtractedPreset } from './lib/preset.js';
 import { buildRewritePrompt, rewriteDistance, validateRewrite } from './lib/prompt.js';
 import { Config, resolveConfig } from './lib/config.js';
@@ -45,7 +45,7 @@ const MAX_PRESETS = 30;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 20261027;
+const HOST_BUILD = 20261028;
 
 /**
  * How often a streaming rewrite may publish a new partial revision.
@@ -184,18 +184,18 @@ export function apply(ctx, rawConfig) {
   /**
    * Named persona presets, newest last.
    *
-   * The shipped default is always present and not deletable: there has to be a
-   * way back, and "reset to the character this plugin was built around" should
-   * not depend on the user having kept a copy.
+   * The shipped presets are always present and not deletable: there has to be a
+   * way back to the characters this plugin was built around, and that must not
+   * depend on the user having kept a copy.
    */
-  let presets = [{
-    id: DEFAULT_PRESET_NAME,
-    name: DEFAULT_PRESET_NAME,
-    pack: normalizePack(undefined),
+  let presets = BUILTIN_PRESETS.map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    pack: normalizePack(entry.pack),
     source: '',
     builtin: true,
     at: 0,
-  }];
+  }));
 
   /**
    * Last self-report from a page: whether the shipped markdown renderer
@@ -354,6 +354,11 @@ export function apply(ctx, rawConfig) {
   /** Recent memory samples, for diagnosing a surprising ratio. */
   const memorySamples = [];
 
+  /** Whether a name is reserved by a shipped preset. */
+  function isBuiltinName(name) {
+    return presets.some((preset) => preset.builtin === true && preset.name === name);
+  }
+
   /** Id of the preset currently in force, used to scope corrections. */
   function activePresetId() {
     const active = presets.find((preset) => preset.name === settings.presetName);
@@ -395,8 +400,10 @@ export function apply(ctx, rawConfig) {
 
     if (presets.length >= MAX_PRESETS) return settings.presetName;
 
-    // Fork from the builtin (or from a name that no longer resolves).
-    const base = settings.presetName === DEFAULT_PRESET_NAME ? '自定义' : settings.presetName;
+    // Fork from the active shipped preset (or from a name that no longer resolves).
+    const base = active?.builtin === true
+      ? (active.name === DEFAULT_PRESET_NAME ? '自定义' : active.name)
+      : settings.presetName;
     let name = `${base} 2`;
     for (let index = 3; presets.some((preset) => preset.name === name); index += 1) {
       name = `${base} ${index}`;
@@ -1119,13 +1126,13 @@ export function apply(ctx, rawConfig) {
       }
       if (profile.messages > 0) scheduleProfileSave();
 
-      // Restore saved presets, keeping the shipped default first and always
+      // Restore saved presets, keeping every shipped preset first and always
       // present even if the stored copy is missing or corrupt.
       const savedPresets = opened.listPresets();
-      const restored = [presets[0]];
+      const restored = presets.filter((preset) => preset.builtin === true);
       for (const raw of savedPresets) {
         if (raw === null || typeof raw !== 'object' || typeof raw.id !== 'string') continue;
-        if (raw.id === DEFAULT_PRESET_NAME) continue;
+        if (restored.some((preset) => preset.id === raw.id)) continue;
         restored.push({ ...raw, pack: normalizePack(raw.pack) });
       }
       presets = restored.slice(0, MAX_PRESETS);
@@ -1393,7 +1400,7 @@ export function apply(ctx, rawConfig) {
       if (action === 'save') {
         const name = typeof body.name === 'string' ? body.name.trim().slice(0, 40) : '';
         if (name === '') { sendJson(res, 400, { error: 'name required' }); return; }
-        if (name === DEFAULT_PRESET_NAME) { sendJson(res, 400, { error: 'reserved name' }); return; }
+        if (isBuiltinName(name)) { sendJson(res, 400, { error: 'reserved name' }); return; }
 
         // Re-saving under an existing name replaces it, which is what "update
         // this preset after editing it" means to a user.
@@ -1429,7 +1436,7 @@ export function apply(ctx, rawConfig) {
         if (target === undefined) { sendJson(res, 404, { error: 'preset not found' }); return; }
         if (target.builtin === true) { sendJson(res, 400, { error: 'builtin preset cannot be renamed' }); return; }
         if (name === '') { sendJson(res, 400, { error: 'name required' }); return; }
-        if (name === DEFAULT_PRESET_NAME) { sendJson(res, 400, { error: 'reserved name' }); return; }
+        if (isBuiltinName(name)) { sendJson(res, 400, { error: 'reserved name' }); return; }
         if (presets.some((preset) => preset.id !== id && preset.name === name)) {
           sendJson(res, 400, { error: 'name already used' });
           return;

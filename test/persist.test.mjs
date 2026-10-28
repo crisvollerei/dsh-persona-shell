@@ -262,6 +262,40 @@ test('the active preset survives a restart', async () => {
   assert.ok(restored.settings.pack.identity.includes('吾'), 'and so did its pack');
 });
 
+test('the second shipped persona survives a restart and stays selectable', async () => {
+  // Both shipped presets must be present in a fresh profile, and choosing the
+  // non-default one must persist by id across a restart. A restore that kept
+  // only `presets[0]` would silently drop Claude小姐 and reset the user to 大肥鱼.
+  const blobs = new Map();
+  const storage = makeStorage(blobs);
+
+  const web1 = makeWebServer();
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 }), { enabled: true, allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const before = await getJson(web1, '/persona-shell/presets');
+  assert.deepEqual(
+    before.value.presets.map((preset) => preset.name).slice(0, 2),
+    ['大肥鱼（默认）', 'Claude小姐'],
+    'both shipped presets are listed first',
+  );
+  const claude = before.value.presets.find((preset) => preset.name === 'Claude小姐');
+  assert.equal(claude.builtin, true, 'the second preset is builtin and cannot be deleted');
+
+  const applied = await postJson(web1, '/persona-shell/presets', { action: 'apply', id: claude.id });
+  assert.equal(applied.status, 200);
+  assert.equal(applied.value.active, 'Claude小姐');
+
+  // Fresh process, same storage.
+  const web2 = makeWebServer();
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 }), { enabled: true, allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const restored = await getJson(web2, '/persona-shell/settings');
+  assert.equal(restored.value.settings.presetName, 'Claude小姐', 'the selection came back');
+  assert.match(restored.value.settings.pack.identity, /Claude小姐/, 'and so did its pack');
+});
+
 /** POST a JSON body to one of the plugin's routes and return the parsed reply. */
 async function postJson(webServer, path, body) {
   const route = webServer.routes.find((candidate) => candidate.path === '/persona-shell');

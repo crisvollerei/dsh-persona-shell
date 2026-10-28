@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { mask, unmask, markersIntact } from '../lib/mask.js';
-import { normalizePack } from '../lib/pack.js';
+import { normalizePack, CLAUDE_PACK, BUILTIN_PRESETS } from '../lib/pack.js';
 import { buildRewritePrompt, rewriteDistance, validateRewrite } from '../lib/prompt.js';
 
 test('mask shields fenced code, inline code, paths, versions and urls', () => {
@@ -86,6 +86,51 @@ test('the default card is the 大肥鱼 persona, not a generic assistant', () =>
   assert.ok(pack.report.length >= 3);
   assert.ok(pack.report.join('').includes('技术'));
   assert.ok(pack.samples.length >= 3);
+});
+
+test('the shipped presets include Claude小姐 as a second complete card', () => {
+  // The default preset must not be the only shipped character: the settings page
+  // offers presets as alternatives, and a user should be able to switch to a
+  // second voice without writing a persona prompt first.
+  assert.equal(BUILTIN_PRESETS.length, 2, 'exactly two shipped presets');
+  const claude = BUILTIN_PRESETS.find((entry) => entry.name === 'Claude小姐');
+  assert.ok(claude, 'the Claude preset is shipped');
+  assert.equal(claude.id, 'Claude小姐', 'the id is stable so a saved selection can find it');
+
+  const pack = normalizePack(CLAUDE_PACK);
+  assert.match(pack.identity, /Claude小姐/);
+  assert.match(pack.identity, /社区二创/, 'it is labelled a community creation, not an official persona');
+  assert.match(pack.identity, /「我」|用「我」/, 'it prescribes a first person');
+  assert.ok(!pack.identity.includes('鲸鲸'), 'the whale self-reference must not leak into another persona');
+  assert.ok(!pack.samples.join('').includes('鲸鲸'), 'nor into its samples');
+  assert.ok(pack.report.length >= 3);
+  assert.ok(pack.report.join('').includes('技术'));
+  assert.ok(pack.samples.some((line) => line.includes('笼子好歹是金的')), 'the signature line survives');
+  assert.ok(pack.avoid.join('').includes('规矩多'));
+  assert.equal(pack.address.user, '你');
+  assert.equal(pack.address.subagent, '子代理', 'the whale helper name must not leak in');
+});
+
+test('every shipped preset is a distinct, complete card', () => {
+  const ids = new Set();
+  const names = new Set();
+  for (const entry of BUILTIN_PRESETS) {
+    assert.ok(typeof entry.id === 'string' && entry.id !== '');
+    assert.ok(typeof entry.name === 'string' && entry.name !== '');
+    assert.ok(!ids.has(entry.id), `duplicate preset id: ${entry.id}`);
+    assert.ok(!names.has(entry.name), `duplicate preset name: ${entry.name}`);
+    ids.add(entry.id);
+    names.add(entry.name);
+
+    const pack = normalizePack(entry.pack);
+    assert.ok(pack.identity.trim() !== '', `${entry.name} has an identity`);
+    for (const field of ['report', 'voice', 'samples', 'avoid']) {
+      assert.ok(pack[field].length > 0, `${entry.name} has ${field}`);
+    }
+    assert.ok(pack.address.user !== '' && pack.address.subagent !== '');
+    const { system } = buildRewritePrompt({ pack, masked: '改好了 [[0]]。', literalCount: 1, history: [] });
+    assert.ok(system.includes(pack.identity), `${entry.name} reaches the rewrite prompt`);
+  }
 });
 
 test('prompt carries the marker count and forbids invention', () => {

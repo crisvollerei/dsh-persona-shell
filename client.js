@@ -13,7 +13,7 @@ window.__ModuleLoader__.load({
      * just installed?" is answerable instead of assumed. A stale bundle and a
      * broken one look identical otherwise.
      */
-    const CLIENT_BUILD = 20261027;
+    const CLIENT_BUILD = 20261028;
 
     // --- host data -----------------------------------------------------------
 
