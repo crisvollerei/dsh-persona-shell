@@ -49,7 +49,10 @@ function loadClient(options = {}) {
       if (String(url).includes('/persona-shell/settings')) {
         return {
           ok: true,
-          json: async () => ({ settings: { enabled: options.enabled !== false } }),
+          json: async () => ({
+            settings: { enabled: options.enabled !== false },
+            sessionSwitches: { rev: 0, values: {} },
+          }),
         };
       }
       throw new Error('no host in tests');
@@ -370,21 +373,36 @@ test('the chat renderer does not declare inject for a standard prop', async () =
   assert.equal(step.options.priority, -1, 'the shipped entry is shadowed by priority');
 });
 
-test('the takeover is registered and released with the enabled switch', async () => {
+test('the takeover follows the global and per-session switches', async () => {
   // Shadowing `assistant-step` hides whatever the shipped renderer drew there —
-  // reasoning, images, interrupted markers. That is acceptable while the persona
-  // view replaces the body, but it must not be unconditional: disabling the plugin
-  // has to give the shipped renderer its cell back, or the loss can never be undone.
-  const source = fs.readFileSync(SOURCE, 'utf8');
-  const start = source.indexOf('const applyEnabled =');
-  const end = source.indexOf('void syncEnabled();', start);
-  assert.ok(start > 0 && end > start, 'the enable gate is present');
-  const body = source.slice(start, end);
+  // reasoning, images, interrupted markers. That is acceptable only while the
+  // persona view replaces the body: disabling the plugin *or the current session*
+  // must give the shipped renderer its cell back.
+  const { chatTakeoverEnabled } = loadClient().module.__testing;
+  const off = new Map([['s-off', false]]);
+  assert.equal(chatTakeoverEnabled(true, 's-on', off), true, 'global on + session on');
+  assert.equal(chatTakeoverEnabled(true, 's-off', off), false, 'a session switch wins over the global default');
+  assert.equal(chatTakeoverEnabled(false, 's-on', off), false, 'the global switch is the master');
+  assert.equal(chatTakeoverEnabled(true, undefined, off), true, 'no active session yet follows the global switch');
 
-  assert.match(body, /enabled === true && releaseChat === undefined/, 'registration is conditional');
-  assert.match(body, /releaseChat = ctx\.slots\.inject/, 'the disposer is kept');
-  assert.match(body, /enabled !== true && releaseChat !== undefined/, 'disable releases it');
-  assert.match(body, /release\(\)/, 'the disposer is actually called');
+  const source = fs.readFileSync(SOURCE, 'utf8');
+  assert.match(source, /refreshChatTakeover = \(\) =>/, 'the controller is installed with the plugin');
+  assert.match(source, /chatTakeoverEnabled\(globalEnabled, activeSessionId, sessionOff\)/, 'the gate uses both switches');
+  assert.match(source, /releaseChatSlot\(\)/, 'the disposer is actually called');
+});
+
+test('the per-session switch registers in the session header utilities', async () => {
+  const { registrations } = await applyAndSettle();
+  const entry = registrations.find((candidate) => candidate.options.name === 'conversation.session.header.utilities');
+  assert.ok(entry, 'the header utility registered');
+  assert.equal(entry.options.id, 'persona-shell');
+  assert.equal(entry.options.order, 10);
+
+  const element = entry.component({ sessionId: 's1', t: (key) => key });
+  assert.equal(element.type, 'button', 'it renders a real button');
+  assert.equal(element.props.role, 'switch');
+  assert.equal(element.props['aria-checked'], true, 'the default is on');
+  assert.equal(element.props.disabled, false, 'enabled once the host confirms the global switch');
 });
 
 test('the poller tracks every seq, not just the one that created it', async () => {
@@ -400,7 +418,7 @@ test('the poller tracks every seq, not just the one that created it', async () =
 
   assert.match(body, /const watched = new Map\(\)/, 'the poller refcounts seqs');
   assert.match(body, /watched\.set\(candidate, next\)/, 'a new seq can join an existing poller');
-  assert.match(body, /\.\.\.watched\.keys\(\)/, 'the eager cadence considers all of them');
+  assert.match(body, /watched\.size === 0\) stop\(\)/, 'the poller stops when the last seq leaves');
 
   // The old shape returned early without registering the new seq.
   assert.ok(
@@ -409,17 +427,10 @@ test('the poller tracks every seq, not just the one that created it', async () =
   );
 });
 
-test('the poller keeps at most one request and one timer', async () => {
-  // Two separate regressions lived here.
-  //
-  // 1. The poller was started before its first seq was registered, so `tick` saw
-  //    nothing watching, killed itself, and no state was ever fetched.
-  // 2. After that was fixed, `add()` scheduled a zero-delay tick *and* `start()`
-  //    ran one immediately — two chains for one subscriber, each scheduling its
-  //    own next timer.
-  //
-  // The invariant now is a single scheduler: `schedule()` owns the only timer and
-  // defers to `wakePending` while a request is running.
+test('the poller holds one long-poll request and wakes it for a new seq', async () => {
+  // The long-poll loop replaced the fixed 100/300/6000ms cadence. The invariants
+  // that must survive: one request at a time, one timer at a time, and a wake
+  // that aborts the held request instead of waiting out the Host's hold window.
   const source = fs.readFileSync(SOURCE, 'utf8');
   const start = source.indexOf('function watch(');
   const end = source.indexOf('function useHostState(');
@@ -429,6 +440,8 @@ test('the poller keeps at most one request and one timer', async () => {
   assert.match(body, /const schedule = \(delay\) =>/, 'one scheduler owns the timer');
   assert.match(body, /if \(inFlight\) \{/, 'a running request defers instead of overlapping');
   assert.match(body, /wakePending = true/, 'the deferral is remembered');
+  assert.match(body, /wait: knownRev \? \(canAbort \? STATE_WAIT_MS : 3000\) : 0/, 'the request asks the Host to hold once a revision is known');
+  assert.match(body, /if \(delay === 0 && controller !== undefined\) controller\.abort\(\)/, 'a new row aborts the hold');
   assert.ok(!/poller\.start/.test(body), 'no second entry point into tick');
   assert.ok(
     !/pollers\.set\(key, poller\);\s*void tick\(\)/.test(body),
@@ -468,20 +481,12 @@ test('the original is placed before the rewrite in the comparison row', async ()
   assert.match(block, /auto-fit/, 'the grid collapses by itself when the chat column is narrow');
 });
 
-test('the poller starts without touching an uninitialised binding', async () => {
-  // Regression: `startedAt` was declared *after* the `tick` that reads it while
-  // `tick` runs immediately, so the first poll threw a TDZ ReferenceError and no
-  // state ever arrived. The symptom was the flicker this work exists to remove.
-  const source = fs.readFileSync(SOURCE, 'utf8');
-  const start = source.indexOf('function watch(');
-  const end = source.indexOf('function useHostState(');
-  assert.ok(start > 0 && end > start, 'watch() is present');
-
-  const body = source.slice(start, end);
-  const declaration = body.indexOf('const startedAt = Date.now();');
-  const firstUse = body.indexOf('startedAt');
-  assert.ok(declaration > 0, 'startedAt is declared');
-  assert.ok(declaration <= firstUse, 'startedAt must be declared before it is read');
+test('the poller uses a bounded hold window', async () => {
+  // A hold that outlives the page's patience would look like a dead fetch. The
+  // window is bounded, and the non-abortable fallback is shorter still.
+  const { STATE_WAIT_MS } = loadClient().module.__testing;
+  assert.ok(STATE_WAIT_MS >= 5000 && STATE_WAIT_MS <= 30000, 'a sane long-poll window');
+  assert.ok(3000 < STATE_WAIT_MS, 'the fallback without AbortController is shorter');
 });
 
 

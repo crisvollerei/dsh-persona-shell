@@ -39,13 +39,22 @@ function makeCtx({ llm, storage, webServer } = {}) {
  * would make a preset overwrite a session row with the same key and hide the
  * mistake behind a passing test.
  */
-function makeStorage(blobs) {
+function makeStorage(blobs, seed = {}) {
   const tables = new Map();
+  const seeded = new Map();
+  if (Array.isArray(seed.presets)) {
+    seeded.set('presets', new Map(seed.presets.map((preset) => [preset.id, preset])));
+  }
+  if (typeof seed.activePreset === 'string') {
+    seeded.set('profile', new Map([['activePreset', seed.activePreset]]));
+  }
   return {
     async open() {
       return {
         table(name) {
-          if (!tables.has(name)) tables.set(name, name === 'sessions' ? blobs : new Map());
+          if (!tables.has(name)) {
+            tables.set(name, name === 'sessions' ? blobs : (seeded.get(name) ?? new Map()));
+          }
           const backing = tables.get(name);
           return {
             get: (key) => backing.get(key),
@@ -157,6 +166,7 @@ test('a rewrite survives a restart', async () => {
   const web1 = makeWebServer();
   const ctx1 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 });
   apply(ctx1, {enabled: true,  allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
   await deliver(ctx1, { seq: 5, text: '原文 `a.js`。' });
   const first = await readState(web1);
   assert.equal(first.rows.find((row) => row.seq === 5).status, 'ready');
@@ -195,6 +205,7 @@ test('a broken storage service degrades to memory-only', async () => {
   const llm = makeLlm('壳版 [[0]]。');
   const ctx = makeCtx({ llm, storage: makeBrokenStorage(), webServer: web });
   apply(ctx, {enabled: true,  allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
 
   await deliver(ctx, { seq: 7, text: '原文 `b.js`。' });
   const state = await readState(web);
@@ -262,10 +273,10 @@ test('the active preset survives a restart', async () => {
   assert.ok(restored.settings.pack.identity.includes('吾'), 'and so did its pack');
 });
 
-test('the second shipped persona survives a restart and stays selectable', async () => {
-  // Both shipped presets must be present in a fresh profile, and choosing the
+test('the non-default shipped personas survive a restart and stay selectable', async () => {
+  // All shipped presets must be present in a fresh profile, and choosing either
   // non-default one must persist by id across a restart. A restore that kept
-  // only `presets[0]` would silently drop Claude小姐 and reset the user to 大肥鱼.
+  // only `presets[0]` would silently drop them and reset the user to 大肥鱼.
   const blobs = new Map();
   const storage = makeStorage(blobs);
 
@@ -275,25 +286,67 @@ test('the second shipped persona survives a restart and stays selectable', async
 
   const before = await getJson(web1, '/persona-shell/presets');
   assert.deepEqual(
-    before.value.presets.map((preset) => preset.name).slice(0, 2),
-    ['大肥鱼（默认）', 'Claude小姐'],
-    'both shipped presets are listed first',
+    before.value.presets.map((preset) => preset.name).slice(0, 4),
+    ['大肥鱼（默认）', '大肥龙', 'Claude小姐', '鲸鲸（实验性）'],
+    'all shipped presets are listed first, in order',
   );
+  const dragon = before.value.presets.find((preset) => preset.name === '大肥龙');
   const claude = before.value.presets.find((preset) => preset.name === 'Claude小姐');
-  assert.equal(claude.builtin, true, 'the second preset is builtin and cannot be deleted');
+  assert.equal(dragon.builtin, true, 'the dragon preset is builtin');
+  assert.equal(claude.builtin, true, 'the Claude preset is builtin');
 
-  const applied = await postJson(web1, '/persona-shell/presets', { action: 'apply', id: claude.id });
-  assert.equal(applied.status, 200);
-  assert.equal(applied.value.active, 'Claude小姐');
+  const appliedDragon = await postJson(web1, '/persona-shell/presets', { action: 'apply', id: dragon.id });
+  assert.equal(appliedDragon.status, 200);
+  assert.equal(appliedDragon.value.active, '大肥龙');
 
   // Fresh process, same storage.
   const web2 = makeWebServer();
   apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 }), { enabled: true, allowUnauthenticatedRoutes: true });
   await new Promise((resolve) => setTimeout(resolve, 60));
+  const restoredDragon = await getJson(web2, '/persona-shell/settings');
+  assert.equal(restoredDragon.value.settings.presetName, '大肥龙', 'the dragon selection came back');
+  assert.match(restoredDragon.value.settings.pack.identity, /白龙/, 'and so did its pack');
+  assert.equal(restoredDragon.value.settings.pack.address.subagent, '小肥龙', 'helpers keep the dragon name');
 
-  const restored = await getJson(web2, '/persona-shell/settings');
-  assert.equal(restored.value.settings.presetName, 'Claude小姐', 'the selection came back');
-  assert.match(restored.value.settings.pack.identity, /Claude小姐/, 'and so did its pack');
+  // Switch to the third shipped persona in the second process, then restart again.
+  const appliedClaude = await postJson(web2, '/persona-shell/presets', { action: 'apply', id: claude.id });
+  assert.equal(appliedClaude.status, 200);
+  assert.equal(appliedClaude.value.active, 'Claude小姐');
+
+  const web3 = makeWebServer();
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web3 }), { enabled: true, allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const restoredClaude = await getJson(web3, '/persona-shell/settings');
+  assert.equal(restoredClaude.value.settings.presetName, 'Claude小姐', 'the Claude selection came back');
+  assert.match(restoredClaude.value.settings.pack.identity, /Claude小姐/);
+});
+
+test('a legacy custom preset with a shipped name is superseded, not duplicated', async () => {
+  // Before 大肥龙 was shipped, it existed only as a custom preset. A restore must
+  // list the shipped card once and must not lose the user's selection if that
+  // selection still pointed at the old custom record.
+  const blobs = new Map();
+  const legacy = {
+    id: 'preset-legacy',
+    name: '大肥龙',
+    pack: { identity: '旧的自定义大肥龙。' },
+    builtin: false,
+    at: 1,
+  };
+  const storage = makeStorage(blobs, { presets: [legacy], activePreset: 'preset-legacy' });
+
+  const web = makeWebServer();
+  apply(makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web }), { enabled: true, allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const list = await getJson(web, '/persona-shell/presets');
+  const dragons = list.value.presets.filter((preset) => preset.name === '大肥龙');
+  assert.equal(dragons.length, 1, 'the name appears once');
+  assert.equal(dragons[0].builtin, true, 'the shipped card supersedes the custom one');
+
+  const restored = await getJson(web, '/persona-shell/settings');
+  assert.equal(restored.value.settings.presetName, '大肥龙', 'the old selection follows the absorbed preset');
+  assert.match(restored.value.settings.pack.identity, /白龙/, 'and the shipped card is what is active');
 });
 
 /** POST a JSON body to one of the plugin's routes and return the parsed reply. */
@@ -337,6 +390,7 @@ test('a new message after a restart does not erase the stored history', async ()
   const web1 = makeWebServer();
   const ctx1 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web1 });
   apply(ctx1, {enabled: true,  allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
   await deliver(ctx1, { seq: 5, text: '原文 `a.js`。' });
   await deliver(ctx1, { seq: 9, text: '原文 `b.js`。' });
   await new Promise((resolve) => setTimeout(resolve, 600));
@@ -348,6 +402,7 @@ test('a new message after a restart does not erase the stored history', async ()
   const web2 = makeWebServer();
   const ctx2 = makeCtx({ llm: makeLlm('壳版 [[0]]。'), storage, webServer: web2 });
   apply(ctx2, {enabled: true,  allowUnauthenticatedRoutes: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
   await deliver(ctx2, { seq: 13, text: '原文 `c.js`。' });
   await new Promise((resolve) => setTimeout(resolve, 600));
 

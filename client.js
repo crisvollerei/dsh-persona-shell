@@ -3,6 +3,8 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
+    /** Run before paint when the shell's React provides it (the test mock does not). */
+    const useLayoutEffect = typeof React.useLayoutEffect === 'function' ? React.useLayoutEffect : React.useEffect;
 
     const ROUTE = '/persona-shell';
 
@@ -13,7 +15,7 @@ window.__ModuleLoader__.load({
      * just installed?" is answerable instead of assumed. A stale bundle and a
      * broken one look identical otherwise.
      */
-    const CLIENT_BUILD = 20261028;
+    const CLIENT_BUILD = 2026102809;
 
     // --- host data -----------------------------------------------------------
 
@@ -38,43 +40,88 @@ window.__ModuleLoader__.load({
     /** `${sessionId}` → poll handle, so several steps share one timer. */
     const pollers = new Map();
 
+    /**
+     * Per-session switch overrides. Only an explicit `false` is kept; a missing
+     * entry means "follow the global switch", which keeps old sessions on.
+     */
+    const sessionOff = new Map();
+    /** Monotonic map revision, matching the Host's answer. */
+    let sessionSwitchRev = -1;
+    /** Whether the first switch map has arrived; before that the UI is pending. */
+    let switchReady = false;
+    /** Listeners for components showing one session's switch. */
+    const switchListeners = new Set();
+    /** Last confirmed value of the global switch; false until the Host answers. */
+    let globalEnabled = false;
+    /** Listeners for the global-switch state (the session switch respects it). */
+    const globalListeners = new Set();
+
     function emit() {
       for (const listener of listeners) listener();
     }
 
-    async function refresh(sessionId) {
+    /** How long the Host may hold a state request before answering "no change". */
+    const STATE_WAIT_MS = 15000;
+    /** Backoff cap after a failed state request. */
+    const STATE_ERROR_MAX_MS = 8000;
+
+    /** An AbortError is the expected result of waking a held request. */
+    function isAbortError(error) {
+      return error !== null && typeof error === 'object' && error.name === 'AbortError';
+    }
+
+    /**
+     * Read one session's state, optionally as a long-poll.
+     *
+     * `rev` is the revision the page already has. With `wait`, the Host holds
+     * the request until a `touch()` moves that revision or the budget expires,
+     * so a rewrite lands as soon as it moves instead of on a fixed cadence.
+     * @param {string} sessionId
+     * @param {{ rev?: number, wait?: number, signal?: AbortSignal }} [options]
+     * @returns {Promise<{ ok: boolean, aborted?: boolean }>}
+     */
+    async function refresh(sessionId, options = {}) {
+      const { rev, wait, signal } = options;
+      const query = new URLSearchParams({ session: sessionId });
+      if (rev !== undefined) query.set('rev', String(rev));
+      if (wait !== undefined) query.set('wait', String(wait));
       try {
-        const response = await fetch(`${ROUTE}/state?session=${encodeURIComponent(sessionId)}`);
+        const response = await fetch(
+          `${ROUTE}/state?${query.toString()}`,
+          signal === undefined ? undefined : { signal },
+        );
         if (!response.ok) {
           // Only failures are reported. A rejected fetch is the difference
           // between "no data yet" and "the route refuses this request", and it
           // is the one case with no other symptom — the transcript just stays
           // plain. Successes would be a write per poll for no extra insight.
           reportDiagnostics({ lastFetchError: { status: response.status, at: Date.now() } });
-          return;
+          return { ok: false };
         }
         const value = await response.json();
         const previous = states.get(sessionId);
         states.set(sessionId, value);
         if (previous === undefined || previous.rev !== value.rev) emit();
+        return { ok: true };
       } catch (error) {
+        if (isAbortError(error)) return { ok: false, aborted: true };
         reportDiagnostics({
           lastFetchError: { error: error instanceof Error ? error.message : String(error), at: Date.now() },
         });
+        return { ok: false };
       }
     }
 
     /**
-     * Keep one session's rewrites fresh.
+     * Keep one session's rewrites fresh with a long-poll loop.
      *
-     * One poller per session, tracking **every** seq that asked for it. The first
-     * version captured a single seq at creation and kept it forever: once that
-     * row settled the cadence fell to the slow tail interval, so every later
-     * rewrite in the same session completed between two polls and appeared as one
-     * jump — indistinguishable from having no streaming at all.
-     *
-     * The poller stops itself once nothing is watching it, so a long session does
-     * not leave a timer running forever.
+     * One poller per session, tracking every seq that asked for it. The previous
+     * design asked on a fixed 100/300/6000ms cadence: a rewrite could finish just
+     * after a poll and land in the visible jump the plugin exists to avoid. The
+     * Host now holds the request open until something changes, and the client
+     * immediately reissues it, so the loop only spends requests when there is
+     * news (and still works through the Desktop IPC fetch carrier, unlike an
+     * EventSource).
      */
     function watch(sessionId, seq) {
       const key = sessionId;
@@ -89,19 +136,31 @@ window.__ModuleLoader__.load({
         let inFlight = false;
         /** Set when a sooner wake arrived while a request was running. */
         let wakePending = false;
-        const startedAt = Date.now();
+        /** The AbortController of the request in flight, when the page has one. */
+        let controller;
+        let failures = 0;
+        const canAbort = typeof AbortController === 'function';
 
-        /** Schedule the next poll, never creating a second timer. */
+        /** Schedule the next request, never creating a second timer. */
         const schedule = (delay) => {
           if (stopped) return;
           if (inFlight) {
-            // A request is running; remember the request to poll again as soon as
-            // it returns rather than starting a second one.
+            // A sooner wake arrived: abort the held request so a new row does
+            // not wait out the Host's hold window.
             wakePending = true;
+            if (delay === 0 && controller !== undefined) controller.abort();
             return;
           }
           if (timer !== undefined) clearTimeout(timer);
           timer = setTimeout(tick, delay);
+        };
+
+        /** Stop this poller and release its held request. */
+        const stop = () => {
+          stopped = true;
+          if (timer !== undefined) clearTimeout(timer);
+          if (controller !== undefined) controller.abort();
+          pollers.delete(key);
         };
 
         const tick = async () => {
@@ -109,33 +168,54 @@ window.__ModuleLoader__.load({
           if (stopped) return;
           if (watched.size === 0) {
             // Nothing needs this session any more; release the poller.
-            stopped = true;
-            pollers.delete(key);
+            stop();
             return;
           }
           inFlight = true;
-          try {
-            await refresh(sessionId);
-          } finally {
-            inFlight = false;
-          }
-          if (stopped) return;
-          const rows = states.get(sessionId)?.rows ?? [];
-          // Anything still owing keeps the eager cadence: a new step starts
-          // owing, and the slow interval must not resume just because an older
-          // row already settled.
-          const owe = [...watched.keys()].some((candidate) => {
-            const row = rows.find((entry) => entry.seq === candidate);
-            return row === undefined || row.status === 'pending';
+          controller = canAbort ? new AbortController() : undefined;
+          // A held request that never settles would freeze this session's view
+          // forever. The Host's own wait is 15s; abort a little later.
+          const watchdog = canAbort
+            ? setTimeout(() => { if (controller !== undefined) controller.abort(); }, STATE_WAIT_MS + 5000)
+            : undefined;
+          const currentRev = states.get(sessionId)?.rev;
+          const knownRev = typeof currentRev === 'number';
+          const started = Date.now();
+          const result = await refresh(sessionId, {
+            rev: knownRev ? currentRev : undefined,
+            // No known revision means there is nothing to compare yet; fetch the
+            // first state directly instead of asking the Host to hold. Without
+            // AbortController a held request cannot be woken early, so use a
+            // shorter hold instead of leaving a new row waiting 15s.
+            wait: knownRev ? (canAbort ? STATE_WAIT_MS : 3000) : 0,
+            signal: controller === undefined ? undefined : controller.signal,
           });
-          const waited = Date.now() - startedAt;
-          const interval = owe ? (waited < 8000 ? 100 : 300) : 6000;
-          if (wakePending) {
-            wakePending = false;
-            schedule(0);
+          if (watchdog !== undefined) clearTimeout(watchdog);
+          inFlight = false;
+          controller = undefined;
+          if (stopped) return;
+          if (result.aborted) {
+            if (wakePending) {
+              wakePending = false;
+              schedule(0);
+            } else {
+              // Timeout/connection abort: retry, but do not spin.
+              schedule(1000);
+            }
             return;
           }
-          schedule(interval);
+          if (result.ok) {
+            failures = 0;
+            wakePending = false;
+            const afterRev = states.get(sessionId)?.rev;
+            // A Host that does not implement `wait` answers immediately with the
+            // same revision; do not turn that into a busy loop.
+            const held = Date.now() - started > 200;
+            schedule(afterRev !== currentRev || held ? 0 : 500);
+            return;
+          }
+          failures += 1;
+          schedule(Math.min(STATE_ERROR_MAX_MS, 500 * 2 ** Math.min(failures, 4)));
         };
 
         poller = {
@@ -150,8 +230,7 @@ window.__ModuleLoader__.load({
             // still displaying it.
             const next = (watched.get(candidate) ?? 0) + 1;
             watched.set(candidate, next);
-            // A newly watched row must not wait behind an existing slow timer:
-            // its rewrite may finish entirely before the next 6s poll.
+            // A newly watched row must not wait behind the current hold.
             schedule(0);
             let released = false;
             return () => {
@@ -160,13 +239,184 @@ window.__ModuleLoader__.load({
               const remaining = (watched.get(candidate) ?? 1) - 1;
               if (remaining <= 0) watched.delete(candidate);
               else watched.set(candidate, remaining);
+              if (watched.size === 0) stop();
             };
           },
+          /** Host-side teardown path: stop the held request and its timer. */
+          stop,
         };
         pollers.set(key, poller);
       }
-      const release = poller.add(seq);
-      return release;
+      return poller.add(seq);
+    }
+
+    // --- session-level switch -------------------------------------------------
+
+    /** Installed by apply(); recomputes the chat takeover from both switches. */
+    let refreshChatTakeover = () => {};
+
+    function refreshTakeover() {
+      refreshChatTakeover();
+    }
+
+    /**
+     * Whether the page-level chat takeover should be installed.
+     *
+     * Registration is page-wide because `conversation.chat.node` is a keyed slot;
+     * the Web UI shows one Session at a time, so gating on the active Session is
+     * what makes "off" mean the official renderer comes back in full.
+     */
+    function chatTakeoverEnabled(global, sessionId, off) {
+      return global === true && (sessionId === undefined || off.get(sessionId) !== false);
+    }
+
+    /** The Session whose header switch is currently mounted. */
+    let activeSessionId;
+
+    function setActiveSession(sessionId) {
+      if (activeSessionId === sessionId) return;
+      activeSessionId = sessionId;
+      refreshTakeover();
+    }
+
+    /** Update the client copy of the per-session switch map. */
+    function applySessionSwitches(payload) {
+      if (payload === null || typeof payload !== 'object') return;
+      const rev = Number.isInteger(payload.rev) ? payload.rev : 0;
+      // A settings poll that started before a newer toggle reply must not undo
+      // the answer: the switch revision is monotonic on the Host.
+      if (rev < sessionSwitchRev) return;
+      sessionSwitchRev = rev;
+      switchReady = true;
+      sessionOff.clear();
+      const values = payload.values !== null && typeof payload.values === 'object' ? payload.values : {};
+      for (const [sessionId, value] of Object.entries(values)) {
+        if (value === false) sessionOff.set(sessionId, false);
+      }
+      for (const listener of switchListeners) listener();
+      refreshTakeover();
+    }
+
+    function useSessionSwitch(sessionId) {
+      const [version, setVersion] = React.useState(0);
+      React.useEffect(() => {
+        const listener = () => setVersion((value) => value + 1);
+        switchListeners.add(listener);
+        return () => switchListeners.delete(listener);
+      }, []);
+      return sessionOff.get(sessionId) !== false;
+    }
+
+    function useSwitchReady() {
+      const [version, setVersion] = React.useState(0);
+      React.useEffect(() => {
+        const listener = () => setVersion((value) => value + 1);
+        switchListeners.add(listener);
+        return () => switchListeners.delete(listener);
+      }, []);
+      return switchReady;
+    }
+
+    function useGlobalEnabled() {
+      const [version, setVersion] = React.useState(0);
+      React.useEffect(() => {
+        const listener = () => setVersion((value) => value + 1);
+        globalListeners.add(listener);
+        return () => globalListeners.delete(listener);
+      }, []);
+      return globalEnabled;
+    }
+
+    function setGlobalEnabled(value) {
+      if (globalEnabled === value) return;
+      globalEnabled = value;
+      for (const listener of globalListeners) listener();
+      refreshTakeover();
+    }
+
+    /**
+     * The per-session switch in the conversation header.
+     *
+     * It also tells the controller which Session is on screen: the chat
+     * takeover is page-wide, so "this session is off" is implemented by
+     * releasing it while that Session is viewed, which gives the official
+     * renderer back in full (reasoning, images, interrupted/running states).
+     */
+    function SessionPersonaSwitch({ sessionId, t }) {
+      const enabled = useSessionSwitch(sessionId);
+      const ready = useSwitchReady();
+      const global = useGlobalEnabled();
+      const [pending, setPending] = React.useState(false);
+      const [failed, setFailed] = React.useState(false);
+
+      useLayoutEffect(() => {
+        if (typeof sessionId !== 'string') return undefined;
+        setActiveSession(sessionId);
+        return () => setActiveSession(undefined);
+      }, [sessionId]);
+      const toggle = async () => {
+        if (pending || global !== true || typeof sessionId !== 'string') return;
+        setPending(true);
+        setFailed(false);
+        try {
+          const response = await fetch(`${ROUTE}/session-switch`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId, enabled: !enabled }),
+          });
+          if (!response.ok) throw new Error(String(response.status));
+          const value = await response.json();
+          applySessionSwitches(value?.sessionSwitches);
+        } catch {
+          setFailed(true);
+        } finally {
+          setPending(false);
+        }
+      };
+
+      const label = t?.('shell.personaSwitch') ?? '人格';
+      const stateText = !ready
+        ? '…'
+        : pending
+          ? '…'
+          : enabled
+            ? (t?.('shell.personaSwitchOn') ?? '开')
+            : (t?.('shell.personaSwitchOff') ?? '关');
+      const title = !ready
+        ? (t?.('shell.personaSwitchLoading') ?? '正在读取会话开关')
+        : global !== true
+          ? (t?.('shell.personaSwitchGlobalOff') ?? '总开关已关闭')
+          : failed
+            ? (t?.('shell.personaSwitchFailed') ?? '保存失败')
+            : (t?.('shell.personaSwitchHint') ?? '仅对当前会话生效');
+
+      return h('button', {
+        type: 'button',
+        role: 'switch',
+        'aria-checked': enabled,
+        title,
+        disabled: !ready || pending || global !== true,
+        onClick: toggle,
+        style: {
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '4px',
+          height: '24px',
+          padding: '0 8px',
+          borderRadius: '999px',
+          border: `0.5px solid ${enabled ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l2)'}`,
+          background: enabled ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+          color: failed
+            ? 'var(--dsw-alias-state-error-primary)'
+            : enabled
+              ? 'var(--dsw-alias-brand-primary)'
+              : 'var(--dsw-alias-label-tertiary)',
+          fontSize: '12px',
+          lineHeight: '1',
+          cursor: pending || global !== true ? 'default' : 'pointer',
+          opacity: pending ? 0.6 : 1,
+        },
+      }, h('span', null, label), h('span', null, stateText));
     }
 
     /**
@@ -1356,7 +1606,14 @@ window.__ModuleLoader__.load({
        * renderer itself. A mocked React cannot replay a fetch-then-rerender
        * cycle, so the decisions are tested directly instead of through a mount.
        */
-      __testing: { rowBranch, renderMarkdown, unmaskPartial, HOLD_PLACEHOLDER_MS },
+      __testing: {
+        rowBranch,
+        renderMarkdown,
+        unmaskPartial,
+        chatTakeoverEnabled,
+        HOLD_PLACEHOLDER_MS,
+        STATE_WAIT_MS,
+      },
       apply(ctx) {
         // Owned by the plugin lifetime; both are cleared on unload below.
         let heartbeatTimer;
@@ -1394,20 +1651,24 @@ window.__ModuleLoader__.load({
         // No `inject` here: `sessionId` is one of this slot's `standardProps`, so it
         // arrives as a normal prop.
         let releaseChat = undefined;
-        const applyEnabled = (enabled) => {
-          if (enabled === true && releaseChat === undefined) {
-            releaseChat = ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-              name: 'conversation.chat.node',
-              key: 'assistant-step',
-              priority: -1,
-            }, PersonaStep));
-            return;
-          }
-          if (enabled !== true && releaseChat !== undefined) {
-            const release = releaseChat;
-            releaseChat = undefined;
-            release();
-          }
+        const takeOverChat = () => {
+          if (releaseChat !== undefined) return;
+          releaseChat = ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+            name: 'conversation.chat.node',
+            key: 'assistant-step',
+            priority: -1,
+          }, PersonaStep));
+        };
+        const releaseChatSlot = () => {
+          const release = releaseChat;
+          releaseChat = undefined;
+          if (release !== undefined) release();
+        };
+        // The page-wide takeover follows both switches: the global one from the
+        // Host and the active Session's own override from the header switch.
+        refreshChatTakeover = () => {
+          if (chatTakeoverEnabled(globalEnabled, activeSessionId, sessionOff)) takeOverChat();
+          else releaseChatSlot();
         };
 
         // Track the switch. The host is the source of truth.
@@ -1450,7 +1711,8 @@ window.__ModuleLoader__.load({
               const value = await response.json();
               if (stopped) return;
               const enabled = value?.settings?.enabled;
-              if (typeof enabled === 'boolean') applyEnabled(enabled);
+              if (typeof enabled === 'boolean') setGlobalEnabled(enabled);
+              applySessionSwitches(value?.sessionSwitches);
             }
           } catch {
             // Keep the last confirmed state; a transient failure is not evidence
@@ -1470,11 +1732,18 @@ window.__ModuleLoader__.load({
           clearTimeout(syncTimer);
           clearTimeout(heartbeatTimer);
           if (inFlightController !== undefined) inFlightController.abort();
-          if (releaseChat !== undefined) {
-            const release = releaseChat;
-            releaseChat = undefined;
-            release();
-          }
+          // The pollers are not part of the chat slot; a disabled plugin would
+          // otherwise keep one 15s request per session alive after its UI was
+          // unmounted.
+          for (const poller of pollers.values()) poller.stop();
+          pollers.clear();
+          states.clear();
+          sessionOff.clear();
+          sessionSwitchRev = -1;
+          switchReady = false;
+          globalEnabled = false;
+          releaseChatSlot();
+          refreshChatTakeover = () => {};
         };
         try {
           ctx.effect(() => removeTimers, 'persona-shell.client-timers');
@@ -1491,6 +1760,14 @@ window.__ModuleLoader__.load({
           order: 30,
           label: '人格套壳',
         }, SettingsSection));
+
+        // One switch per Session, in the header's right-aligned utilities.
+        // It also tells the page-wide takeover which Session is on screen.
+        ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+          name: 'conversation.session.header.utilities',
+          id: 'persona-shell',
+          order: 10,
+        }, SessionPersonaSwitch));
       },
     };
   },

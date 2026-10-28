@@ -9,6 +9,13 @@
     "rewriting": "…",
     "failed": "已保留原汇报",
     "originalLabel": "原文",
-    "personaLabel": "人格版"
+    "personaLabel": "人格版",
+    "personaSwitch": "人格",
+    "personaSwitchOn": "开",
+    "personaSwitchOff": "关",
+    "personaSwitchHint": "人格套壳：仅对当前会话生效",
+    "personaSwitchGlobalOff": "人格套壳：总开关已关闭",
+    "personaSwitchLoading": "人格套壳：正在读取会话开关",
+    "personaSwitchFailed": "人格套壳：保存失败"
   }
 }

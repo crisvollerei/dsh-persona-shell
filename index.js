@@ -37,6 +37,9 @@ const DEFAULT_PRESET_NAME = '大肥鱼（默认）';
 /** Upper bound on stored presets, so a runaway loop cannot grow the file. */
 const MAX_PRESETS = 30;
 
+/** Upper bound on per-session switch entries; the oldest is evicted first. */
+const MAX_SESSION_SWITCHES = 500;
+
 /**
  * Host build marker, bumped whenever the Host half changes shape.
  *
@@ -45,7 +48,7 @@ const MAX_PRESETS = 30;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 20261028;
+const HOST_BUILD = 2026102808;
 
 /**
  * How often a streaming rewrite may publish a new partial revision.
@@ -219,6 +222,16 @@ export function apply(ctx, rawConfig) {
    */
   let settingsRestored = false;
 
+  /**
+   * Whether the runtime `enabled` switch is known.
+   *
+   * Unlike memory, a deployment without storage has no saved value to restore,
+   * so the config default is authoritative there. While a storage facility is
+   * opening, wait for the saved switch rather than rewrite for someone who had
+   * turned the plugin off before the last restart.
+   */
+  let enabledRestored = ctx.get('storageDomain') === undefined;
+
   /** `${sessionId}:${seq}` → row. */
   const rows = new Map();
   /** sessionId → newest revision counter. */
@@ -227,10 +240,35 @@ export function apply(ctx, rawConfig) {
   const samples = new Map();
   /** `${sessionId}:${seq}` currently being rewritten. */
   const inFlight = new Set();
+  /** `${sessionId}:${seq}` → AbortController of the in-flight rewrite. */
+  const activeRewrites = new Map();
   /** sessionId → running-turn facts harvested from the log. */
   const turnState = new Map();
   /** sessionId → the candidate text of the turn so far (`trigger: 'report'`). */
   const candidates = new Map();
+
+  /**
+   * Per-session switch overrides.
+   *
+   * Only an explicit `false` is stored; a missing entry follows the global
+   * switch. Keeping the map sparse means a fresh install and every old profile
+   * behave exactly as before (all sessions on).
+   */
+  const sessionSwitches = new Map();
+  /** Toggles made before the saved map is restored; applied on open. */
+  const pendingSessionSwitchValues = new Map();
+  /** Monotonic revision for the map, so a client can ignore stale answers. */
+  let sessionSwitchRev = 0;
+
+  /**
+   * sessionId → Set<wake> for held `/state` requests.
+   *
+   * A long-poll request resolves on the next `touch(sessionId)` or its timeout;
+   * this is what turns the page's fixed polling cadence into event-driven
+   * updates. The set stores the resolver itself so a request can remove exactly
+   * its own waiter when the client disconnects.
+   */
+  const stateWaiters = new Map();
 
   /** Durable store, attached asynchronously; absent means memory-only. */
   let store = undefined;
@@ -509,8 +547,86 @@ export function apply(ctx, rawConfig) {
 
   const touch = (sessionId) => {
     revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
+    wakeStateWaiters(sessionId);
     schedulePersist(sessionId);
   };
+
+  /** Wake every request held for this session. */
+  function wakeStateWaiters(sessionId) {
+    const waiters = stateWaiters.get(sessionId);
+    if (waiters === undefined) return;
+    for (const wake of [...waiters]) wake();
+  }
+
+  /**
+   * Hold one `/state` request until the session's revision moves or timeout.
+   *
+   * `req`/`res` are Node objects in production and plain stubs in tests, so the
+   * close hooks are optional. A client that goes away mid-wait must remove its
+   * waiter; otherwise memory grows one entry per abandoned request. Listening on
+   * the response as well as the request covers both the socket-close and the
+   * response-lifecycle shapes across Node versions.
+   *
+   * @param {string} sessionId
+   * @param {number} timeoutMs
+   * @param {{ on?: Function, off?: Function } | undefined} req
+   * @param {{ on?: Function, off?: Function } | undefined} res
+   * @returns {Promise<void>}
+   */
+  function waitForStateChange(sessionId, timeoutMs, req, res) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let waiters = stateWaiters.get(sessionId);
+      if (waiters === undefined) {
+        waiters = new Set();
+        stateWaiters.set(sessionId, waiters);
+      }
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        waiters.delete(finish);
+        if (waiters.size === 0) stateWaiters.delete(sessionId);
+        if (typeof req?.off === 'function') req.off('close', finish);
+        if (typeof res?.off === 'function') res.off('close', finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      waiters.add(finish);
+      if (typeof req?.on === 'function') req.on('close', finish);
+      if (typeof res?.on === 'function') res.on('close', finish);
+    });
+  }
+
+  /** Whether this session should be rewritten, before the global switch. */
+  function sessionEnabledFor(sessionId) {
+    return sessionSwitches.get(sessionId) !== false;
+  }
+
+  /** The full rewrite gate: global master + restore window + session override. */
+  function rewriteAllowedFor(sessionId) {
+    return settings.enabled === true && enabledRestored && sessionEnabledFor(sessionId);
+  }
+
+  /** Why rewriteAllowedFor() is false, for the row's skipped reason. */
+  function rewriteBlockReason(sessionId) {
+    if (settings.enabled !== true || !enabledRestored) return 'disabled';
+    if (sessionSwitches.get(sessionId) === false) return 'session-off';
+    return 'blocked';
+  }
+
+  /** The switch map as the client sees it. */
+  const sessionSwitchState = () => ({
+    rev: sessionSwitchRev,
+    values: Object.fromEntries(sessionSwitches),
+  });
+
+  /** Persist the per-session switches; a failed write must not break the page. */
+  function saveSessionSwitches() {
+    if (store === undefined || !settingsRestored) return;
+    store.putSessionSwitches(sessionSwitchState())
+      .catch((error) => warn('session switches persist failed', error));
+  }
 
   /** Coalesce persistence so a burst of settles writes one blob per session. */
   const persistTimers = new Map();
@@ -562,9 +678,18 @@ export function apply(ctx, rawConfig) {
     // while storage was still opening would block the one read that matters.
     if (store === undefined) return;
     if (hydrated.has(sessionId)) return;
+    let savedRows;
+    try {
+      savedRows = store.get(sessionId);
+    } catch (error) {
+      // Leave it un-hydrated so a later state read can retry; a failed read
+      // must not permanently hide this session's stored history.
+      warn(`hydrate failed for ${sessionId}`, error);
+      return;
+    }
     hydrated.add(sessionId);
     try {
-      for (const saved of store.get(sessionId)) {
+      for (const saved of savedRows) {
         const key = `${sessionId}:${saved.seq}`;
         if (rows.has(key)) continue;
         rows.set(key, {
@@ -702,12 +827,23 @@ export function apply(ctx, rawConfig) {
       touch(sessionId);
     };
 
+    // The switch may have been turned off between enqueue() and this call.
+    if (!rewriteAllowedFor(sessionId)) {
+      settle('skipped', rewriteBlockReason(sessionId));
+      inFlight.delete(key);
+      trim(sessionId);
+      return;
+    }
+
     try {
       const llm = getLlm();
       if (llm === undefined) { settle('skipped', 'no-llm'); return; }
 
       const route = await resolveRouteAsync(sessionId);
       if (route === undefined) { settle('skipped', 'no-route'); return; }
+      // The switch can change while the route is being resolved; check again
+      // before spending the model call.
+      if (!rewriteAllowedFor(sessionId)) { settle('skipped', rewriteBlockReason(sessionId)); return; }
 
       const { masked, literals } = mask(text);
       // Prose is what gets rewritten; a text that is almost entirely literals
@@ -725,6 +861,7 @@ export function apply(ctx, rawConfig) {
       });
 
       const abort = new AbortController();
+      activeRewrites.set(key, abort);
       const timer = setTimeout(
         () => abort.abort(new Error('rewrite-timeout')),
         Math.max(1000, cfg.timeoutMs),
@@ -757,6 +894,15 @@ export function apply(ctx, rawConfig) {
         };
 
         for await (const chunk of llm.stream(options)) {
+          // A session or the global switch switched off mid-stream must not
+          // publish more persona text, and the call should stop rather than
+          // keep spending tokens.
+          if (!rewriteAllowedFor(sessionId)) {
+            const reason = rewriteBlockReason(sessionId);
+            abort.abort(new Error(reason));
+            settle('skipped', reason);
+            return;
+          }
           if (chunk.type === 'text-delta') {
             collected += chunk.text;
             flush(false);
@@ -776,6 +922,7 @@ export function apply(ctx, rawConfig) {
 
       // Validate in the masked vocabulary first: the markers are the whole
       // contract, and unmasking destroys the evidence used to check it.
+      if (!rewriteAllowedFor(sessionId)) { settle('skipped', rewriteBlockReason(sessionId)); return; }
       const verdict = validateRewrite({
         candidate: collected,
         original: masked,
@@ -816,6 +963,7 @@ export function apply(ctx, rawConfig) {
       settle('skipped', error instanceof Error ? error.message.slice(0, 120) : 'error');
       warn(`rewrite failed for ${key}`, error);
     } finally {
+      activeRewrites.delete(key);
       inFlight.delete(key);
       trim(sessionId);
     }
@@ -936,7 +1084,11 @@ export function apply(ctx, rawConfig) {
 
   function onSessionEvent(session, event) {
     const sessionId = session?.id;
-    if (typeof sessionId !== 'string' || !settings.enabled) return;
+    if (typeof sessionId !== 'string' || !settings.enabled || !enabledRestored) return;
+    // A per-session switch turns off rewriting *and* memory observation for that
+    // conversation. Returning here is what keeps a disabled session from
+    // spending a model call or silently feeding the shared reader profile.
+    if (!sessionEnabledFor(sessionId)) return;
 
     // Diagnostic: record the event types actually seen, so the memory feature can
     // be built on observed shapes instead of an assumed one.
@@ -1102,6 +1254,7 @@ export function apply(ctx, rawConfig) {
     // permissive: collecting now would violate a `memory:false` the user already
     // chose. Re-opening the gate is the last step of a successful restore.
     settingsRestored = false;
+    enabledRestored = false;
     storeState = 'opening';
 
     const task = openStore(ctx).then((opened) => {
@@ -1130,9 +1283,19 @@ export function apply(ctx, rawConfig) {
       // present even if the stored copy is missing or corrupt.
       const savedPresets = opened.listPresets();
       const restored = presets.filter((preset) => preset.builtin === true);
+      /** Old custom-preset id → the shipped preset that now carries its name. */
+      const absorbed = new Map();
       for (const raw of savedPresets) {
         if (raw === null || typeof raw !== 'object' || typeof raw.id !== 'string') continue;
         if (restored.some((preset) => preset.id === raw.id)) continue;
+        // A name that is shipped now supersedes a custom preset created under it
+        // before it became builtin. 大肥龙 was such a preset: the shipped card is
+        // its content, so keeping the old row would only duplicate the name.
+        const builtin = restored.find((preset) => preset.name === raw.name);
+        if (builtin !== undefined) {
+          absorbed.set(raw.id, builtin.id);
+          continue;
+        }
         restored.push({ ...raw, pack: normalizePack(raw.pack) });
       }
       presets = restored.slice(0, MAX_PRESETS);
@@ -1142,7 +1305,8 @@ export function apply(ctx, rawConfig) {
       // default, which is indistinguishable from the switch never having worked.
       const savedActive = opened.getActivePreset();
       if (typeof savedActive === 'string' && savedActive !== '') {
-        const active = presets.find((preset) => preset.id === savedActive);
+        const activeId = absorbed.get(savedActive) ?? savedActive;
+        const active = presets.find((preset) => preset.id === activeId);
         if (active !== undefined) {
           settings.pack = normalizePack(active.pack);
           settings.presetName = active.name;
@@ -1163,7 +1327,46 @@ export function apply(ctx, rawConfig) {
       }
       // The switches are now authoritative; memory collection may resume — but
       // never during shutdown, where nothing should keep publishing state.
-      if (!storeClosing) settingsRestored = true;
+      if (!storeClosing) {
+        settingsRestored = true;
+        enabledRestored = true;
+      }
+
+      // Per-session overrides. A missing/corrupt record means "all sessions
+      // follow the global switch", which is exactly the pre-feature state.
+      const savedSwitches = opened.getSessionSwitches();
+      const savedValues = savedSwitches !== null && typeof savedSwitches === 'object'
+        && savedSwitches.values !== null && typeof savedSwitches.values === 'object'
+        ? savedSwitches.values
+        : undefined;
+      const savedRev = savedSwitches !== null && typeof savedSwitches === 'object'
+        && Number.isInteger(savedSwitches.rev) && savedSwitches.rev >= 0
+        ? savedSwitches.rev
+        : 0;
+      if (savedSwitches !== null && typeof savedSwitches === 'object') {
+        sessionSwitches.clear();
+        if (savedValues !== undefined) {
+          for (const [sessionId, value] of Object.entries(savedValues)) {
+            if (value === false && typeof sessionId === 'string' && sessionId !== '') {
+              sessionSwitches.set(sessionId, false);
+            }
+          }
+        }
+      }
+      // A toggle made while the storage was still opening must win over the
+      // older saved copy; otherwise the open would silently undo the user's
+      // click and a restart would lose it.
+      let appliedPending = false;
+      for (const [sessionId, enabled] of pendingSessionSwitchValues) {
+        appliedPending = true;
+        if (enabled) sessionSwitches.delete(sessionId);
+        else sessionSwitches.set(sessionId, false);
+      }
+      sessionSwitchRev = Math.max(sessionSwitchRev, savedRev) + (appliedPending ? 1 : 0);
+      if (appliedPending) {
+        pendingSessionSwitchValues.clear();
+        saveSessionSwitches();
+      }
     }, (error) => {
       storeError = error instanceof Error ? error.message : String(error);
       // Nothing can be restored. The question is what "unknown" should mean, and
@@ -1172,6 +1375,10 @@ export function apply(ctx, rawConfig) {
       // a privacy switch. Collection stays off until storage actually reports.
       if (!storeClosing) {
         storeState = 'failed';
+        // Storage is unusable, not merely slow: fall back to the config default
+        // for rewriting, while memory collection stays off (it is the privacy
+        // switch and "unknown" must not read as "on").
+        enabledRestored = true;
         warn('storage failed; rewrites are memory-only and memory collection stays off', error);
       }
     });
@@ -1217,6 +1424,9 @@ export function apply(ctx, rawConfig) {
     return {
       rev: revisions.get(sessionId) ?? 0,
       settings,
+      // The effective value for this session; `sessionEnabled` alone would
+      // misreport the global switch as on. The full map arrives in /settings.
+      sessionEnabled: settings.enabled === true && enabledRestored && sessionEnabledFor(sessionId),
       rows: own.map((row) => ({
         seq: row.seq,
         status: row.status,
@@ -1295,7 +1505,79 @@ export function apply(ctx, rawConfig) {
     if (path === `${ROUTE}/state`) {
       const sessionId = url.searchParams.get('session') ?? '';
       if (sessionId === '') { sendJson(res, 400, { error: 'session required' }); return; }
+      // Long-poll: the page asks with the revision it already has and a wait
+      // budget. If nothing moved, hold the request until `touch()` wakes it or
+      // the budget expires, then answer with the current state either way.
+      // This preserves the existing route shape (a GET returning one JSON
+      // document) and works through the Desktop IPC fetch carrier, where an
+      // EventSource would not.
+      const sinceParam = url.searchParams.get('rev');
+      const waitParam = url.searchParams.get('wait');
+      const since = sinceParam === null ? undefined : Number(sinceParam);
+      const wait = waitParam === null ? 0 : Number(waitParam);
+      if (Number.isInteger(since) && Number.isFinite(wait) && wait > 0) {
+        const current = revisions.get(sessionId) ?? 0;
+        if (since === current) await waitForStateChange(sessionId, Math.min(wait, 30000), req, res);
+        if (storeClosing || res.writableEnded === true || res.destroyed === true) return;
+      }
       sendJson(res, 200, stateFor(sessionId));
+      return;
+    }
+
+    // One session's own switch. Global `enabled` remains the master: a session
+    // can turn the persona off, not on while the plugin is globally off.
+    if (path === `${ROUTE}/session-switch` && req.method === 'POST') {
+      let raw = '';
+      for await (const piece of req) {
+        raw += piece;
+        if (raw.length > 4 * 1024) { sendJson(res, 413, { error: 'too large' }); return; }
+      }
+      let body;
+      try { body = JSON.parse(raw === '' ? '{}' : raw); } catch { sendJson(res, 400, { error: 'invalid json' }); return; }
+      const rawSessionId = body !== null && typeof body === 'object' && typeof body.sessionId === 'string'
+        ? body.sessionId.trim()
+        : '';
+      if (rawSessionId === '') { sendJson(res, 400, { error: 'session id required' }); return; }
+      if (rawSessionId.length > 200) { sendJson(res, 400, { error: 'session id too long' }); return; }
+      const sessionId = rawSessionId;
+      if (body === null || typeof body !== 'object' || typeof body.enabled !== 'boolean') {
+        sendJson(res, 400, { error: 'enabled must be a boolean' });
+        return;
+      }
+      if (body.enabled) sessionSwitches.delete(sessionId);
+      else {
+        if (!sessionSwitches.has(sessionId) && sessionSwitches.size >= MAX_SESSION_SWITCHES) {
+          const oldest = sessionSwitches.keys().next().value;
+          if (oldest !== undefined) sessionSwitches.delete(oldest);
+        }
+        sessionSwitches.set(sessionId, false);
+      }
+      sessionSwitchRev += 1;
+      if (store === undefined || !settingsRestored) {
+        // Storage may not have delivered the saved map yet; replay this toggle
+        // on top of it when it does, instead of losing it to the older copy.
+        pendingSessionSwitchValues.set(sessionId, body.enabled);
+      }
+      if (body.enabled === false) {
+        // Stop spending tokens on a session the user just turned off. The
+        // abort is observed by the stream loop and settles the row skipped.
+        for (const [key, controller] of activeRewrites) {
+          if (key.startsWith(`${sessionId}:`)) controller.abort(new Error('session-off'));
+        }
+        // In-flight turn facts belong to the disabled stretch; a later turn
+        // starts them again. Rows already written stay, so re-enabling restores
+        // the history the reader had.
+        turnState.delete(sessionId);
+        candidates.delete(sessionId);
+      }
+      saveSessionSwitches();
+      touch(sessionId);
+      sendJson(res, 200, {
+        ok: true,
+        sessionId,
+        sessionEnabled: body.enabled === true && settings.enabled === true && enabledRestored,
+        sessionSwitches: sessionSwitchState(),
+      });
       return;
     }
 
@@ -1496,6 +1778,10 @@ export function apply(ctx, rawConfig) {
         memory: memoryLines(profile, activePresetId()),
         memoryStats: memoryStats(),
         presets: presets.map(presetForClient),
+        // Per-session overrides ride on the settings read the page already
+        // polls, so a toggle made in another window reaches this one without a
+        // second request shape.
+        sessionSwitches: sessionSwitchState(),
       });
       return;
     }
@@ -1521,6 +1807,16 @@ export function apply(ctx, rawConfig) {
         if (typeof patch.model === 'string') settings.model = patch.model.trim();
         if (typeof patch.reasoningEffort === 'string') settings.reasoningEffort = patch.reasoningEffort.trim();
         if (typeof patch.enabled === 'boolean') settings.enabled = patch.enabled;
+        if (patch.enabled === false) {
+          // Stop any rewrite already spending tokens under the old switch.
+          for (const controller of activeRewrites.values()) controller.abort(new Error('disabled'));
+          // A turn that was mid-flight when the master switch went off must not
+          // leave a stale `report`-mode candidate for the next turn to consume.
+          for (const id of revisions.keys()) {
+            turnState.delete(id);
+            candidates.delete(id);
+          }
+        }
         if (typeof patch.includeToolSteps === 'boolean') settings.includeToolSteps = patch.includeToolSteps;
         if (typeof patch.memory === 'boolean') settings.memory = patch.memory;
         if (typeof patch.subagentSteps === 'boolean') settings.subagentSteps = patch.subagentSteps;
@@ -1544,6 +1840,7 @@ export function apply(ctx, rawConfig) {
         // Returned so the page can show which preset the edit landed in — an
         // edit to the builtin forks a new preset, and the user has to see that.
         presets: presets.map(presetForClient),
+        sessionSwitches: sessionSwitchState(),
       });
       return;
     }
@@ -1557,6 +1854,14 @@ export function apply(ctx, rawConfig) {
 
   ctx.effect(() => () => {
     storeClosing = true;
+    // Stop rewrites before dropping the rows they would settle into: a model
+    // stream must not keep spending tokens after the plugin is gone.
+    for (const controller of activeRewrites.values()) controller.abort(new Error('disposed'));
+    // Release every held long-poll request before tearing down: a response left
+    // waiting on a dead plugin would hang until its timeout.
+    for (const waiters of [...stateWaiters.values()]) {
+      for (const wake of [...waiters]) wake();
+    }
     // Stop accepting new work first, then drain.
     //
     // Three separate bugs lived here: the memory timer was never cleared, so it

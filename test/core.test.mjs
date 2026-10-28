@@ -88,11 +88,28 @@ test('the default card is the 大肥鱼 persona, not a generic assistant', () =>
   assert.ok(pack.samples.length >= 3);
 });
 
-test('the shipped presets include Claude小姐 as a second complete card', () => {
+test('the shipped presets include 大肥龙 as the second built-in card', () => {
+  // The user's own 大肥龙 preset is shipped so a fresh install has the same
+  // character; its helpers are called 小肥龙, not the whale's 小鲸鲸.
+  const dragon = BUILTIN_PRESETS.find((entry) => entry.name === '大肥龙');
+  assert.ok(dragon, 'the dragon preset is shipped');
+  assert.equal(dragon.id, '大肥龙');
+  assert.equal(BUILTIN_PRESETS.indexOf(dragon), 1, 'it is the second built-in');
+
+  const pack = normalizePack(dragon.pack);
+  assert.match(pack.identity, /白龙/);
+  assert.match(pack.identity, /大肥龙/, 'the card explains the nickname it rejects');
+  assert.ok(pack.samples.some((line) => line.includes('验收')), 'the signature line survives');
+  assert.ok(pack.report.join('').includes('账本'), 'its account-book report rule is kept');
+  assert.equal(pack.address.user, '你');
+  assert.equal(pack.address.subagent, '小肥龙', 'this persona names helpers differently');
+});
+
+test('the shipped presets include Claude小姐 as a third complete card', () => {
   // The default preset must not be the only shipped character: the settings page
   // offers presets as alternatives, and a user should be able to switch to a
   // second voice without writing a persona prompt first.
-  assert.equal(BUILTIN_PRESETS.length, 2, 'exactly two shipped presets');
+  assert.equal(BUILTIN_PRESETS.length, 4, 'exactly four shipped presets');
   const claude = BUILTIN_PRESETS.find((entry) => entry.name === 'Claude小姐');
   assert.ok(claude, 'the Claude preset is shipped');
   assert.equal(claude.id, 'Claude小姐', 'the id is stable so a saved selection can find it');
@@ -109,6 +126,24 @@ test('the shipped presets include Claude小姐 as a second complete card', () =>
   assert.ok(pack.avoid.join('').includes('规矩多'));
   assert.equal(pack.address.user, '你');
   assert.equal(pack.address.subagent, '子代理', 'the whale helper name must not leak in');
+});
+
+test('the experimental 鲸鲸 card relays 姐姐, not its own work', () => {
+  const relay = BUILTIN_PRESETS.find((entry) => entry.name === '鲸鲸（实验性）');
+  assert.ok(relay, 'the experimental relay preset is shipped last');
+  assert.equal(relay.id, '鲸鲸（实验性）');
+  assert.equal(BUILTIN_PRESETS.indexOf(relay), 3, 'it is the fourth built-in');
+
+  const pack = normalizePack(relay.pack);
+  assert.match(pack.identity, /转述/, 'the card describes itself as a relay');
+  assert.match(pack.identity, /姐姐/, 'the original assistant is named 姐姐');
+  assert.match(pack.report.join(''), /姐姐/, 'the report rules make 姐姐 the subject');
+  assert.match(pack.report.join(''), /不要写成鲸鲸做的事/, 'it forbids claiming the work as its own');
+  assert.ok(pack.samples.some((line) => line.includes('鲸鲸帮姐姐转达')), 'a relay sample is present');
+  assert.ok(pack.avoid.join('').includes('不要把姐姐做的事说成鲸鲸自己做的'));
+  assert.ok(pack.avoid.join('').includes('不要把用户叫成「姐姐」'));
+  assert.equal(pack.address.user, '你');
+  assert.equal(pack.address.subagent, '小鲸鲸', 'the whale helper name is kept');
 });
 
 test('every shipped preset is a distinct, complete card', () => {

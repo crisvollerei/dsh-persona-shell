@@ -9,6 +9,13 @@
     "rewriting": "…",
     "failed": "kept the plain report",
     "originalLabel": "Original",
-    "personaLabel": "Persona"
+    "personaLabel": "Persona",
+    "personaSwitch": "Persona",
+    "personaSwitchOn": "On",
+    "personaSwitchOff": "Off",
+    "personaSwitchHint": "Persona shell: applies to this session only",
+    "personaSwitchGlobalOff": "Persona shell: master switch is off",
+    "personaSwitchLoading": "Persona shell: reading the session switch",
+    "personaSwitchFailed": "Persona shell: failed to save"
   }
 }
