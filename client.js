@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
      * just installed?" is answerable instead of assumed. A stale bundle and a
      * broken one look identical otherwise.
      */
-    const CLIENT_BUILD = 2026102809;
+    const CLIENT_BUILD = 2026102814;
 
     // --- host data -----------------------------------------------------------
 
@@ -53,6 +53,12 @@ window.__ModuleLoader__.load({
     const switchListeners = new Set();
     /** Last confirmed value of the global switch; false until the Host answers. */
     let globalEnabled = false;
+    let progressEnabled = false;
+    const PROGRESS_WATCH = -1;
+    const PROGRESS_PREFIX = '◈';
+    const progressViewerId = `persona-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    let progressViewRevision = 0;
+    let progressViewerSession;
     /** Listeners for the global-switch state (the session switch respects it). */
     const globalListeners = new Set();
 
@@ -83,6 +89,9 @@ window.__ModuleLoader__.load({
     async function refresh(sessionId, options = {}) {
       const { rev, wait, signal } = options;
       const query = new URLSearchParams({ session: sessionId });
+      if (progressViewerSession === sessionId && (typeof document === 'undefined' || document.visibilityState !== 'hidden')) {
+        query.set('viewing', '1'); query.set('viewer', progressViewerId); query.set('viewRev', String(progressViewRevision));
+      }
       if (rev !== undefined) query.set('rev', String(rev));
       if (wait !== undefined) query.set('wait', String(wait));
       try {
@@ -334,6 +343,61 @@ window.__ModuleLoader__.load({
       refreshTakeover();
     }
 
+    function setProgressEnabled(value) {
+      if (progressEnabled === value) return;
+      progressEnabled = value;
+      for (const listener of globalListeners) listener();
+    }
+
+    /** Explicit view changes release leases; existing long-polls renew them. */
+    function announceProgressView(sessionId) {
+      progressViewerSession = sessionId;
+      progressViewRevision += 1;
+      const visible = usableSessionId(sessionId) && (typeof document === 'undefined' || document.visibilityState !== 'hidden');
+      void fetch(`${ROUTE}/progress-view`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewer: progressViewerId, revision: progressViewRevision, visible,
+          sessionId: visible ? sessionId : undefined }),
+      }).catch(() => {});
+    }
+
+    /** A separate composer-dock status, never a synthetic assistant message. */
+    function ProgressNotice({ sessionId, t }) {
+      const master = useGlobalEnabled();
+      const sessionOn = useSessionSwitch(sessionId);
+      const enabled = master && progressEnabled && sessionOn;
+      const [visible, setVisible] = React.useState(typeof document === 'undefined' || document.visibilityState !== 'hidden');
+      React.useEffect(() => {
+        if (!enabled || !usableSessionId(sessionId)) return undefined;
+        const update = () => {
+          const shown = typeof document === 'undefined' || document.visibilityState !== 'hidden';
+          setVisible(shown);
+          announceProgressView(shown ? sessionId : undefined);
+        };
+        update();
+        if (typeof document !== 'undefined') document.addEventListener('visibilitychange', update);
+        return () => {
+          if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', update);
+          // Do not let an old Session's cleanup release a newer Session's lease.
+          if (progressViewerSession === sessionId) announceProgressView(undefined);
+        };
+      }, [sessionId, enabled]);
+      // This subscriber exists even before the first assistant node is committed.
+      const { state } = useHostState(sessionId, enabled && visible ? PROGRESS_WATCH : undefined);
+      const notice = enabled && visible && state?.settings?.progressNotices === true
+        && state?.settings?.enabled !== false && state?.sessionEnabled !== false ? state?.progress : undefined;
+      if (typeof notice?.text !== 'string' || notice.text === '') return null;
+      const label = shellTranslate(t)('shell.progressNotice') ?? '静默状态播报（插件生成，不是主模型消息）';
+      return h('div', {
+        'data-persona-shell': 'progress', role: 'status', 'aria-live': 'polite', 'aria-atomic': true, 'aria-label': label,
+        style: { display: 'flex', gap: '8px', padding: '8px 12px', minWidth: 0, maxWidth: '100%',
+          color: 'var(--dsw-alias-label-secondary)', background: 'var(--dsw-alias-bg-layer-2)',
+          borderRadius: '8px', fontSize: '13px', lineHeight: '1.6', overflowWrap: 'anywhere' },
+      }, h('span', { 'aria-hidden': true, title: `${label}\n${notice.source ?? ''}`,
+        style: { color: 'var(--dsw-alias-brand-primary)', flex: 'none', cursor: 'help' } }, PROGRESS_PREFIX),
+      h('span', { style: { minWidth: 0, whiteSpace: 'pre-wrap' } }, notice.text));
+    }
+
     /**
      * The per-session switch in the conversation header.
      *
@@ -440,7 +504,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         const listener = () => setVersion((value) => value + 1);
         listeners.add(listener);
-        const stop = usableSessionId(sessionId) ? watch(sessionId, seq) : () => {};
+        const stop = usableSessionId(sessionId) && typeof seq === 'number' ? watch(sessionId, seq) : () => {};
         if (!usableSessionId(sessionId)) {
           // Report once per page: this is the difference between "the plugin is
           // off" and "the plugin cannot see the session", and they look identical.
@@ -466,9 +530,9 @@ window.__ModuleLoader__.load({
      * the host's real renderer — same parser, same Shiki highlighting, same
      * KaTeX, same tables — instead of a look-alike.
      *
-     * Empty-string injection below keeps the arrival order honest; the lookup
-     * itself is tried lazily so a missing module degrades to the local renderer
-     * rather than a blank row.
+     * Only isolated previews use this helper; the transcript uses the full
+     * official assistant adapter below. Missing primitives get plain text,
+     * never an imitation Markdown implementation.
      */
     /**
      * @typedef {object} MarkdownRenderer
@@ -623,7 +687,7 @@ window.__ModuleLoader__.load({
      * outcome than an obviously degraded one: the first hides the problem for
      * months, the second gets reported immediately.
      *
-     * If the module table ever stops carrying `MarkdownText`, the row degrades
+     * If the module table ever stops carrying `MarkdownText`, the preview degrades
      * to plain preformatted text — visibly wrong, cheap to maintain — and the
      * settings page shows a warning. Fidelity is the shipped component's job.
      * @param {string} text
@@ -637,13 +701,107 @@ window.__ModuleLoader__.load({
       return h('div', { style: PLAIN_FALLBACK_STYLE }, text);
     }
 
+    // --- official assistant adapter -----------------------------------------
+
+    const CHAT_SLOT = 'conversation.chat.node';
+    const CHILD_FACTORIES = {
+      'conversation.chat.reasoning.body': 'conversation.chat.reasoning.content',
+      'conversation.chat.message.images': 'conversation.images.content',
+    };
+    let chatRendererState = { status: 'disabled', reason: '' };
+    const rendererListeners = new Set();
+
+    function setChatRendererState(status, reason = '') {
+      if (chatRendererState.status === status && chatRendererState.reason === reason) return;
+      chatRendererState = { status, reason };
+      reportDiagnostics({ chatRenderer: status, chatRendererReason: reason });
+      for (const listener of rendererListeners) listener();
+    }
+
+    function componentName(component) {
+      return typeof component === 'function' ? component.name : component?.type?.name;
+    }
+
+    /** Read-only inspection; an unknown host/extension keeps its own renderer. */
+    function resolveChatDelegate(slots, ownComponent) {
+      const reject = (reason) => ({ ok: false, reason });
+      if (['entries', 'entriesOfSlot', 'subscribe', 'snapshot', 'onEntryError'].some((key) => typeof slots?.[key] !== 'function')) {
+        return reject('registry-api-unavailable');
+      }
+      const entries = slots.entries(CHAT_SLOT).filter((entry) => entry.options?.key === 'assistant-step'
+        && entry.component !== ownComponent);
+      if (entries.length !== 1) return reject(entries.length === 0 ? 'official-assistant-missing' : 'assistant-slot-conflict');
+      const entry = entries[0];
+      // `registrant` is a Cordis display name (often an ancestor's name), not
+      // a package id. Check the supported contract, not diagnostic provenance.
+      if (componentName(entry.component) !== 'AssistantNodeView' || (entry.options.priority ?? 0) !== 0
+        || !isElementType(entry.component) || entry.locale !== 'chat' || typeof entry.inject !== 'function'
+        || entry.store !== undefined || entry.select !== undefined) return reject('unsupported-assistant-contract');
+      const childKeys = Object.keys(entry.children ?? {});
+      if (childKeys.length !== 2 || childKeys.some((key) => !Object.hasOwn(CHILD_FACTORIES, key)
+        || entry.children[key]?.kind !== 'single' || entry.children[key]?.scope !== 'session'
+        || Object.keys(entry.children[key]).some((field) => field !== 'kind' && field !== 'scope'))) {
+        return reject('unsupported-assistant-children');
+      }
+      const children = [];
+      for (const key of childKeys) {
+        const expectedName = key.endsWith('.images') ? 'MessageImages' : 'DefaultReasoningBody';
+        const candidates = slots.entries(key);
+        const winners = slots.entriesOfSlot(key);
+        const child = winners[0];
+        if (candidates.length !== 1 || winners.length !== 1 || child !== candidates[0]
+          || child.options?.priority !== 100
+          || componentName(child.component) !== expectedName
+          || child.inject !== undefined || child.children !== undefined || child.store !== undefined
+          || child.locale !== undefined || child.select !== undefined) return reject('child-slot-conflict');
+        const factory = slots.snapshot(`factory:${CHILD_FACTORIES[key]}`)[0];
+        if (factory?.type !== 'factory' || factory.name !== CHILD_FACTORIES[key]
+          || factory.scope !== 'root' || factory.registrant !== child.registrant
+          || factory.children?.length > 0) return reject('official-factory-unavailable');
+        children.push(child);
+      }
+      return { ok: true, entry, children };
+    }
+
+    /** Only a display copy changes; the durable finalNode and other blocks stay shared. */
+    function displayNode(node, text) {
+      if (typeof text !== 'string' || node?.data?.status !== 'settled') return node;
+      const blocks = node.data.blocks;
+      if (!Array.isArray(blocks) || blocks.filter((block) => block?.kind === 'text').length !== 1) return node;
+      if (blocks.some((block) => block?.kind === 'text' && block.text === text)) return node;
+      return { ...node, data: { ...node.data, blocks: blocks.map((block) => block?.kind === 'text' ? { ...block, text } : block) } };
+    }
+
+    const childRendererCache = new WeakMap();
+    const childAnchorStyle = { display: 'contents' };
+
+    /** Equivalent to the two official default adapters, without claiming their children. */
+    function renderOfficial(delegate, props, node = props.node) {
+      if (typeof props.renderFactorySlot !== 'function') throw new Error('persona-shell: Factory renderer unavailable');
+      let renderSlot = childRendererCache.get(props.renderFactorySlot);
+      if (renderSlot === undefined) {
+        const renderFactorySlot = props.renderFactorySlot;
+        renderSlot = (key, owner) => {
+          if (!Object.hasOwn(CHILD_FACTORIES, key)) throw new Error('persona-shell: unsupported official child');
+          // Preserve the default outlet's addressable, layout-neutral anchor;
+          // themes may select it even though we cannot borrow its authorization.
+          return h('div', { 'data-slot': key, style: childAnchorStyle }, renderFactorySlot(CHILD_FACTORIES[key], owner));
+        };
+        childRendererCache.set(renderFactorySlot, renderSlot);
+      }
+      return h(delegate.entry.component, { ...props, node, renderSlot });
+    }
+
+    /** Chat owns its own locale seat; missing shell copy must not display a key. */
+    function shellTranslate(t) {
+      return (key) => {
+        const value = t?.(key);
+        return typeof value === 'string' && value !== key && !value.endsWith(`.${key}`) ? value : undefined;
+      };
+    }
+
     // --- components ----------------------------------------------------------
 
-    const personaBodyStyle = {
-      color: 'var(--dsw-alias-label-primary)',
-      fontSize: 'inherit',
-      lineHeight: 'inherit',
-    };
     const headerStyle = {
       display: 'flex',
       alignItems: 'center',
@@ -670,33 +828,6 @@ window.__ModuleLoader__.load({
       font: 'inherit',
       padding: 0,
     };
-    /**
-     * Side-by-side comparison.
-     *
-     * When the original is revealed it sits to the LEFT of the rewrite, both in
-     * equal columns. A stacked layout below the text forces the eye to travel
-     * away from what it is comparing; two columns let the same line be read
-     * twice without moving.
-     *
-     * `auto-fit` with a 320px floor is what makes this collapse: below roughly
-     * 660px of chat width the second column no longer fits and the grid falls
-     * back to one column, because two half-width columns of technical prose are
-     * unreadable. No media query, so it follows the chat column rather than the
-     * window.
-     */
-    const compareRowStyle = {
-      display: 'grid',
-      gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-      gap: '14px',
-      alignItems: 'start',
-    };
-    const originalPaneStyle = {
-      minWidth: 0,
-      paddingInlineEnd: '14px',
-      borderInlineEnd: '0.5px solid var(--dsw-alias-border-l1)',
-      color: 'var(--dsw-alias-label-secondary)',
-    };
-    const personaPaneStyle = { minWidth: 0 };
     const paneLabelStyle = {
       marginBottom: '4px',
       fontSize: '11px',
@@ -706,20 +837,467 @@ window.__ModuleLoader__.load({
       color: 'var(--dsw-alias-label-tertiary)',
     };
 
-    /**
-     * Placeholder while the rewrite is in flight.
-     *
-     * Deliberately quiet and the same height as one line of body text, so the
-     * layout does not jump when the real text lands. It is a waiting state, not
-     * a message: nothing the reader might start parsing.
-     */
-    const placeholderStyle = {
-      color: 'var(--dsw-alias-label-tertiary)',
-      fontSize: 'inherit',
-      lineHeight: 'inherit',
-      minHeight: 'calc(24px + var(--dsh-content-font-delta, 0px))',
-      letterSpacing: '0.12em',
+    const COMPARISON_NARROW_WIDTH = 720;
+    const COMPARISON_CSS = `
+      .persona-shell-comparison[role="dialog"] {
+        width: min(1100px, 100%); max-width: 100%; min-width: 0;
+        height: min(720px, 80vh); height: min(720px, 80dvh);
+        max-height: 100%; min-height: 0; padding: 0; gap: 0;
+        color: var(--dsw-alias-label-primary);
+      }
+      .persona-shell-comparison-surface {
+        display: flex; flex-direction: column; flex: 1;
+        min-width: 0; min-height: 0; overflow: hidden;
+        font-size: var(--dsh-content-font-size, 14px); line-height: 1.6;
+      }
+      .persona-shell-comparison-header {
+        display: flex; align-items: center; justify-content: space-between;
+        flex: none; gap: 12px; padding: 14px 18px;
+        border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+      }
+      .persona-shell-comparison-header h2 {
+        margin: 0; font-size: 16px; font-weight: 500; overflow-wrap: anywhere;
+      }
+      .persona-shell-comparison button {
+        font: inherit; cursor: pointer; border: 0; border-radius: 4px;
+        padding: 4px 10px; min-height: 32px;
+        color: var(--dsw-alias-label-secondary); background: transparent;
+      }
+      .persona-shell-comparison button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .persona-shell-comparison-header button { flex: none; }
+      .persona-shell-comparison-tabs { display: flex; flex: none; gap: 4px; padding: 8px 12px; }
+      .persona-shell-comparison-tabs button { flex: 1; }
+      .persona-shell-comparison-tabs [aria-selected="true"] {
+        color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover);
+      }
+      .persona-shell-comparison-panes { display: grid; flex: 1; min-width: 0; min-height: 0; }
+      .persona-shell-comparison-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+      .persona-shell-comparison-pane + .persona-shell-comparison-pane {
+        border-inline-start: 0.5px solid var(--dsw-alias-border-l1);
+      }
+      .persona-shell-comparison-surface[data-narrow="true"] .persona-shell-comparison-pane { border: 0; }
+      .persona-shell-comparison-pane h3 {
+        flex: none; margin: 0; padding: 10px 18px; font-size: 12px;
+        font-weight: 500; color: var(--dsw-alias-label-secondary);
+      }
+      .persona-shell-comparison-scroll {
+        flex: 1; min-width: 0; min-height: 0; padding: 4px 18px 18px;
+        overflow: auto; overscroll-behavior: contain; overflow-wrap: anywhere;
+        scrollbar-gutter: stable;
+      }
+      .persona-shell-comparison-scroll pre { max-width: 100%; overflow: auto; }
+      .persona-shell-comparison [hidden] { display: none; }
+      .persona-shell-comparison[data-native] {
+        box-sizing: border-box; position: fixed; margin: auto;
+        width: min(1100px, calc(100vw - 48px));
+        max-height: calc(100dvh - 48px); border: 0;
+        border-radius: var(--dsw-radius-panel, 12px); overflow: hidden;
+        background: var(--dsw-alias-bg-layer-2); box-shadow: var(--dsw-elevation-prominent);
+      }
+      .persona-shell-comparison[data-native][open] { display: flex; flex-direction: column; }
+      .persona-shell-comparison[data-native]::backdrop { background: var(--dsw-alias-bg-mask-1); }
+      @media (pointer: coarse) { .persona-shell-comparison button { min-height: 44px; min-width: 44px; } }
+    `;
+    let nextComparisonId = 0;
+    let comparisonModal;
+    let comparisonModalResolved = false;
+    const comparisonScrollLocks = new WeakMap();
+
+    /** The host Modal traps focus, but wheel/page keys can still scroll the page. */
+    function lockComparisonScroll(doc) {
+      if (!doc.documentElement?.style || !doc.body?.style) return () => {};
+      let lock = comparisonScrollLocks.get(doc);
+      if (lock === undefined) {
+        const root = doc.documentElement;
+        const saved = [root, doc.body].map((element) => ({ element,
+          overflow: ['overflow-x', 'overflow-y'].map((name) => [name, element.style.getPropertyValue(name), element.style.getPropertyPriority(name)]),
+        }));
+        const gutter = root.style.getPropertyValue('scrollbar-gutter');
+        const gutterPriority = root.style.getPropertyPriority('scrollbar-gutter');
+        const reserveGutter = doc.defaultView?.innerWidth > root.clientWidth
+          && !/\bstable\b/.test(doc.defaultView.getComputedStyle(root).scrollbarGutter);
+        if (reserveGutter) root.style.setProperty('scrollbar-gutter', 'stable');
+        for (const { element } of saved) element.style.setProperty('overflow', 'hidden');
+        lock = { count: 0, restore() {
+          for (const { element, overflow } of saved) {
+            if (element.style.getPropertyValue('overflow') === 'hidden') {
+              element.style.removeProperty('overflow');
+              for (const [name, value, priority] of overflow) if (value) element.style.setProperty(name, value, priority);
+            }
+          }
+          if (reserveGutter && root.style.getPropertyValue('scrollbar-gutter') === 'stable') {
+            if (gutter) root.style.setProperty('scrollbar-gutter', gutter, gutterPriority);
+            else root.style.removeProperty('scrollbar-gutter');
+          }
+        } };
+        comparisonScrollLocks.set(doc, lock);
+      }
+      lock.count += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (--lock.count !== 0) return;
+        lock.restore(); comparisonScrollLocks.delete(doc);
+      };
+    }
+
+    function shippedComparisonModal() {
+      if (!comparisonModalResolved) {
+        comparisonModalResolved = true;
+        try {
+          const candidate = require('@deepseek-ai/dsh-client-ui-primitives')?.Modal;
+          if (isElementType(candidate)) comparisonModal = candidate;
+        } catch { /* Older hosts can still use the browser's modal dialog. */ }
+        if (comparisonModal === undefined) reportDiagnostics({ comparisonModal: 'native-fallback' });
+      }
+      return comparisonModal ?? NativeComparisonModal;
+    }
+
+    /** Only used when a host lacks Modal; native top-layer focus/escape semantics. */
+    function NativeComparisonModal({ onClose, title, className, children }) {
+      const ref = React.useRef(null);
+      useLayoutEffect(() => {
+        const dialog = ref.current;
+        const previous = dialog.ownerDocument.activeElement;
+        dialog.showModal();
+        return () => {
+          dialog.close();
+          if (previous?.isConnected) previous.focus({ preventScroll: true });
+        };
+      }, []);
+      return h('dialog', {
+        ref, className, role: 'dialog', 'aria-modal': true, 'aria-label': title, 'data-native': '',
+        onCancel: (event) => { event.preventDefault(); onClose(); },
+        onClick: (event) => {
+          if (event.target !== event.currentTarget) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose();
+        },
+      }, children);
+    }
+
+    /** Read-only snapshots in a body portal; the live assistant is never moved. */
+    function ComparisonDialog({ original, persona, onClose, t }) {
+      const [active, setActive] = React.useState('original');
+      const [narrow, setNarrow] = React.useState(false);
+      const surfaceRef = React.useRef(null);
+      const originalRef = React.useRef(null);
+      const personaRef = React.useRef(null);
+      const originalTabRef = React.useRef(null);
+      const personaTabRef = React.useRef(null);
+      const positions = React.useRef({ original: 0, persona: 0 });
+      const idRef = React.useRef(null);
+      if (idRef.current === null) idRef.current = `persona-shell-comparison-${++nextComparisonId}`;
+      const id = idRef.current;
+      useLayoutEffect(() => {
+        const element = surfaceRef.current;
+        const view = element.ownerDocument.defaultView;
+        const releaseScroll = lockComparisonScroll(element.ownerDocument);
+        const measure = () => {
+          const width = element.getBoundingClientRect().width;
+          if (width > 0) setNarrow(width < COMPARISON_NARROW_WIDTH);
+        };
+        measure();
+        const observer = typeof view?.ResizeObserver === 'function' ? new view.ResizeObserver(measure) : undefined;
+        observer?.observe(element);
+        view?.addEventListener('resize', measure);
+        return () => { observer?.disconnect(); view?.removeEventListener('resize', measure); releaseScroll(); };
+      }, []);
+      useLayoutEffect(() => {
+        for (const [side, ref] of [['original', originalRef], ['persona', personaRef]]) {
+          if (!narrow || active === side) ref.current.scrollTop = positions.current[side];
+        }
+      }, [active, narrow]);
+      const title = t?.('shell.compareTitle') ?? '原文对照';
+      const labels = { original: t?.('shell.originalLabel') ?? '原文', persona: t?.('shell.personaLabel') ?? '人格版' };
+      const tabs = [['original', originalTabRef], ['persona', personaTabRef]];
+      return h(shippedComparisonModal(), { open: true, onClose, title, headless: true, className: 'persona-shell-comparison' },
+        h('style', null, COMPARISON_CSS),
+        h('div', { ref: surfaceRef, className: 'persona-shell-comparison-surface', 'data-narrow': narrow },
+          h('div', { className: 'persona-shell-comparison-header' },
+            h('h2', null, title),
+            h('button', { type: 'button', 'data-modal-autofocus': '', onClick: onClose,
+              'aria-label': t?.('shell.compareClose') ?? '关闭原文对照' }, t?.('shell.compareCloseShort') ?? '关闭'),
+          ),
+          h('div', { className: 'persona-shell-comparison-tabs', role: 'tablist', 'aria-label': title, hidden: !narrow,
+            onKeyDown: (event) => {
+              if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey
+                || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+              event.preventDefault();
+              const side = event.key === 'Home' ? 'original' : event.key === 'End' ? 'persona' : active === 'original' ? 'persona' : 'original';
+              setActive(side);
+              (side === 'original' ? originalTabRef : personaTabRef).current.focus({ preventScroll: true });
+            },
+          }, tabs.map(([side, ref]) => h('button', { key: side, ref, type: 'button', role: 'tab',
+            id: `${id}-${side}-tab`, 'aria-controls': `${id}-${side}`, 'aria-selected': active === side,
+            tabIndex: active === side ? 0 : -1, onClick: () => setActive(side), onFocus: () => setActive(side),
+          }, labels[side]))),
+          h('div', { className: 'persona-shell-comparison-panes',
+            style: { gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))' } },
+            [['original', original, originalRef], ['persona', persona, personaRef]].map(([side, text, ref]) => h('section', {
+              key: side, className: 'persona-shell-comparison-pane', id: `${id}-${side}`,
+              role: narrow ? 'tabpanel' : 'region', hidden: narrow && active !== side,
+              'aria-labelledby': `${id}-${side}-${narrow ? 'tab' : 'label'}`,
+            },
+            h('h3', { id: `${id}-${side}-label`, hidden: narrow }, labels[side]),
+            h('div', { ref, className: 'persona-shell-comparison-scroll', 'data-comparison-side': side,
+              tabIndex: 0, role: 'region', 'aria-label': labels[side],
+              onScroll: (event) => { if (!narrow || active === side) positions.current[side] = event.currentTarget.scrollTop; },
+            }, renderMarkdown(text)),
+            )),
+          ),
+        ),
+      );
+    }
+
+    // Cache integrity only, not a security hash. Keep in sync with lib/review.js.
+    function reviewFingerprint(text) {
+      let a = 0x811c9dc5;
+      let b = 0x9e3779b9;
+      for (let i = 0; i < text.length; i += 1) {
+        const code = text.charCodeAt(i);
+        a = Math.imul(a ^ code, 0x01000193);
+        b = Math.imul(b ^ code, 0x85ebca6b);
+      }
+      return `v1:${text.length}:${(a >>> 0).toString(16)}:${(b >>> 0).toString(16)}`;
+    }
+
+    const REVIEW_REASONS = ['negation-change', 'condition-change', 'uncertainty-change', 'quantity-change', 'literal-order'];
+
+    function reviewNeeded(row, original, settings) {
+      const review = row?.review;
+      if (settings?.reviewHints === false || row?.status !== 'ready'
+        || typeof row.text !== 'string' || typeof original !== 'string'
+        || review?.version !== 1 || review.scope !== 'message' || review.method !== 'local-lexical-v1'
+        || !Number.isFinite(review.editScore) || review.editScore < 0 || review.editScore > 1
+        || !Array.isArray(review.reasons) || review.reasons.some((reason) => !REVIEW_REASONS.includes(reason))) return false;
+      const threshold = Number.isFinite(settings?.reviewThreshold)
+        && settings.reviewThreshold >= 0 && settings.reviewThreshold <= 1 ? settings.reviewThreshold : 0.55;
+      // The threshold is the gate. Reasons can explain a high-scoring change but
+      // must not make a below-threshold row show the hint on their own.
+      if (!(review.editScore > 0 && review.editScore >= threshold)) return false;
+      return review.sourceHash === reviewFingerprint(original) && review.targetHash === reviewFingerprint(row.text);
+    }
+
+    let nextReviewId = 0;
+    let reviewPortal;
+    try { reviewPortal = require('react-dom').createPortal; } catch { /* Old/minimal hosts keep the fixed-position fallback. */ }
+    const reviewPanelStyle = {
+      position: 'fixed',
+      left: 0,
+      top: 0,
+      zIndex: 100,
+      boxSizing: 'border-box',
+      width: 'min(560px, calc(100vw - 24px))',
+      maxHeight: 'min(420px, 55vh)',
+      overflow: 'auto',
+      overscrollBehavior: 'contain',
+      padding: '12px',
+      border: '1px solid var(--dsw-alias-border-l1)',
+      borderRadius: '8px',
+      background: 'var(--dsw-alias-bg-layer-2)',
+      color: 'var(--dsw-alias-label-primary)',
+      boxShadow: '0 4px 18px #0002',
+      fontSize: '13px',
+      lineHeight: '1.6',
+      overflowWrap: 'anywhere',
     };
+
+    /** Prefer above when it fits; never hang a long preview underneath the composer. */
+    function reviewPlacement(anchor, height, bounds) {
+      const gap = 6;
+      const width = Math.max(0, Math.min(560, bounds.right - bounds.left));
+      const cap = Math.max(0, Math.min(420, (bounds.bottom - bounds.top) * 0.55));
+      const above = Math.max(0, anchor.top - gap - bounds.top);
+      const below = Math.max(0, bounds.bottom - anchor.bottom - gap);
+      const onTop = above >= Math.min(height, cap) || above >= below;
+      const maxHeight = Math.min(cap, onTop ? above : below);
+      return {
+        left: Math.max(bounds.left, Math.min(anchor.left, bounds.right - width)),
+        top: onTop ? Math.max(bounds.top, anchor.top - gap - Math.min(height, maxHeight)) : anchor.bottom + gap,
+        width,
+        maxHeight,
+      };
+    }
+
+    /** Hover/focus is a non-interactive preview; click pins an accessible dialog. */
+    function ReviewHint({ original, review, t, renderOriginal }) {
+      const [hovered, setHovered] = React.useState(false);
+      const [focused, setFocused] = React.useState(false);
+      const [pinned, setPinned] = React.useState(false);
+      const [dismissed, setDismissed] = React.useState(false);
+      const [position, setPosition] = React.useState(null);
+      const rootRef = React.useRef(null);
+      const triggerRef = React.useRef(null);
+      const panelRef = React.useRef(null);
+      const leaveTimer = React.useRef(undefined);
+      const idRef = React.useRef(null);
+      if (idRef.current == null) idRef.current = `persona-shell-review-${++nextReviewId}`;
+      const id = idRef.current;
+      const open = pinned || (!dismissed && (hovered || focused));
+      const label = t?.('shell.reviewHint') ?? '改写变化提示，查看原文';
+      const closeLabel = t?.('shell.reviewClose') ?? '关闭原文预览';
+      const contains = (target) => rootRef.current?.contains(target) || panelRef.current?.contains(target);
+      const cancelLeave = () => {
+        if (leaveTimer.current !== undefined) clearTimeout(leaveTimer.current);
+        leaveTimer.current = undefined;
+      };
+      const enter = () => { cancelLeave(); setHovered(true); setDismissed(false); };
+      const leave = () => {
+        cancelLeave();
+        leaveTimer.current = setTimeout(() => { leaveTimer.current = undefined; setHovered(false); }, 150);
+      };
+      const dismiss = (restoreFocus) => {
+        cancelLeave();
+        setPinned(false);
+        setDismissed(true);
+        if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
+      };
+
+      React.useEffect(() => () => cancelLeave(), []);
+      useLayoutEffect(() => {
+        if (!open) { setPosition(null); return undefined; }
+        const trigger = triggerRef.current;
+        const panel = panelRef.current;
+        const doc = trigger?.ownerDocument;
+        const win = doc?.defaultView;
+        if (!trigger || !panel || !win) return undefined;
+        const scrollParents = new Set();
+        const place = () => {
+          const viewport = win.visualViewport;
+          const width = viewport?.width ?? doc.documentElement?.clientWidth ?? win.innerWidth;
+          const height = viewport?.height ?? doc.documentElement?.clientHeight ?? win.innerHeight;
+          if (!(width > 0 && height > 0)) return;
+          const left = viewport?.offsetLeft ?? 0;
+          const top = viewport?.offsetTop ?? 0;
+          const bounds = { left: left + 12, right: left + width - 12, top: top + 12, bottom: top + height - 12 };
+          const clearance = Number.parseFloat(win.getComputedStyle?.(doc.documentElement).getPropertyValue('--dsh-frame-top-clearance'));
+          if (Number.isFinite(clearance)) bounds.top = Math.max(bounds.top, (doc.documentElement.hasAttribute('data-fullscreen') ? 0 : clearance) + 20);
+          // The chat scroller ends above the composer. Respect its vertical
+          // reading area, but portal out of its clipping/transform context.
+          for (let parent = trigger.parentElement; parent && parent !== doc.body; parent = parent.parentElement) {
+            const overflow = win.getComputedStyle?.(parent).overflowY;
+            if (!/^(auto|scroll)$/.test(overflow)) continue;
+            scrollParents.add(parent);
+            const rect = parent.getBoundingClientRect();
+            bounds.top = Math.max(bounds.top, rect.top + 12);
+            bounds.bottom = Math.min(bounds.bottom, rect.bottom - 12);
+          }
+          const anchor = trigger.getBoundingClientRect();
+          if (anchor.bottom <= bounds.top || anchor.top >= bounds.bottom || anchor.right <= bounds.left || anchor.left >= bounds.right) {
+            setHovered(false); setFocused(false); dismiss(false);
+            return;
+          }
+          const next = reviewPlacement(anchor, panel.getBoundingClientRect().height, bounds);
+          setPosition((current) => current && Object.keys(next).every((key) => current[key] === next[key]) ? current : next);
+        };
+        place();
+        const observer = typeof win.ResizeObserver === 'function' ? new win.ResizeObserver(place) : undefined;
+        observer?.observe(trigger); observer?.observe(panel);
+        for (const parent of scrollParents) observer?.observe(parent);
+        win.addEventListener('scroll', place, true);
+        win.addEventListener('resize', place);
+        win.visualViewport?.addEventListener('resize', place);
+        win.visualViewport?.addEventListener('scroll', place);
+        return () => {
+          observer?.disconnect();
+          win.removeEventListener('scroll', place, true);
+          win.removeEventListener('resize', place);
+          win.visualViewport?.removeEventListener('resize', place);
+          win.visualViewport?.removeEventListener('scroll', place);
+        };
+      }, [open, pinned]);
+      React.useEffect(() => {
+        const doc = rootRef.current?.ownerDocument ?? (typeof document === 'undefined' ? undefined : document);
+        if (!open || doc === undefined) return undefined;
+        const onPointer = (event) => {
+          if (!contains(event.target)) {
+            setHovered(false);
+            setFocused(false);
+            dismiss(false);
+          }
+        };
+        const onKey = (event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          event.stopPropagation();
+          dismiss(pinned);
+        };
+        doc.addEventListener('pointerdown', onPointer, true);
+        doc.addEventListener('keydown', onKey, true);
+        return () => {
+          doc.removeEventListener('pointerdown', onPointer, true);
+          doc.removeEventListener('keydown', onKey, true);
+        };
+      }, [open, pinned]);
+      React.useEffect(() => {
+        if (pinned) panelRef.current?.focus({ preventScroll: true });
+      }, [pinned]);
+
+      const panel = open ? h('div', {
+        id,
+        ref: panelRef,
+        'data-persona-shell': 'review-panel',
+        role: pinned ? 'dialog' : 'tooltip',
+        'aria-label': pinned ? label : undefined,
+        tabIndex: pinned ? -1 : undefined,
+        style: { ...reviewPanelStyle, ...position, visibility: position === null ? 'hidden' : undefined },
+        onMouseEnter: enter,
+        onMouseLeave: leave,
+      },
+      h('div', { style: { ...headerStyle, justifyContent: 'space-between' } },
+        h('span', null, t?.('shell.originalLabel') ?? '原文'),
+        pinned ? h('button', {
+          type: 'button', style: toggleStyle, 'aria-label': closeLabel,
+          onClick: () => dismiss(true),
+        }, t?.('shell.reviewCloseShort') ?? '关闭') : null),
+      h('div', { style: { ...paneLabelStyle, textTransform: 'none', letterSpacing: 'normal' } },
+        t?.('shell.reviewNotice') ?? '本地措辞变化提示，不代表事实错误；低分也不保证语义一致。',
+        ` (${Math.round(review.editScore * 100)}/100)`,
+        review.reasons.length > 0
+          ? h('div', null, review.reasons.map((reason) => t?.(`shell.reviewReasons.${reason}`) ?? ({
+            'negation-change': '否定表达变化', 'condition-change': '条件表达变化',
+            'uncertainty-change': '不确定性表达变化', 'quantity-change': '数字表达变化',
+            'literal-order': '字面量顺序变化',
+          })[reason]).join(' · '))
+          : null),
+      renderOriginal?.() ?? renderMarkdown(original),
+      ) : null;
+      const doc = rootRef.current?.ownerDocument;
+      return h('div', {
+        ref: rootRef,
+        'data-persona-shell': 'review-hint',
+        style: { display: 'inline-flex', width: 'fit-content', verticalAlign: 'middle', marginTop: '4px' },
+        onMouseEnter: enter,
+        onMouseLeave: leave,
+        onFocus: (event) => {
+          setFocused(true);
+          if (!contains(event.relatedTarget)) setDismissed(false);
+        },
+        onBlur: (event) => {
+          if (!contains(event.relatedTarget)) setFocused(false);
+        },
+      },
+      h('button', {
+        ref: triggerRef,
+        type: 'button',
+        'aria-label': label,
+        'aria-haspopup': 'dialog',
+        'aria-expanded': open,
+        'aria-controls': open ? id : undefined,
+        'aria-describedby': open && !pinned ? id : undefined,
+        style: {
+          ...toggleStyle, color: 'var(--dsw-alias-state-warning-primary, var(--dsw-alias-brand-primary))', fontSize: '15px', fontWeight: 600,
+          minWidth: '28px', minHeight: '28px', borderRadius: '4px',
+        },
+        onClick: () => {
+          if (pinned) dismiss(false);
+          else { setPinned(true); setDismissed(false); }
+        },
+      }, h('span', { 'aria-hidden': true }, '※')),
+      panel && typeof reviewPortal === 'function' && doc?.body ? reviewPortal(panel, doc.body) : panel);
+    }
 
     /** Text of one assistant step, in the order the blocks carry it. */
     function textOf(data) {
@@ -729,13 +1307,6 @@ window.__ModuleLoader__.load({
         .map((block) => block.text)
         .join('\n')
         .trim();
-    }
-
-    /** Whether this step carries anything the persona view cannot reproduce. */
-    function hasNonText(data) {
-      const blocks = data?.blocks ?? [];
-      return blocks.some((block) => block !== undefined
-        && block.kind !== 'text' && block.kind !== 'reasoning' && block.kind !== 'tool-call');
     }
 
     /**
@@ -800,144 +1371,73 @@ window.__ModuleLoader__.load({
       });
     }
 
-    /**
-     * Persona body for one settled step.
-     *
-     * The rewrite is asynchronous, so a freshly settled step has no persona text
-     * for a moment. Rendering the plain report in that window is what produced
-     * the visible "text appears, then swaps" flicker: the reader starts reading
-     * one version and finishes another.
-     *
-     * Rows that stream or carry non-text blocks return `null` so the shipped
-     * renderer keeps them; everything else goes through {@link rowBranch}.
-     * @returns the persona block, or `null` to let the shipped renderer render.
-     */
-    function PersonaStep(props) {
-      const { node, sessionId, t, groupPart } = props;
+    /** Keep the official component mounted; change only one settled text block. */
+    function PersonaStep({ delegate, ...props }) {
+      const { node, sessionId, groupPart } = props;
       const data = node?.data;
-      const finalNode = data?.finalNode;
-      const seq = finalNode?.seq;
-      const status = data?.status;
+      const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
+      const seq = data?.finalNode?.seq;
       const original = textOf(data);
-      const { state } = useHostState(sessionId, seq);
-      const [openOriginal, setOpenOriginal] = React.useState(false);
-      const [conceded, setConceded] = React.useState(false);
-
-      // The shipped chat renders the same assistant node twice, and `groupPart`
-      // selects which blocks belong to which pass:
-      //
-      //   groupPart === 'reasoning' → only `reasoning` blocks
-      //   groupPart === 'response'  → everything except `reasoning`
-      //
-      // This entry replaces `AssistantNodeView` wholesale, so the reasoning pass
-      // is *not* handed back to the shipped component — returning `null` simply
-      // renders nothing for it. That is a deliberate, documented loss: showing the
-      // reasoning correctly would mean reimplementing `ProcessReasoning` and
-      // `ReasoningRow`, which is the "copy the shipped renderer" work this project
-      // decided against. Without this guard the answer appeared inside the
-      // thinking pane as well, which was strictly worse than showing nothing.
-      if (groupPart === 'reasoning') return null;
-
-      // The hold window must measure the wait for a rewrite, not the lifetime of
-      // this component. The shipped chat keeps one instance across
-      // running → settled, so a timer started at mount had already expired by the
-      // time the step settled — the row conceded immediately and showed the plain
-      // report, then swapped to the persona when the rewrite landed. That is the
-      // flash this whole mechanism exists to prevent.
-      const settled = status === 'settled';
-      React.useEffect(() => {
-        if (!settled || conceded) return undefined;
-        const timer = setTimeout(() => setConceded(true), HOLD_PLACEHOLDER_MS);
-        return () => clearTimeout(timer);
-      }, [settled, conceded]);
-
-      if (status === 'running' || status === 'interrupted') return null;
-      if (seq === undefined || original === '') return null;
-      // Images or unknown blocks: the shipped renderer owns this row.
-      if (hasNonText(data)) return null;
-
-      const row = state?.rows?.find((candidate) => candidate.seq === seq);
-      // Whether this step is new, decided ONCE and remembered.
-      //
-      // Every derived answer flips as `state` arrives — `seq > newestKnown` was
-      // false while state was undefined and true a moment later, so the row
-      // re-rendered `plain → placeholder → plain → placeholder` within 9ms. That
-      // oscillation is the flash this whole mechanism exists to prevent, so the
-      // answer is latched the first time the step is seen.
-      //
-      // "New" means: the page already had this session's state, and this row was
-      // not in it. That is precisely a step that just arrived and whose rewrite is
-      // being computed now. A row present in the first state the page ever got is
-      // history — nothing is coming for it, so it renders at once.
+      const t = shellTranslate(props.t);
+      const eligible = data?.status === 'settled' && groupPart !== 'reasoning'
+        && (groupPart === undefined || groupPart === 'response') && typeof seq === 'number'
+        && usableSessionId(sessionId) && original !== ''
+        && blocks.filter((block) => block?.kind === 'text').length === 1;
+      const { state } = useHostState(sessionId, eligible ? seq : undefined);
+      const [comparison, setComparison] = React.useState(undefined);
+      const [expiredKey, setExpiredKey] = React.useState(undefined);
       const key = rowKey(sessionId, seq);
-      if (!freshDecided.has(key) && state !== undefined) {
+      const row = eligible ? state?.rows?.find((candidate) => candidate.seq === seq) : undefined;
+      const allowed = eligible && globalEnabled && state?.sessionEnabled !== false
+        && state?.settings?.enabled !== false && sessionOff.get(sessionId) !== false;
+      React.useEffect(() => {
+        if (!allowed) return undefined;
+        const timer = setTimeout(() => setExpiredKey(key), HOLD_PLACEHOLDER_MS);
+        return () => clearTimeout(timer);
+      }, [allowed, key]);
+      React.useEffect(() => { setComparison(undefined); }, [key, allowed, row?.status, row?.final]);
+
+      if (allowed && !freshDecided.has(key) && state !== undefined) {
         freshDecided.set(key, row === undefined);
       }
-      const fresh = freshDecided.get(key) === true;
-      const branch = rowBranch(row, conceded, fresh);
-      // Record the first branch a row takes, and any change after it. "Plain
-      // first, persona later" is a visible flash, and this is the only way to see
-      // whether it came from a placeholder timeout, a transient skipped row, or a
-      // second render with different data.
-      const previousBranch = branchHistory.get(key);
-      if (previousBranch !== branch) {
+      const branch = allowed ? rowBranch(row, expiredKey === key, freshDecided.get(key) === true) : 'plain';
+      if (allowed && branchHistory.get(key) !== branch) {
         branchHistory.set(key, branch);
         const trace = diagnosticsTrail.get(key) ?? [];
         trace.push({ branch, at: Date.now() });
         diagnosticsTrail.set(key, trace.slice(-4));
-        if (trace.length <= 4) {
-          reportDiagnostics({ branchTrail: { [key]: trace } });
-        }
+        if (trace.length <= 4) reportDiagnostics({ branchTrail: { [key]: trace } });
       }
-
-      if (branch === 'placeholder') {
-        return h('div', null, h('div', { style: placeholderStyle }, placeholderText(t)));
-      }
-      if (branch === 'plain') {
-        return h('div', { style: personaBodyStyle }, renderMarkdown(original));
-      }
-      if (branch === 'streaming') {
-        // No badge and no toggle yet: what is on screen is a rewrite still being
-        // written, and offering "原文" against half a sentence would be noise.
-        // No caret either — the shipped renderer never draws one, and the text
-        // already grows visibly as chunks land.
-        return h('div', { style: personaBodyStyle },
-          renderMarkdown(unmaskPartial(row.partial, row.partialLiterals)),
-        );
-      }
-
-      const showOriginal = openOriginal ? (t?.('shell.hideOriginal') ?? 'Hide original') : (t?.('shell.showOriginal') ?? 'Original');
-
-      // Mid-turn narration is short and frequent; a badge and a toggle on every
-      // one turns the transcript into a wall of chrome. The control appears only
-      // on the step that ends the turn, which is the one worth comparing — the
-      // others still get the persona text, just without being labelled.
-      const showHeader = row.final === true;
-
-      return h('div', { style: personaBodyStyle },
-        showHeader
-          ? h('div', { style: headerStyle },
-            h('span', { style: badgeStyle }, 'persona'),
-            h('button', {
-              type: 'button',
-              style: toggleStyle,
-              onClick: () => setOpenOriginal((value) => !value),
-            }, showOriginal),
-          )
+      const text = branch === 'persona' ? row.text
+        : branch === 'streaming' ? unmaskPartial(row.partial, row.partialLiterals)
+          : branch === 'placeholder' ? placeholderText(t) : undefined;
+      const report = renderOfficial(delegate, props, displayNode(node, text));
+      const ready = branch === 'persona';
+      const showHeader = ready && row.final === true;
+      // Original previews contain text only; images/reasoning remain in the
+      // continuously mounted main renderer, not duplicated in a comparison.
+      const renderOriginal = () => renderOfficial(delegate, { ...props, groupPart: 'response' }, {
+        ...node, data: { ...data, blocks: blocks.filter((block) => block?.kind === 'text') },
+      });
+      const comparisonOpen = comparison?.key === key;
+      // No layout wrapper or reparenting, even while the portaled modal is open.
+      return h(React.Fragment, null,
+        // The persona badge and original toggle belong above the report, where
+        // the reader meets the row; the ※ review hint stays at the end, where
+        // it does not compete with the reading flow.
+        showHeader ? h('div', { style: headerStyle, 'data-persona-shell': 'controls' },
+          h('span', { style: badgeStyle }, 'persona'),
+          h('button', {
+            type: 'button', style: toggleStyle, 'aria-expanded': comparisonOpen, 'aria-haspopup': 'dialog',
+            onClick: () => setComparison({ key, original: blocks.find((block) => block?.kind === 'text').text, persona: row.text }),
+          }, t('shell.showOriginal') ?? 'origin'),
+        ) : null,
+        report,
+        ready && !comparisonOpen && reviewNeeded(row, original, state?.settings)
+          ? h(ReviewHint, { key: `${key}:${row.review.sourceHash}:${row.review.targetHash}`, original, review: row.review, t, renderOriginal })
           : null,
-        h('div', { style: openOriginal ? compareRowStyle : undefined },
-          // The original sits to the LEFT of the rewrite when revealed: the two
-          // are read against each other line by line, so a stacked layout below
-          // the text forces the eye to scroll away from what it is comparing.
-          openOriginal
-            ? h('div', { style: originalPaneStyle },
-              h('div', { style: paneLabelStyle }, t?.('shell.originalLabel') ?? '原文'),
-              renderMarkdown(original))
-            : null,
-          h('div', { style: openOriginal ? personaPaneStyle : undefined },
-            openOriginal ? h('div', { style: paneLabelStyle }, t?.('shell.personaLabel') ?? '人格版') : null,
-            renderMarkdown(row.text)),
-        ),
+        showHeader && comparisonOpen ? h(ComparisonDialog, { original: comparison.original,
+          persona: comparison.persona, t, onClose: () => setComparison(undefined) }) : null,
       );
     }
 
@@ -1038,7 +1538,9 @@ window.__ModuleLoader__.load({
           body: JSON.stringify(patch),
         });
         if (!response.ok) return undefined;
-        return await response.json();
+        const value = await response.json();
+        if (typeof value?.settings?.progressNotices === 'boolean') setProgressEnabled(value.settings.progressNotices);
+        return value;
       } catch {
         return undefined;
       }
@@ -1074,9 +1576,18 @@ window.__ModuleLoader__.load({
      */
     function SettingsSection() {
       const [settings, setSettings] = React.useState(undefined);
+      const [rendererState, setRendererState] = React.useState(chatRendererState);
+      React.useEffect(() => {
+        const listener = () => setRendererState(chatRendererState);
+        rendererListeners.add(listener);
+        listener();
+        return () => rendererListeners.delete(listener);
+      }, []);
       const [providers, setProviders] = React.useState([]);
       const [models, setModels] = React.useState([]);
       const [status, setStatus] = React.useState('');
+      const [reviewThresholdDraft, setReviewThresholdDraft] = React.useState(undefined);
+      const [progressMinutesDraft, setProgressMinutesDraft] = React.useState(undefined);
       /** What long-term memory currently claims, so it can be inspected. */
       const [memoryLines, setMemoryLines] = React.useState([]);
       const [memoryStats, setMemoryStats] = React.useState(undefined);
@@ -1247,8 +1758,13 @@ window.__ModuleLoader__.load({
         shippedRendererOk
           ? null
           : h('div', { style: warningStyle },
-            '官方 Markdown 渲染器不可用，汇报目前显示为纯文本（没有高亮、公式和脚注）。',
+            '独立预览的备用 Markdown 组件不可用，备用预览显示为纯文本；主消息仍由官方组件渲染。',
           ),
+        rendererState.status === 'incompatible' || rendererState.status === 'error'
+          ? h('div', { style: warningStyle, role: 'status' },
+            '未能安全接入官方助手渲染器，已暂停人格显示并保留官方原文。',
+            ` (${rendererState.reason})`,
+          ) : null,
         h('div', { style: { height: '14px' } }),
 
         h('div', { style: fieldStyle },
@@ -1263,6 +1779,71 @@ window.__ModuleLoader__.load({
           h('span', { style: hintStyle },
             '开启后，带工具调用的中间步骤（"现在改常量…"这类叙述）也会套壳；'
             + '关掉则只改写每轮最终的汇报，中间步骤保持原样。',
+          ),
+        ),
+
+        h('div', { style: { height: '6px' } }),
+
+        h('div', { style: fieldStyle },
+          h('label', { style: toggleRowStyle },
+            h('input', { type: 'checkbox', checked: settings.progressNotices === true,
+              onChange: (event) => save({ progressNotices: event.target.checked }) }),
+            h('span', { style: labelStyle }, '静默状态播报（默认关闭）'),
+          ),
+          h('span', { style: hintStyle },
+            '当前正在查看的主会话长时间没有正文时，根据可观察的活动额外调用一次模型，生成一两句人格播报。'
+            + '固定前缀 ◈；不写入主会话，无新事实不重复调用，每轮最多 3 次。不能据此判断任务完成或是否卡住。'),
+          h('label', { style: { ...toggleRowStyle, marginTop: '6px' } },
+            h('span', { style: labelStyle }, '静默多久后播报（分钟）'),
+            h('input', { type: 'number', min: 1, max: 60, step: 1, style: { ...inputStyle, width: '76px' },
+              disabled: settings.progressNotices !== true,
+              value: progressMinutesDraft ?? settings.progressMinutes ?? 5,
+              onChange: (event) => setProgressMinutesDraft(event.target.value),
+              onBlur: async (event) => {
+                const value = Number(event.target.value);
+                if (Number.isInteger(value) && value >= 1 && value <= 60 && value !== settings.progressMinutes) {
+                  await save({ progressMinutes: value });
+                }
+                setProgressMinutesDraft(undefined);
+              },
+              onKeyDown: (event) => { if (event.key === 'Enter') event.currentTarget.blur(); },
+            }),
+          ),
+        ),
+
+        h('div', { style: fieldStyle },
+          h('label', { style: toggleRowStyle },
+            h('input', {
+              type: 'checkbox',
+              checked: settings.reviewHints !== false,
+              onChange: (event) => save({ reviewHints: event.target.checked }),
+            }),
+            h('span', { style: labelStyle }, '改写变化提示'),
+          ),
+          h('span', { style: hintStyle },
+            '措辞变化分数达到阈值时，在该条汇报末尾显示 ※；否定、条件、不确定性、数字、字面量顺序等只作为提示面板里的解释。'
+            + '悬停或键盘聚焦预览原文，点击固定。本地启发式检查，不增加模型调用，也不保证语义一致。'),
+          h('details', { style: { marginTop: '6px' } },
+            h('summary', { style: { ...hintStyle, cursor: 'pointer' } }, '高级：提示阈值'),
+            h('label', { style: { ...toggleRowStyle, marginTop: '6px' } },
+              h('span', { style: labelStyle }, `措辞变化阈值：${Math.round((reviewThresholdDraft ?? settings.reviewThreshold ?? 0.55) * 100)}/100`),
+              h('input', {
+                type: 'range', min: 0, max: 1, step: 0.05,
+                'aria-label': '措辞变化提示阈值',
+                value: reviewThresholdDraft ?? settings.reviewThreshold ?? 0.55,
+                disabled: settings.reviewHints === false,
+                onChange: (event) => setReviewThresholdDraft(Number(event.target.value)),
+                // Commit once on blur, not one network request per slider tick.
+                onBlur: async (event) => {
+                  const value = Number(event.target.value);
+                  if (value !== settings.reviewThreshold) await save({ reviewThreshold: value });
+                  setReviewThresholdDraft(undefined);
+                },
+                onKeyDown: (event) => { if (event.key === 'Enter') event.currentTarget.blur(); },
+              })),
+            h('span', { style: hintStyle },
+              '默认 55；越低越容易提示，移开焦点后保存。低于阈值不显示；关键表达变化只作解释，不绕过阈值。'
+              + '修改只影响已有评估的显示，不重新改写；旧记录不补算。'),
           ),
         ),
 
@@ -1601,18 +2182,33 @@ window.__ModuleLoader__.load({
       /**
        * Rendering decisions, exposed for the offline suite.
        *
-       * `rowBranch` is the whole flicker policy: which body a settled row shows
-       * while its rewrite is still in flight. `renderMarkdown` is the body
-       * renderer itself. A mocked React cannot replay a fetch-then-rerender
-       * cycle, so the decisions are tested directly instead of through a mount.
+       * Pure timing/compatibility decisions plus components for the stateful
+       * offline harness. renderMarkdown is only an isolated-preview fallback;
+       * the main transcript always delegates to the official assistant.
        */
       __testing: {
         rowBranch,
         renderMarkdown,
+        resolveChatDelegate,
+        displayNode,
+        renderOfficial,
+        PersonaStep,
+        refreshState: refresh,
+        getChatRendererState: () => chatRendererState,
         unmaskPartial,
         chatTakeoverEnabled,
         HOLD_PLACEHOLDER_MS,
         STATE_WAIT_MS,
+        reviewFingerprint,
+        reviewNeeded,
+        reviewPlacement,
+        ReviewHint,
+        ComparisonDialog,
+        NativeComparisonModal,
+        COMPARISON_NARROW_WIDTH,
+        ProgressNotice,
+        setProgressEnabled,
+        PROGRESS_PREFIX,
       },
       apply(ctx) {
         // Owned by the plugin lifetime; both are cleared on unload below.
@@ -1636,39 +2232,54 @@ window.__ModuleLoader__.load({
         }
 
 
-        // Take over the `assistant-step` renderer only while the plugin is on.
-        //
-        // Shadowing a keyed cell hides whatever the shipped renderer would have
-        // drawn there — reasoning, images, interrupted markers — and that loss is
-        // acceptable only when the persona view is actually replacing it with
-        // something. When the plugin is switched off the entry is disposed, the
-        // shipped `AssistantNodeView` takes the cell back, and the complete
-        // rendering returns. Without this the loss was unconditional: disabling
-        // the plugin still left every row without its reasoning pane.
-        //
-        // A lower priority than the shipped entry shadows it; disposing restores it.
-        //
-        // No `inject` here: `sessionId` is one of this slot's `standardProps`, so it
-        // arrives as a normal prop.
+        // Keep the official entry (and its child declarations) live. Our entry
+        // borrows its inject/locale contract, not its exclusive child ownership.
         let releaseChat = undefined;
-        const takeOverChat = () => {
-          if (releaseChat !== undefined) return;
-          releaseChat = ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-            name: 'conversation.chat.node',
-            key: 'assistant-step',
-            priority: -1,
-          }, PersonaStep));
-        };
+        let chatComponent;
+        let chatDelegate;
+        let rendererFailed = false;
+        const rendererSubscriptions = [];
         const releaseChatSlot = () => {
           const release = releaseChat;
           releaseChat = undefined;
+          chatDelegate = undefined;
           if (release !== undefined) release();
         };
-        // The page-wide takeover follows both switches: the global one from the
-        // Host and the active Session's own override from the header switch.
         refreshChatTakeover = () => {
-          if (chatTakeoverEnabled(globalEnabled, activeSessionId, sessionOff)) takeOverChat();
-          else releaseChatSlot();
+          if (stopped) return;
+          if (!chatTakeoverEnabled(globalEnabled, activeSessionId, sessionOff)) {
+            releaseChatSlot();
+            rendererFailed = false;
+            setChatRendererState('disabled');
+            return;
+          }
+          if (rendererFailed) {
+            releaseChatSlot();
+            setChatRendererState('error', 'delegate-render-failed');
+            return;
+          }
+          try {
+            const delegate = resolveChatDelegate(ctx.slots, chatComponent);
+            if (!delegate.ok) {
+              releaseChatSlot();
+              setChatRendererState('incompatible', delegate.reason);
+              return;
+            }
+            if (chatDelegate?.entry === delegate.entry
+              && chatDelegate.children.every((entry, index) => entry === delegate.children[index])) return;
+            releaseChatSlot();
+            chatComponent = function PersonaDelegate(props) { return h(PersonaStep, { ...props, delegate }); };
+            releaseChat = ctx.slots.register({
+              name: CHAT_SLOT, key: 'assistant-step', priority: -1,
+              locale: delegate.entry.locale, inject: delegate.entry.inject,
+            }, chatComponent);
+            chatDelegate = delegate;
+            setChatRendererState('delegated');
+          } catch {
+            releaseChatSlot();
+            rendererFailed = true;
+            setChatRendererState('error', 'delegate-setup-failed');
+          }
         };
 
         // Track the switch. The host is the source of truth.
@@ -1687,6 +2298,24 @@ window.__ModuleLoader__.load({
         let stopped = false;
         let syncTimer;
         let inFlightController;
+
+        if (typeof ctx.slots.subscribe === 'function') {
+          for (const key of [CHAT_SLOT, ...Object.keys(CHILD_FACTORIES)]) {
+            rendererSubscriptions.push(ctx.slots.subscribe(key, () => refreshTakeover()));
+          }
+        }
+        if (typeof ctx.slots.onEntryError === 'function') {
+          rendererSubscriptions.push(ctx.slots.onEntryError((key, entry) => {
+            const ownCrash = key === CHAT_SLOT && entry.component === chatComponent;
+            const factoryCrash = releaseChat !== undefined && Object.values(CHILD_FACTORIES)
+              .some((name) => key === `factory:${name}`);
+            if (!ownCrash && !factoryCrash) return;
+            rendererFailed = true;
+            // Leave the failing render/commit before releasing its entry. Do
+            // not repeatedly reinstall a component the host just abdicated.
+            void Promise.resolve().then(() => refreshTakeover());
+          }));
+        }
 
         const scheduleSync = (delay) => {
           if (stopped) return;
@@ -1712,6 +2341,7 @@ window.__ModuleLoader__.load({
               if (stopped) return;
               const enabled = value?.settings?.enabled;
               if (typeof enabled === 'boolean') setGlobalEnabled(enabled);
+              setProgressEnabled(value?.settings?.progressNotices === true);
               applySessionSwitches(value?.sessionSwitches);
             }
           } catch {
@@ -1721,6 +2351,9 @@ window.__ModuleLoader__.load({
             clearTimeout(timeout);
             if (inFlightController === controller) inFlightController = undefined;
           }
+          // Factory definitions have no public subscription on SlotRegistry;
+          // child-slot changes wake us immediately, this also checks quiet churn.
+          refreshTakeover();
           scheduleSync(5000);
         };
 
@@ -1729,8 +2362,10 @@ window.__ModuleLoader__.load({
         // one more poller and one more heartbeat behind.
         const removeTimers = () => {
           stopped = true;
+          if (progressViewerSession !== undefined) announceProgressView(undefined);
+          progressEnabled = false;
           clearTimeout(syncTimer);
-          clearTimeout(heartbeatTimer);
+          if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
           if (inFlightController !== undefined) inFlightController.abort();
           // The pollers are not part of the chat slot; a disabled plugin would
           // otherwise keep one 15s request per session alive after its UI was
@@ -1742,8 +2377,14 @@ window.__ModuleLoader__.load({
           sessionSwitchRev = -1;
           switchReady = false;
           globalEnabled = false;
+          activeSessionId = undefined;
+          for (const unsubscribe of rendererSubscriptions.splice(0)) unsubscribe();
           releaseChatSlot();
           refreshChatTakeover = () => {};
+          branchHistory.clear();
+          freshDecided.clear();
+          diagnosticsTrail.clear();
+          setChatRendererState('disabled');
         };
         try {
           ctx.effect(() => removeTimers, 'persona-shell.client-timers');
@@ -1768,6 +2409,10 @@ window.__ModuleLoader__.load({
           id: 'persona-shell',
           order: 10,
         }, SessionPersonaSwitch));
+
+        ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+          name: 'conversation.input.dock', id: 'persona-shell-progress', order: 30, locale: 'dsh-persona-shell',
+        }, ProgressNotice));
       },
     };
   },

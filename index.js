@@ -2,9 +2,9 @@
  * Persona Shell — Host half.
  *
  * Nothing here touches the system prompt, the tool set, the agent loop, or the
- * session log. This plugin only reads committed `assistant/message` events,
- * asks a second model to re-speak the same information in a persona, and
- * serves the result to the page over a same-origin route.
+ * session log. It re-speaks committed reports and, only when opted in,
+ * summarizes observed runtime counters during quiet turns. Both are served
+ * to the page separately, never fed back into the working conversation.
  *
  * Three properties matter more than persona quality:
  *
@@ -21,9 +21,11 @@ import { mask, unmask } from './lib/mask.js';
 import { BUILTIN_PRESETS, normalizePack } from './lib/pack.js';
 import { buildExtractPrompt, parseExtractedPreset } from './lib/preset.js';
 import { buildRewritePrompt, rewriteDistance, validateRewrite } from './lib/prompt.js';
+import { assessRewrite, restoreReview } from './lib/review.js';
 import { Config, resolveConfig } from './lib/config.js';
 import { observeFeedback, observeMessage, memoryLines, emptyProfile } from './lib/memory.js';
 import { openStore } from './lib/store.js';
+import { buildProgressPrompt, createProgress } from './lib/progress.js';
 
 /** Cordis plugin name. */
 export const name = 'persona-shell';
@@ -48,7 +50,7 @@ const MAX_SESSION_SWITCHES = 500;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 2026102808;
+const HOST_BUILD = 2026102809;
 
 /**
  * How often a streaming rewrite may publish a new partial revision.
@@ -173,6 +175,10 @@ export function apply(ctx, rawConfig) {
     includeToolSteps: cfg.includeToolSteps,
     /** Whether accumulated reader observations reach the prompt at all. */
     memory: cfg.memory,
+    reviewHints: cfg.reviewHints,
+    reviewThreshold: cfg.reviewThreshold,
+    progressNotices: cfg.progressNotices,
+    progressMinutes: cfg.progressMinutes,
     /** Subagent conversations: mid-task narration, then the final answer. */
     subagentSteps: cfg.subagentSteps === true,
     subagentReports: cfg.subagentReports === true,
@@ -221,6 +227,9 @@ export function apply(ctx, rawConfig) {
    * those states is evidence that the switch was never turned off.
    */
   let settingsRestored = false;
+  let progressRestored = ctx.get('storageDomain') === undefined;
+  const pendingProgressSettings = new Map();
+  const pendingReviewSettings = new Map();
 
   /**
    * Whether the runtime `enabled` switch is known.
@@ -468,6 +477,10 @@ export function apply(ctx, rawConfig) {
       enabled: settings.enabled,
       includeToolSteps: settings.includeToolSteps,
       memory: settings.memory,
+      reviewHints: settings.reviewHints,
+      reviewThreshold: settings.reviewThreshold,
+      progressNotices: settings.progressNotices,
+      progressMinutes: settings.progressMinutes,
       subagentSteps: settings.subagentSteps,
       subagentReports: settings.subagentReports,
       provider: settings.provider,
@@ -656,6 +669,7 @@ export function apply(ctx, rawConfig) {
       reason: row.reason,
       model: row.model,
       distance: row.distance,
+      review: row.review,
       final: row.final === true,
       time: row.time,
     }))).catch((error) => warn(`persist failed for ${sessionId}`, error));
@@ -700,6 +714,7 @@ export function apply(ctx, rawConfig) {
           reason: typeof saved.reason === 'string' ? saved.reason : '',
           model: typeof saved.model === 'string' ? saved.model : '',
           distance: typeof saved.distance === 'object' ? saved.distance : undefined,
+          review: restoreReview(saved.review),
           final: saved.final === true,
           time: typeof saved.time === 'number' ? saved.time : Date.now(),
         });
@@ -945,6 +960,12 @@ export function apply(ctx, rawConfig) {
         masked.replace(/\[\[\d+\]\]/g, ''),
         collected.replace(/\[\[\d+\]\]/g, ''),
       );
+      row.review = assessRewrite({
+        original: text,
+        candidate: row.text,
+        maskedOriginal: masked,
+        maskedCandidate: verdict.text,
+      });
       touch(sessionId);
 
       const list = samples.get(sessionId) ?? [];
@@ -1074,15 +1095,45 @@ export function apply(ctx, rawConfig) {
     const content = Array.isArray(event.data?.message?.content) ? event.data.message.content : [];
     const hasToolCall = content.some((block) => block?.type === 'tool-call');
     if (hasToolCall && !includeToolSteps) return undefined;
-    const text = content
-      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-      .map((block) => block.text)
-      .join('\n')
-      .trim();
+    const textBlocks = content.filter((block) => block?.type === 'text' && typeof block.text === 'string');
+    // The renderer suppresses multi-text-block nodes; do not spend a rewrite on
+    // a row the page can never display.
+    if (textBlocks.length !== 1) return undefined;
+    const text = textBlocks[0].text.trim();
     return text === '' ? undefined : text;
   }
 
+  const progress = createProgress({
+    config: () => ({ enabled: settings.enabled === true && enabledRestored
+      && settings.progressNotices === true && progressRestored && !storeClosing,
+      minutes: settings.progressMinutes }),
+    allowed: (session) => rewriteAllowedFor(session.id) && !isSubagent(session)
+      && session.header?.origin !== 'subagent',
+    agentFor: (sessionId) => ctx.get('agents')?.get?.(sessionId),
+    changed: touch,
+    async produce(sessionId, facts, signal) {
+      const route = await resolveRouteAsync(sessionId);
+      const llm = getLlm();
+      if (signal.aborted || !route || !llm) throw new Error('progress-unavailable');
+      const { system, user } = buildProgressPrompt(normalizePack(settings.pack), facts);
+      let text = '';
+      let finished = false;
+      for await (const chunk of llm.stream({ provider: route.provider, model: route.model, system,
+        messages: [{ role: 'user', content: [{ type: 'text', text: user }] }], maxTokens: 512, signal })) {
+        if (signal.aborted) throw new Error('progress-aborted');
+        if (chunk.type === 'error' || chunk.type === 'tool-call') throw new Error('progress-invalid');
+        if (chunk.type === 'text-delta') {
+          text += chunk.text;
+          if (text.length > 220) return undefined;
+        }
+        if (chunk.type === 'finish') finished = chunk.reason?.kind === 'stop';
+      }
+      return finished ? text : undefined;
+    },
+  });
+
   function onSessionEvent(session, event) {
+    progress.event(session, event);
     const sessionId = session?.id;
     if (typeof sessionId !== 'string' || !settings.enabled || !enabledRestored) return;
     // A per-session switch turns off rewriting *and* memory observation for that
@@ -1227,6 +1278,20 @@ export function apply(ctx, rawConfig) {
   }
 
   ctx.effect(() => ctx.on('session/event', onSessionEvent), 'persona-shell.events');
+  ctx.effect(() => ctx.on('agent/assistant-stream', ({ agent, frame }) => progress.stream(agent, frame),
+    { global: true }), 'persona-shell.progress-stream');
+  ctx.effect(() => ctx.on('agent/status', ({ agent, status }) => progress.status(agent, status),
+    { global: true }), 'persona-shell.progress-status');
+  // Observe the lifetime, including questions nested inside run_code. Return
+  // next() unchanged: this listener supplies no answer and changes no decision.
+  ctx.effect(() => ctx.on('user-questions/request', (request, next) => {
+    const release = progress.wait(request?.agent);
+    try {
+      const result = next();
+      void Promise.resolve(result).then(release, release);
+      return result;
+    } catch (error) { release(); throw error; }
+  }, { global: true, prepend: true }), 'persona-shell.progress-question-wait');
 
   // Durable rows.
   //
@@ -1318,8 +1383,16 @@ export function apply(ctx, rawConfig) {
       // memory for someone who switched it off is worse than an inconvenience.
       const savedSettings = opened.getSettings();
       if (savedSettings !== null && typeof savedSettings === 'object') {
-        for (const key of ['enabled', 'includeToolSteps', 'memory', 'subagentSteps', 'subagentReports']) {
+        for (const key of ['enabled', 'includeToolSteps', 'memory', 'reviewHints', 'subagentSteps', 'subagentReports']) {
           if (typeof savedSettings[key] === 'boolean') settings[key] = savedSettings[key];
+        }
+        if (Number.isFinite(savedSettings.reviewThreshold)
+          && savedSettings.reviewThreshold >= 0 && savedSettings.reviewThreshold <= 1) {
+          settings.reviewThreshold = savedSettings.reviewThreshold;
+        }
+        if (typeof savedSettings.progressNotices === 'boolean') settings.progressNotices = savedSettings.progressNotices;
+        if (Number.isInteger(savedSettings.progressMinutes) && savedSettings.progressMinutes >= 1 && savedSettings.progressMinutes <= 60) {
+          settings.progressMinutes = savedSettings.progressMinutes;
         }
         for (const key of ['provider', 'model', 'reasoningEffort']) {
           if (typeof savedSettings[key] === 'string') settings[key] = savedSettings[key];
@@ -1330,6 +1403,7 @@ export function apply(ctx, rawConfig) {
       if (!storeClosing) {
         settingsRestored = true;
         enabledRestored = true;
+        progressRestored = true;
       }
 
       // Per-session overrides. A missing/corrupt record means "all sessions
@@ -1367,6 +1441,11 @@ export function apply(ctx, rawConfig) {
         pendingSessionSwitchValues.clear();
         saveSessionSwitches();
       }
+      for (const [key, value] of pendingProgressSettings) settings[key] = value;
+      if (pendingProgressSettings.size > 0) { pendingProgressSettings.clear(); saveSettings(); }
+      for (const [key, value] of pendingReviewSettings) settings[key] = value;
+      if (pendingReviewSettings.size > 0) { pendingReviewSettings.clear(); saveSettings(); }
+      progress.configure();
     }, (error) => {
       storeError = error instanceof Error ? error.message : String(error);
       // Nothing can be restored. The question is what "unknown" should mean, and
@@ -1437,10 +1516,13 @@ export function apply(ctx, rawConfig) {
         partialLiterals: row.partialLiterals === undefined ? undefined : row.partialLiterals,
         reason: row.reason,
         distance: row.distance,
+        review: row.review,
         // True for the step that closed its turn; the page puts the badge and
         // the 「原文」 toggle on that one only.
         final: row.final === true,
       })),
+      // Ephemeral UI state only: deliberately absent from flushPersist().
+      progress: progress.notice(sessionId),
     };
   };
 
@@ -1502,9 +1584,35 @@ export function apply(ctx, rawConfig) {
       return;
     }
 
+    if (path === `${ROUTE}/progress-view` && req.method === 'POST') {
+      let raw = '';
+      for await (const piece of req) {
+        raw += piece;
+        if (raw.length > 2048) { sendJson(res, 413, { error: 'too large' }); return; }
+      }
+      let body;
+      try { body = JSON.parse(raw); } catch { sendJson(res, 400, { error: 'invalid json' }); return; }
+      if (!body || typeof body.viewer !== 'string' || !body.viewer || body.viewer.length > 100
+        || !Number.isSafeInteger(body.revision) || body.revision < 0 || typeof body.visible !== 'boolean'
+        || (body.visible && (typeof body.sessionId !== 'string' || !body.sessionId || body.sessionId.length > 200))) {
+        sendJson(res, 400, { error: 'invalid viewer' }); return;
+      }
+      progress.viewer(body.viewer, body.visible ? body.sessionId : undefined, body.revision);
+      sendJson(res, 200, { ok: true }); return;
+    }
+
     if (path === `${ROUTE}/state`) {
       const sessionId = url.searchParams.get('session') ?? '';
       if (sessionId === '') { sendJson(res, 400, { error: 'session required' }); return; }
+      if (url.searchParams.get('viewing') === '1' && sessionId.length <= 200) {
+        const viewer = url.searchParams.get('viewer');
+        const rawViewRev = url.searchParams.get('viewRev');
+        const viewRev = rawViewRev === null ? undefined : Number(rawViewRev);
+        if (typeof viewer === 'string' && viewer !== '' && viewer.length <= 100
+          && Number.isSafeInteger(viewRev) && viewRev >= 0) {
+          progress.viewer(viewer, sessionId, viewRev);
+        }
+      }
       // Long-poll: the page asks with the revision it already has and a wait
       // budget. If nothing moved, hold the request until `touch()` wakes it or
       // the budget expires, then answer with the current state either way.
@@ -1570,6 +1678,7 @@ export function apply(ctx, rawConfig) {
         turnState.delete(sessionId);
         candidates.delete(sessionId);
       }
+      progress.configure(sessionId);
       saveSessionSwitches();
       touch(sessionId);
       sendJson(res, 200, {
@@ -1741,6 +1850,7 @@ export function apply(ctx, rawConfig) {
         if (target === undefined) { sendJson(res, 404, { error: 'preset not found' }); return; }
         settings.pack = normalizePack(target.pack);
         settings.presetName = target.name;
+        progress.configure();
         saveActivePreset(target.id);
         for (const sessionId of revisions.keys()) touch(sessionId);
         sendJson(res, 200, { ok: true, settings, presets: presets.map(presetForClient), active: settings.presetName });
@@ -1762,6 +1872,7 @@ export function apply(ctx, rawConfig) {
         if (settings.presetName === target.name) {
           settings.pack = normalizePack(presets[0]?.pack);
           settings.presetName = presets[0]?.name ?? DEFAULT_PRESET_NAME;
+          progress.configure();
           saveActivePreset(presets[0]?.id ?? DEFAULT_PRESET_NAME);
         }
         sendJson(res, 200, { ok: true, presets: presets.map(presetForClient), active: settings.presetName, settings });
@@ -1819,6 +1930,22 @@ export function apply(ctx, rawConfig) {
         }
         if (typeof patch.includeToolSteps === 'boolean') settings.includeToolSteps = patch.includeToolSteps;
         if (typeof patch.memory === 'boolean') settings.memory = patch.memory;
+        if (typeof patch.reviewHints === 'boolean') {
+          settings.reviewHints = patch.reviewHints;
+          if (!settingsRestored) pendingReviewSettings.set('reviewHints', patch.reviewHints);
+        }
+        if (Number.isFinite(patch.reviewThreshold) && patch.reviewThreshold >= 0 && patch.reviewThreshold <= 1) {
+          settings.reviewThreshold = patch.reviewThreshold;
+          if (!settingsRestored) pendingReviewSettings.set('reviewThreshold', patch.reviewThreshold);
+        }
+        if (typeof patch.progressNotices === 'boolean') {
+          settings.progressNotices = patch.progressNotices;
+          if (!progressRestored) pendingProgressSettings.set('progressNotices', patch.progressNotices);
+        }
+        if (Number.isInteger(patch.progressMinutes) && patch.progressMinutes >= 1 && patch.progressMinutes <= 60) {
+          settings.progressMinutes = patch.progressMinutes;
+          if (!progressRestored) pendingProgressSettings.set('progressMinutes', patch.progressMinutes);
+        }
         if (typeof patch.subagentSteps === 'boolean') settings.subagentSteps = patch.subagentSteps;
         if (typeof patch.subagentReports === 'boolean') settings.subagentReports = patch.subagentReports;
         // Clearing the learned profile is a user right, not a debug affordance:
@@ -1831,6 +1958,7 @@ export function apply(ctx, rawConfig) {
         // Persist the switches and the route. The page reports 「已保存」, so a
         // restart that restored the defaults would make that a lie.
         saveSettings();
+        if (['enabled', 'progressNotices', 'progressMinutes', 'pack', 'provider', 'model'].some((key) => key in patch)) progress.configure();
         for (const id of revisions.keys()) touch(id);
       }
       sendJson(res, 200, {
@@ -1854,6 +1982,7 @@ export function apply(ctx, rawConfig) {
 
   ctx.effect(() => () => {
     storeClosing = true;
+    progress.dispose();
     // Stop rewrites before dropping the rows they would settle into: a model
     // stream must not keep spending tokens after the plugin is gone.
     for (const controller of activeRewrites.values()) controller.abort(new Error('disposed'));

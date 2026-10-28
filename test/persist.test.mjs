@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { apply } from '../index.js';
+import { reviewFingerprint } from '../lib/review.js';
 
 /** A fake cordis context with an in-memory storageDomain shared across runs. */
 /**
@@ -15,19 +16,25 @@ import { apply } from '../index.js';
  */
 function makeCtx({ llm, storage, webServer } = {}) {
   const bus = new EventEmitter();
+  const disposers = [];
   const services = new Map();
   if (llm !== undefined) services.set('llm', llm);
   if (webServer !== undefined) services.set('webServer', webServer);
   if (storage !== undefined) services.set('storageDomain', storage);
   return {
     bus,
+    disposers,
     get: (key) => services.get(key),
     on: (name, listener) => { bus.on(name, listener); return () => bus.off(name, listener); },
     inject: (names, callback) => {
       if (names.every((name) => services.has(name))) callback({ get: (key) => services.get(key) });
       return () => {};
     },
-    effect: (callback) => { const dispose = callback(); return typeof dispose === 'function' ? dispose : () => {}; },
+    effect: (callback) => {
+      const dispose = callback();
+      if (typeof dispose === 'function') disposers.push(dispose);
+      return typeof dispose === 'function' ? dispose : () => {};
+    },
     logger: { warn: () => {}, info: () => {}, error: () => {} },
   };
 }
@@ -476,4 +483,56 @@ test('editing the builtin preset forks a new one instead of overwriting it', asy
     after.value.presets.some((preset) => preset.name === after.value.active),
     'the new preset is in the list',
   );
+});
+
+test('review measurements and controls survive an awaited unload and restart', async (t) => {
+  const blobs = new Map();
+  const storage = makeStorage(blobs);
+  const web1 = makeWebServer();
+  const llm1 = makeLlm('不可以删除 [[0]]。');
+  const ctx1 = makeCtx({ llm: llm1, storage, webServer: web1 });
+  apply(ctx1, { enabled: true, allowUnauthenticatedRoutes: true });
+  await flush();
+  const original = '可以删除 `backup.zip`。';
+  await deliver(ctx1, { seq: 100, text: original });
+  await postJson(web1, '/persona-shell/settings', { reviewHints: false, reviewThreshold: 0.8,
+    progressNotices: true, progressMinutes: 7 });
+  const first = (await readState(web1)).rows[0];
+  assert.equal(first.review.sourceHash, reviewFingerprint(original));
+  assert.equal(first.review.targetHash, reviewFingerprint(first.text));
+  for (const stop of ctx1.disposers) await stop();
+  assert.deepEqual(blobs.get('s1')[0].review, first.review, 'unload drained the new optional field');
+
+  const web2 = makeWebServer();
+  const llm2 = makeLlm('不得调用。');
+  const ctx2 = makeCtx({ llm: llm2, storage, webServer: web2 });
+  apply(ctx2, { enabled: true, allowUnauthenticatedRoutes: true });
+  t.after(async () => { for (const stop of ctx2.disposers) await stop(); });
+  await flush();
+  const restored = await readState(web2);
+  assert.deepEqual(restored.rows[0].review, first.review);
+  assert.equal(restored.settings.reviewHints, false);
+  assert.equal(restored.settings.reviewThreshold, 0.8);
+  assert.equal(restored.settings.progressNotices, true);
+  assert.equal(restored.settings.progressMinutes, 7);
+  await postJson(web2, '/persona-shell/settings', { reviewHints: true, reviewThreshold: 0.1 });
+  assert.deepEqual((await readState(web2)).rows[0].review, first.review);
+  assert.equal(llm2.calls.length, 0, 'restoring and changing thresholds never reruns a model');
+});
+
+test('legacy rows and unknown review versions stay usable and unassessed', async (t) => {
+  const blobs = new Map([['s1', [
+    { seq: 1, status: 'ready', text: '旧人格版。', final: true, time: 1 },
+    { seq: 2, status: 'ready', text: '新版但评估不可识别。', review: { version: 99, editScore: 1 }, time: 2 },
+  ]]]);
+  const webServer = makeWebServer();
+  const llm = makeLlm('不得调用。');
+  const ctx = makeCtx({ llm, storage: makeStorage(blobs), webServer });
+  apply(ctx, { enabled: true, allowUnauthenticatedRoutes: true });
+  t.after(async () => { for (const stop of ctx.disposers) await stop(); });
+  await flush();
+  const state = await readState(webServer);
+  assert.deepEqual(state.rows.map((row) => row.text), ['旧人格版。', '新版但评估不可识别。']);
+  assert.ok(state.rows.every((row) => row.status === 'ready' && row.review === undefined));
+  assert.equal(llm.calls.length, 0);
 });

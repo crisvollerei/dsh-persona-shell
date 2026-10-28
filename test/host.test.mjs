@@ -182,6 +182,7 @@ test('a plain assistant message becomes a ready rewrite', async () => {
   assert.equal(status, 200);
   const row = value.rows.find((candidate) => candidate.seq === 10);
   assert.equal(row.status, 'ready');
+  assert.equal(row.review?.version, 1, 'review metadata accompanies a validated final rewrite');
   assert.ok(row.text.includes('`npm run build`'), 'the literal is restored verbatim');
   assert.ok(!row.text.includes('[[0]]'), 'no marker leaks into the rendering');
   assert.equal(llm.calls.length, 1);
@@ -378,6 +379,7 @@ test('a slow rewrite streams partial text before it settles', async () => {
   const pendingRow = during.value.rows.find((row) => row.seq === 50);
   assert.ok(pendingRow, 'the row exists while the rewrite is running');
   assert.equal(pendingRow.status, 'pending');
+  assert.equal(pendingRow.review, undefined, 'a stream is not assessed before final validation');
   assert.ok(pendingRow.partial.length > 0, 'partial text is published before the rewrite finishes');
   assert.ok(Array.isArray(pendingRow.partialLiterals), 'the literal table travels with the partial');
 
@@ -386,6 +388,7 @@ test('a slow rewrite streams partial text before it settles', async () => {
   const after = await readState(webServer);
   const doneRow = after.value.rows.find((row) => row.seq === 50);
   assert.equal(doneRow.status, 'ready');
+  assert.equal(doneRow.review?.method, 'local-lexical-v1');
   assert.equal(doneRow.partial, '', 'a settled row carries no partial');
   assert.ok(doneRow.text.includes('`a.js`'), 'the final text has its literals restored');
 });
@@ -555,4 +558,50 @@ test('the explicit opt-out serves unauthenticated routes', async () => {
   await deliver(ctx, null, { seq: 90, text: '原文 `a.js`。' });
   const { status } = await readState(webServer);
   assert.equal(status, 200, 'the opt-out is honoured');
+});
+
+test('review settings change visibility without changing a rewrite or adding a model call', async (t) => {
+  const webServer = makeWebServer();
+  const llm = makeLlm('不可以删除备份。');
+  const ctx = makeCtx({ llm, webServer });
+  apply(ctx, { enabled: true, allowUnauthenticatedRoutes: true });
+  t.after(async () => { for (const stop of ctx.disposers) await stop(); });
+  await deliver(ctx, null, { seq: 91, text: '可以删除备份。' });
+  const first = (await readState(webServer)).value;
+  const row = first.rows.find((candidate) => candidate.seq === 91);
+  assert.ok(row.review.reasons.includes('negation-change'));
+  assert.equal(row.final, false, 'assessment does not wait for turn/end');
+  const request = async (patch) => {
+    let body;
+    await webServer.routes[0].handler({
+      url: '/persona-shell/settings', method: 'POST',
+      async *[Symbol.asyncIterator]() { yield JSON.stringify(patch); },
+    }, { writeHead() {}, end(text) { body = JSON.parse(text); } });
+    return body;
+  };
+  const off = await request({ reviewHints: false, reviewThreshold: 0.9 });
+  assert.equal(off.settings.reviewHints, false);
+  assert.equal(off.settings.reviewThreshold, 0.9);
+  const on = await request({ reviewHints: true, reviewThreshold: 0.1 });
+  assert.equal(on.settings.reviewHints, true);
+  assert.equal(on.settings.reviewThreshold, 0.1);
+  const invalid = await request({ reviewHints: 'false', reviewThreshold: 2 });
+  assert.equal(invalid.settings.reviewHints, true);
+  assert.equal(invalid.settings.reviewThreshold, 0.1);
+  assert.deepEqual((await readState(webServer)).value.rows[0], row, 'threshold changes reuse the same persisted measurement');
+  assert.equal(llm.calls.length, 1, 'no scoring or regeneration call');
+});
+
+test('failed final validation never publishes a review of the invalid rewrite', async (t) => {
+  const webServer = makeWebServer();
+  const llm = makeLlm('标记被吞掉了。');
+  const ctx = makeCtx({ llm, webServer });
+  apply(ctx, { enabled: true, allowUnauthenticatedRoutes: true });
+  t.after(async () => { for (const stop of ctx.disposers) await stop(); });
+  await deliver(ctx, null, { seq: 92, text: '检查了 `a.js`。' });
+  const row = (await readState(webServer)).value.rows[0];
+  assert.equal(row.status, 'skipped');
+  assert.equal(row.text, '');
+  assert.equal(row.review, undefined);
+  assert.equal(llm.calls.length, 1);
 });

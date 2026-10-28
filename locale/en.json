@@ -1,15 +1,30 @@
 {
   "meta": {
     "title": "Persona Shell",
-    "description": "Re-speaks each assistant report in a persona, outside the working prompt, with the original shown side by side."
+    "description": "Re-speaks each assistant report in a persona, outside the working prompt, with the original available on demand."
   },
   "shell": {
-    "showOriginal": "Original",
+    "progressNotice": "Quiet-turn status (plugin-generated, not a message from the working model)",
+    "showOriginal": "origin",
     "hideOriginal": "Hide original",
     "rewriting": "…",
     "failed": "kept the plain report",
     "originalLabel": "Original",
     "personaLabel": "Persona",
+    "compareTitle": "Compare original",
+    "compareClose": "Close comparison",
+    "compareCloseShort": "Close",
+    "reviewHint": "Rewrite change hint: view original",
+    "reviewClose": "Close original preview",
+    "reviewCloseShort": "Close",
+    "reviewNotice": "Local wording-change heuristic, not a factual verdict. A low score does not guarantee semantic equivalence.",
+    "reviewReasons": {
+      "negation-change": "Negation wording changed",
+      "condition-change": "Conditional wording changed",
+      "uncertainty-change": "Uncertainty wording changed",
+      "quantity-change": "Numeric wording changed",
+      "literal-order": "Literal order changed"
+    },
     "personaSwitch": "Persona",
     "personaSwitchOn": "On",
     "personaSwitchOff": "Off",

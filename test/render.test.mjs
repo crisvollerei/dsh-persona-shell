@@ -1,21 +1,19 @@
-// Offline checks for the Client half's markdown handling.
-//
-// The shipped MarkdownText lives in the page's module table, so these tests run
-// the local fallback renderer directly (that is what runs when the module is
-// absent) and separately assert that the shipped component is preferred
-// whenever it is reachable.
+// Offline checks for chat delegation, switches, polling and isolated previews.
+// The real official renderer assembly has a separate optional integration probe.
 // Run with: node --test persona-shell/test/render.test.mjs
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { makeSlots, AssistantNodeView } from './helpers/slots.mjs';
 
 const SOURCE = path.resolve(import.meta.dirname, '..', 'client.js');
 
 /** A minimal React stand-in that keeps elements inspectable as plain objects. */
 function makeReact() {
   return {
+    Fragment: Symbol.for('react.fragment'),
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
     useState: (value) => [value, () => {}],
     useEffect: () => {},
@@ -97,9 +95,7 @@ after(() => {
  */
 function renderViaSlot(options = {}) {
   const { module } = loadClient(options);
-  const registrations = [];
-  /** Disposers returned by `inject` callbacks, kept so teardown can be tested. */
-  const injectedDisposers = [];
+  const { slots, registrations, official } = makeSlots();
   /** Teardown callbacks the plugin hands to `ctx.effect`. */
   const effects = [];
   const ctx = {
@@ -111,29 +107,11 @@ function renderViaSlot(options = {}) {
       if (typeof dispose === 'function') effects.push(dispose);
     },
     effects,
-    slots: {
-      // `inject` runs the callback for every declaration lifetime and takes
-      // ownership of whatever disposer it returns. The stub must NOT invoke that
-      // disposer: the takeover registration returns one, and calling it would
-      // register and immediately unregister — leaving an empty list that makes
-      // every assertion below pass against nothing.
-      inject: (_key, callback) => {
-        const dispose = callback();
-        if (typeof dispose === 'function') injectedDisposers.push(dispose);
-        return () => {};
-      },
-      register: (options, component) => {
-        registrations.push({ options, component });
-        return () => {
-          const index = registrations.findIndex((entry) => entry.options === options);
-          if (index >= 0) registrations.splice(index, 1);
-        };
-      },
-    },
+    slots,
   };
   appliedContexts.push(ctx);
   module.apply(ctx);
-  return { registrations, module };
+  return { registrations, module, official };
 }
 
 /**
@@ -148,85 +126,6 @@ async function applyAndSettle(options = {}) {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   return result;
-}
-
-/** Flatten a React-ish tree into readable text, marking the tags that were produced. */
-function outline(node, depth = 0) {
-  if (node === null || node === undefined || node === false) return [];
-  if (typeof node === 'string' || typeof node === 'number') return [`${' '.repeat(depth)}${String(node)}`];
-  if (Array.isArray(node)) return node.flatMap((child) => outline(child, depth));
-  const tag = typeof node.type === 'string' ? node.type : 'Component';
-  const own = node.children.flatMap((child) => outline(child, depth + 1));
-  return [`${' '.repeat(depth)}<${tag}>`, ...own];
-}
-
-/**
- * Render one assistant node through the registered slot component.
- *
- * The mock React has no update cycle, so the host state cannot arrive through a
- * fetch. The component therefore starts on its placeholder branch; these tests
- * are about the markdown renderer itself, so the state cache is primed by
- * rendering the same text as a ready row through `rowBranch`'s decision.
- * @param {string} text - the markdown this row must render.
- * @param {object} [options]
- * @param {object} [options.primitives] - the shipped renderer, when present.
- */
-async function renderNode(text, options = {}) {
-  const { registrations } = await applyAndSettle(options);
-  const registered = registrations.find((entry) => entry.options.key === 'assistant-step');
-  assert.ok(registered, 'the assistant-step renderer registered');
-  const element = registered.component({
-    node: {
-      data: {
-        status: 'settled',
-        blocks: [{ kind: 'text', text }],
-        finalNode: { seq: 1, blocks: [{ kind: 'text', text }] },
-      },
-    },
-    sessionId: 's1',
-    t: (key) => key,
-  });
-  return outline(element);
-}
-
-/** Render a row whose rewrite is already available, which is the normal case. */
-async function renderReady(personaText, options = {}) {
-  const { registrations, module } = await applyAndSettle(options);
-  // Prime the component's view of the host: a ready row means the component
-  // skips its placeholder branch on the very first render.
-  const registered = registrations.find((entry) => entry.options.key === 'assistant-step');
-  assert.ok(registered, 'the assistant-step renderer registered');
-  const element = registered.component({
-    node: {
-      data: {
-        status: 'settled',
-        blocks: [{ kind: 'text', text: `原文-${personaText}` }],
-        finalNode: { seq: 1, blocks: [{ kind: 'text', text: `原文-${personaText}` }] },
-      },
-    },
-    sessionId: 's1',
-    t: (key) => key,
-  });
-  return outline(element);
-}
-
-/**
- * Render markdown through the plugin's own body renderer.
- *
- * The component starts on its placeholder branch until host state arrives, and
- * a mocked React cannot replay that update. These tests are about markdown, so
- * they call the renderer the component would call.
- * @param {string} text
- * @returns {string[]}
- */
-async function renderMarkdownOf(text) {
-  const { module } = await applyAndSettle();
-  return outline(module.__testing.renderMarkdown(text));
-}
-
-/** A host state payload holding one settled row. */
-function stateWith(rows) {
-  return { rev: 1, rows, settings: undefined };
 }
 
 test('a row still waiting for its rewrite shows a placeholder, not the plain text', async () => {
@@ -253,21 +152,34 @@ async function renderStep(props) {
   const { registrations } = await applyAndSettle();
   const component = registrations.find((entry) => entry.options.key === 'assistant-step').component;
   assert.ok(component, 'the chat node registered');
-  return component({
+  const element = component({
     sessionId: 's1',
     t: (key) => key,
+    renderFactorySlot: () => null,
     ...props,
   });
+  return findOfficial(element.type(element.props));
 }
 
-test('the reasoning partition renders nothing — a documented loss, not a handoff', async () => {
-  // `groupPart: 'reasoning'` selects which blocks a pass owns. This entry replaced
-  // `AssistantNodeView` wholesale, so returning null renders nothing for that pass;
-  // it does NOT call the shipped `ReasoningRow`. Serving it correctly would mean
-  // reimplementing that component, which this project deliberately does not do.
-  //
-  // The property asserted is therefore "the answer no longer leaks into the
-  // thinking pane", not "the shipped reasoning is restored".
+/** Find the delegated official assistant element in a rendered tree. */
+function findOfficial(node) {
+  if (node === null || typeof node !== 'object') return undefined;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findOfficial(child);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (node.type === AssistantNodeView) return node;
+  for (const child of node.children ?? []) {
+    const found = findOfficial(child);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+test('the reasoning partition delegates the original node and partition to the official component', async () => {
   const node = {
     data: {
       status: 'settled',
@@ -278,7 +190,10 @@ test('the reasoning partition renders nothing — a documented loss, not a hando
       finalNode: { seq: 7, blocks: [] },
     },
   };
-  assert.equal(await renderStep({ node, groupPart: 'reasoning' }), null, 'the reasoning pass renders nothing');
+  const element = await renderStep({ node, groupPart: 'reasoning' });
+  assert.equal(element.type, AssistantNodeView);
+  assert.equal(element.props.node, node);
+  assert.equal(element.props.groupPart, 'reasoning');
 });
 
 test('a running or interrupted step is left to the shipped renderer', async () => {
@@ -289,8 +204,12 @@ test('a running or interrupted step is left to the shipped renderer', async () =
       finalNode: { seq: 8, blocks: [{ kind: 'text', text: '正文。' }] },
     },
   });
-  assert.equal(await renderStep({ node: make('running') }), null);
-  assert.equal(await renderStep({ node: make('interrupted') }), null);
+  for (const status of ['running', 'interrupted']) {
+    const node = make(status);
+    const element = await renderStep({ node });
+    assert.equal(element.type, AssistantNodeView);
+    assert.equal(element.props.node, node);
+  }
 });
 
 test('freshness is cached per session, not per seq', async () => {
@@ -362,14 +281,13 @@ test('streaming draws no caret', async () => {
   assert.ok(!/['"]▍['"]/.test(source), 'no block-caret character remains');
 });
 
-test('the chat renderer does not declare inject for a standard prop', async () => {
-  // `sessionId` is listed in this slot's `standardProps`, so it arrives as a
-  // normal prop. Declaring `inject` to return it was a guess made from a misread
-  // type, and it was the last change before rendering stopped entirely.
-  const { registrations } = await applyAndSettle();
+test('the chat adapter reuses official inject/locale without claiming its child declarations', async () => {
+  const { registrations, official } = await applyAndSettle();
   const step = registrations.find((entry) => entry.options.name === 'conversation.chat.node');
   assert.ok(step, 'the chat node registered');
-  assert.equal(step.options.inject, undefined, 'no inject callback is declared');
+  assert.equal(step.options.inject, official.inject, 'the official presentation injection is retained');
+  assert.equal(step.options.locale, official.locale);
+  assert.equal(step.options.children, undefined, 'child declarations remain exclusively official');
   assert.equal(step.options.priority, -1, 'the shipped entry is shadowed by priority');
 });
 
@@ -469,16 +387,11 @@ test('the preset refresh updates the selection, not just the list', async () => 
   );
 });
 
-test('the original is placed before the rewrite in the comparison row', async () => {
-  // Reading the two versions line by line only works if the original is the
-  // left column; stacking it below the text forces the eye to travel.
+test('the main report is not wrapped in a comparison layout', async () => {
   const source = fs.readFileSync(SOURCE, 'utf8');
-  const start = source.indexOf('const compareRowStyle');
-  const end = source.indexOf('const placeholderStyle');
-  assert.ok(start > 0 && end > start, 'the comparison layout is present');
-  const block = source.slice(start, end);
-  assert.match(block, /gridTemplateColumns/, 'the panes are a grid, not a stack');
-  assert.match(block, /auto-fit/, 'the grid collapses by itself when the chat column is narrow');
+  assert.ok(!source.includes('compareRowStyle'));
+  const element = await renderStep({ node: { data: { status: 'running', blocks: [] } } });
+  assert.equal(element.type, AssistantNodeView, 'the first DOM component is the official root');
 });
 
 test('the poller uses a bounded hold window', async () => {

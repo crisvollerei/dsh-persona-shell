@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-shell",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Layer every assistant report in a persona outside the working prompt, with the original one click away.",
   "type": "module",
   "main": "index.js",

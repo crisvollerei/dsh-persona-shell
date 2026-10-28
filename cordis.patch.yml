@@ -4,6 +4,8 @@
       config:
         enabled: true
         trigger: step
+        progressNotices: false
+        progressMinutes: 5
         provider: ''
         model: ''
         reasoningEffort: ''
