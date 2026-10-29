@@ -26,6 +26,9 @@ import { Config, resolveConfig } from './lib/config.js';
 import { observeFeedback, observeMessage, memoryLines, emptyProfile } from './lib/memory.js';
 import { openStore } from './lib/store.js';
 import { buildProgressPrompt, createProgress } from './lib/progress.js';
+import { randomUUID } from 'node:crypto';
+import { createRemoteContract } from './lib/remote-contract.js';
+import { createStateStream } from './lib/state-stream.js';
 
 /** Cordis plugin name. */
 export const name = 'persona-shell';
@@ -50,17 +53,14 @@ const MAX_SESSION_SWITCHES = 500;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 2026102809;
+const HOST_BUILD = 2026102902;
 
 /**
  * How often a streaming rewrite may publish a new partial revision.
  *
- * The page polls for changes, so a token-by-token rate would spend the whole
- * budget on polling. 120ms is tuned against the client's own cadence: the page
- * polls every 100ms during a rewrite, so publishing faster than that would only
- * produce revisions nobody ever reads. Slower and a short rewrite lands entirely
- * in one jump — a 70-character answer finishes in about 700ms, and at 240ms that
- * was two visible frames, which reads as "no streaming at all".
+ * Coalesce token-level changes before either the Remote stream or fallback
+ * long-poll publishes them. A short rewrite should still arrive in several
+ * visible frames, without making every token a transport update.
  */
 const STREAM_INTERVAL_MS = 120;
 
@@ -98,6 +98,7 @@ export { Config };
  * @param {any} config
  */
 export function apply(ctx, rawConfig) {
+  const instanceId = randomUUID();
   const cfg = resolveConfig(rawConfig);
   const warn = (message, error) => {
     const detail = error === undefined ? '' : `: ${error instanceof Error ? error.message : String(error)}`;
@@ -278,6 +279,7 @@ export function apply(ctx, rawConfig) {
    * its own waiter when the client disconnects.
    */
   const stateWaiters = new Map();
+  const stateStream = createStateStream({ read: (id) => stateFor(id) });
 
   /** Durable store, attached asynchronously; absent means memory-only. */
   let store = undefined;
@@ -561,7 +563,8 @@ export function apply(ctx, rawConfig) {
   const touch = (sessionId) => {
     revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
     wakeStateWaiters(sessionId);
-    schedulePersist(sessionId);
+    stateStream.changed(sessionId);
+    if (sessionId !== '') schedulePersist(sessionId);
   };
 
   /** Wake every request held for this session. */
@@ -630,6 +633,7 @@ export function apply(ctx, rawConfig) {
 
   /** The switch map as the client sees it. */
   const sessionSwitchState = () => ({
+    instanceId,
     rev: sessionSwitchRev,
     values: Object.fromEntries(sessionSwitches),
   });
@@ -658,7 +662,7 @@ export function apply(ctx, rawConfig) {
     // so persisting a session that was never hydrated would erase every row this
     // process has not touched yet — which is exactly what a restart plus one new
     // message used to do.
-    hydrate(sessionId);
+    if (sessionId !== '') hydrate(sessionId);
     const own = [];
     for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
     own.sort((a, b) => a.seq - b.seq);
@@ -1321,6 +1325,7 @@ export function apply(ctx, rawConfig) {
     settingsRestored = false;
     enabledRestored = false;
     storeState = 'opening';
+    for (const id of revisions.keys()) touch(id);
 
     const task = openStore(ctx).then((opened) => {
       if (storeClosing) {
@@ -1445,6 +1450,9 @@ export function apply(ctx, rawConfig) {
       if (pendingProgressSettings.size > 0) { pendingProgressSettings.clear(); saveSettings(); }
       for (const [key, value] of pendingReviewSettings) settings[key] = value;
       if (pendingReviewSettings.size > 0) { pendingReviewSettings.clear(); saveSettings(); }
+      // A held /state request may have observed the storage-opening values;
+      // wake every known session so the client can leave its loading state.
+      for (const id of revisions.keys()) touch(id);
       progress.configure();
     }, (error) => {
       storeError = error instanceof Error ? error.message : String(error);
@@ -1459,6 +1467,7 @@ export function apply(ctx, rawConfig) {
         // switch and "unknown" must not read as "on").
         enabledRestored = true;
         warn('storage failed; rewrites are memory-only and memory collection stays off', error);
+        for (const id of revisions.keys()) touch(id);
       }
     });
     openingTasks.add(task);
@@ -1494,18 +1503,23 @@ export function apply(ctx, rawConfig) {
   };
 
   const stateFor = (sessionId) => {
+    // Reads during storage opening must participate in the later ready notice.
+    if (!revisions.has(sessionId)) revisions.set(sessionId, 0);
     // A page that opens an old session asks before any event arrives, so this
     // is where a restart's rows come back.
-    hydrate(sessionId);
+    if (sessionId !== '') hydrate(sessionId);
     const own = [];
     for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
     own.sort((a, b) => a.seq - b.seq);
     return {
+      instanceId,
       rev: revisions.get(sessionId) ?? 0,
       settings,
+      sessionSwitches: sessionId === '' ? sessionSwitchState() : undefined,
       // The effective value for this session; `sessionEnabled` alone would
       // misreport the global switch as on. The full map arrives in /settings.
       sessionEnabled: settings.enabled === true && enabledRestored && sessionEnabledFor(sessionId),
+      switchesReady: enabledRestored,
       rows: own.map((row) => ({
         seq: row.seq,
         status: row.status,
@@ -1565,6 +1579,8 @@ export function apply(ctx, rawConfig) {
         shippedMarkdown: pickEnum(diagnostics.shippedMarkdown, ['ok', 'missing', 'unresolvable'], 'unknown'),
         storage: pickEnum(storeState, ['unavailable', 'opening', 'open', 'failed'], 'unknown'),
         rows: Number.isInteger(rows.size) && rows.size >= 0 ? rows.size : 0,
+        stateSync: { ...stateStream.stats(),
+          client: pickEnum(diagnostics.stateTransport?.status, ['starting', 'ready', 'fallback', 'blocked'], 'unknown') },
         auth: pickEnum(authStatus, ['ok', 'rejected', 'unavailable', 'error'], 'unknown'),
         heartbeatAge: typeof diagnostics.heartbeat === 'number' && diagnostics.heartbeat <= Date.now()
           ? Date.now() - diagnostics.heartbeat
@@ -1681,6 +1697,7 @@ export function apply(ctx, rawConfig) {
       progress.configure(sessionId);
       saveSessionSwitches();
       touch(sessionId);
+      touch('');
       sendJson(res, 200, {
         ok: true,
         sessionId,
@@ -1838,7 +1855,10 @@ export function apply(ctx, rawConfig) {
         savePreset(renamed);
         // `presetName` is the display label, so an active rename has to move with
         // it; the stored pointer is an id and does not change.
-        if (settings.presetName === target.name) settings.presetName = name;
+        if (settings.presetName === target.name) {
+          settings.presetName = name;
+          for (const id of revisions.keys()) touch(id);
+        }
         sendJson(res, 200, { ok: true, presets: presets.map(presetForClient), active: settings.presetName, settings });
         return;
       }
@@ -1874,6 +1894,7 @@ export function apply(ctx, rawConfig) {
           settings.presetName = presets[0]?.name ?? DEFAULT_PRESET_NAME;
           progress.configure();
           saveActivePreset(presets[0]?.id ?? DEFAULT_PRESET_NAME);
+          for (const id of revisions.keys()) touch(id);
         }
         sendJson(res, 200, { ok: true, presets: presets.map(presetForClient), active: settings.presetName, settings });
         return;
@@ -1885,6 +1906,7 @@ export function apply(ctx, rawConfig) {
 
     if (path === `${ROUTE}/settings` && req.method === 'GET') {
       sendJson(res, 200, {
+        instanceId, controlRev: revisions.get('') ?? 0,
         settings,
         memory: memoryLines(profile, activePresetId()),
         memoryStats: memoryStats(),
@@ -1980,8 +2002,53 @@ export function apply(ctx, rawConfig) {
   if (webServer !== undefined) registerRoutes(webServer, ctx);
   else ctx.inject(['webServer'], (ready) => registerRoutes(ready.webServer, ready));
 
+  // Public registry and service APIs keep this JS plugin dependency-free. Both
+  // faces consume the exact same strict contract (the browser copy is generated).
+  ctx.inject(['typert'], (owner) => {
+    const registry = owner.get('typert');
+    if (typeof registry?.register !== 'function' || typeof owner.provide !== 'function') return;
+    const contribution = createRemoteContract();
+    const service = {
+      ctx: owner,
+      // Public Cordis Tracker metadata rebinds ctx to each Gateway invocation.
+      [Symbol.for('cordis.tracker')]: { associate: 'personaShell', property: 'ctx' },
+      async *observe(key, signal) {
+        const invocation = this.ctx.invocation;
+        if (invocation?.peer?.principal?.kind !== 'owner') {
+          throw Object.assign(new Error('Persona Shell state is owner-only'), {
+            code: 'persona-shell/owner-required', details: {}, isDSHRemoteError: true,
+          });
+        }
+        let active = true;
+        const lease = `remote-${randomUUID()}`;
+        // Per-physical-stream leases prevent an old connection's cleanup from
+        // withdrawing the replacement connection's foreground view.
+        void (async () => {
+          try {
+            for await (const view of invocation.uplink()) {
+              if (!active || signal.aborted) return;
+              if (key !== '') progress.viewer(lease, view.visible ? key : undefined, view.revision);
+            }
+          } catch (error) {
+            if (active && !signal.aborted) warn('state uplink failed', error);
+          }
+        })();
+        try { yield* stateStream.observe(key, signal); }
+        finally {
+          active = false;
+          progress.viewer(lease, undefined, Number.MAX_SAFE_INTEGER);
+        }
+      },
+    };
+    service.typertRemote = { service, serviceKey: 'personaShell', namespace: 'personaShell' };
+    owner.provide('personaShell', service);
+    registry.register({ package: contribution.package, face: 'host', schemas: [],
+      model: { services: [], events: [], objects: [] }, invocations: contribution.descriptors });
+  });
+
   ctx.effect(() => () => {
     storeClosing = true;
+    stateStream.close();
     progress.dispose();
     // Stop rewrites before dropping the rows they would settle into: a model
     // stream must not keep spending tokens after the plugin is gone.

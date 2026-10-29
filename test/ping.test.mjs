@@ -128,6 +128,7 @@ test('the public probe never forwards internal text', async () => {
       shippedMarkdown: 'a-value-that-is-not-an-enum',
       clientBuild: 'not-an-integer',
       heartbeat: Number.MAX_SAFE_INTEGER,
+      stateTransport: { status: 'secret-internal-token', message: 'secret-internal-token', sessionId: 'private-session' },
     },
   });
   assert.equal(posted.statusCode, 200, 'the authenticated report lands');
@@ -149,6 +150,8 @@ test('the public probe never forwards internal text', async () => {
   assert.equal(value.heartbeatAge, null, 'a future heartbeat is not published as a negative age');
   assert.equal(value.storage, 'unavailable', 'no storage facility is reported honestly');
   assert.equal(value.rows, 0);
+  assert.deepEqual(value.stateSync, { active: 0, opened: 0, snapshots: 0, deltas: 0, client: 'unknown' });
+  assert.ok(!body.includes('private-session'), 'transport details are never forwarded');
 
   // Only whitelisted key names; the unknown `sentinel` key is not even named.
   for (const key of value.diagnosticKeys) {
@@ -169,7 +172,7 @@ test('the public probe reports the healthy case honestly', async () => {
   await call(routeOf(webServer), {
     url: '/persona-shell/diagnostics',
     method: 'POST',
-    body: { clientBuild: 20261027, shippedMarkdown: 'ok', heartbeat: Date.now() },
+    body: { clientBuild: 20261027, shippedMarkdown: 'ok', heartbeat: Date.now(), stateTransport: { status: 'ready' } },
   });
 
   // A denied request records the rejection, then an allowed one the success.
@@ -181,6 +184,7 @@ test('the public probe reports the healthy case honestly', async () => {
   assert.ok(Number.isInteger(value.hostBuild), 'the host build id is published');
   assert.equal(value.clientBuild, 20261027);
   assert.equal(value.shippedMarkdown, 'ok');
+  assert.equal(value.stateSync.client, 'ready');
   assert.ok(Number.isInteger(value.heartbeatAge) && value.heartbeatAge >= 0, 'a real heartbeat has an age');
   assert.ok(['ok', 'rejected'].includes(value.auth), 'the latest auth outcome is an enum');
   assert.equal(value.storage, 'unavailable', 'still no storage facility');

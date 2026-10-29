@@ -183,3 +183,25 @@ test('unload waits for an open that has not landed yet', async () => {
   await unloaded;
   assert.equal(storage.closed, true, 'the late handle was closed before unload resolved');
 });
+
+for (const outcome of ['open', 'failed']) test(`storage ${outcome} wakes sessions first read during opening`, async () => {
+  const web = makeWebServer();
+  const ctx = makeCtx();
+  const storage = makeGatedStorage({});
+  const originalOpen = storage.open;
+  if (outcome === 'failed') storage.open = async () => { await originalOpen(); throw new Error('offline'); };
+  ctx.provide('webServer', web); ctx.provide('storageDomain', storage);
+  apply(ctx, { allowUnauthenticatedRoutes: true });
+  const handler = web.routes[0].handler;
+  const response = () => ({ body: '', writeHead() {}, end(body) { this.body = body; } });
+  const initial = response();
+  await handler({ url: '/persona-shell/state?session=first', method: 'GET' }, initial);
+  assert.equal(JSON.parse(initial.body).switchesReady, false);
+  const held = response();
+  const pending = handler({ url: '/persona-shell/state?session=first&rev=0&wait=15000', method: 'GET' }, held);
+  try {
+    storage.release(); await flush(30);
+    assert.notEqual(held.body, '', 'readiness publishes without the long-poll timeout');
+    assert.equal(JSON.parse(held.body).switchesReady, true);
+  } finally { await ctx.disposers.at(-1)(); await pending; }
+});

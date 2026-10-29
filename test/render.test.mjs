@@ -242,10 +242,10 @@ test('a ready row shows the persona text', async () => {
   assert.equal(rowBranch({ status: 'ready', text: '' }, true), 'plain');
 });
 
-test('a rewrite that never lands concedes to the plain report', async () => {
+test('a pending rewrite keeps the placeholder instead of conceding to the plain report', async () => {
   const { rowBranch, HOLD_PLACEHOLDER_MS } = loadClient().module.__testing;
   assert.equal(rowBranch({ status: 'pending', text: '' }, false), 'placeholder');
-  assert.equal(rowBranch({ status: 'pending', text: '' }, true), 'plain', 'the hold window is finite');
+  assert.equal(rowBranch({ status: 'pending', text: '' }, true), 'placeholder', 'the hold window does not expose the report');
   assert.ok(HOLD_PLACEHOLDER_MS >= 1000 && HOLD_PLACEHOLDER_MS <= 20000, 'a sane hold window');
 });
 

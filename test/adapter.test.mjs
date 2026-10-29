@@ -50,7 +50,7 @@ function hooks() {
   };
 }
 
-async function mount(t, { host, enabled = true, prepare } = {}) {
+async function mount(t, { host, enabled = true, prepare, remote, gateway } = {}) {
   const fixture = makeSlots();
   prepare?.(fixture);
   const timers = new Map();
@@ -72,16 +72,22 @@ async function mount(t, { host, enabled = true, prepare } = {}) {
     fetch: async (url, options) => {
       requests.push({ url: String(url), options });
       if (String(url).endsWith('/diagnostics')) reports.push(JSON.parse(options.body));
-      return { ok: true, json: async () => String(url).includes('/state') ? state : { settings } };
+      return { ok: true, json: async () => JSON.parse(JSON.stringify(String(url).includes('/state') ? state : { settings })) };
     },
   };
   vm.runInNewContext(source, context, { filename: 'client.js' });
   const module = definition.factory((id) => {
     if (id === 'react') return renderer.React;
+    if (id === '@deepseek-ai/dsh-api-gateway' && gateway) return gateway;
     throw new Error(`unexpected require ${id}`);
   });
   const disposers = [];
-  module.apply({ slots: fixture.slots, effect(fn) { const dispose = fn(); disposers.push(dispose); return dispose; } });
+  const ctx = { slots: fixture.slots, effect(fn) { const dispose = fn(); disposers.push(dispose); return dispose; } };
+  if (remote) {
+    ctx.get = (key) => key === 'remote' ? remote : undefined;
+    ctx.inject = (_names, callback) => { callback(ctx); return () => {}; };
+  }
+  module.apply(ctx);
   const dispose = () => { renderer.dispose(); for (const fn of disposers.splice(0)) fn(); };
   t.after(dispose);
   await flush();
@@ -103,12 +109,79 @@ async function mount(t, { host, enabled = true, prepare } = {}) {
 
 const nodeOf = (blocks = [{ kind: 'text', text: 'original report' }], status = 'settled', seq = 7) => ({
   key: 'assistant:1', location: { kind: 'step', turn: { status: 'closed' } },
-  data: { status, blocks, finalNode: { seq, blocks }, step: 1 },
+  data: { status, blocks, ...(status === 'settled' ? { finalNode: { seq, blocks } } : {}), step: 1 },
 });
 const all = (tree) => !tree || typeof tree !== 'object' ? [] : Array.isArray(tree)
   ? tree.flatMap(all) : [tree, ...tree.children.flatMap(all)];
 /** The official report is no longer the first child; controls precede it now. */
 const first = (tree) => all(tree).find((element) => element.type === AssistantNodeView);
+
+test('a real running node without finalNode keeps its identity after settlement', async (t) => {
+  const app = await mount(t, { host: { rev: 1, rows: [] } });
+  await app.refresh();
+  const running = nodeOf(undefined, 'running');
+  assert.equal(running.data.finalNode, undefined);
+  app.render(running);
+  assert.equal(first(app.render(nodeOf())).props.node.data.blocks[0].text, '…');
+});
+
+test('a restarted Host can replace a larger old revision, but the retired instance cannot return', async (t) => {
+  const app = await mount(t, { host: { instanceId: 'before', rev: 30,
+    rows: [{ seq: 7, status: 'ready', text: 'before restart' }] } });
+  await app.refresh(); app.render(nodeOf());
+  app.state.instanceId = 'after'; app.state.rev = 1; app.state.rows[0].text = 'after restart';
+  await app.module.__testing.refreshState('s1');
+  assert.equal(first(app.renderer.render()).props.node.data.blocks[0].text, 'after restart');
+  app.state.instanceId = 'before'; app.state.rev = 99; app.state.rows[0].text = 'stale reply';
+  await app.module.__testing.refreshState('s1');
+  assert.equal(first(app.renderer.render()).props.node.data.blocks[0].text, 'after restart');
+});
+
+test('an old settings reply cannot undo a pushed switch or introduce a superseded instance', async (t) => {
+  const app = await mount(t);
+  const payload = (instanceId, controlRev, enabled) => ({ instanceId, controlRev, settings: { enabled },
+    sessionSwitches: { instanceId, rev: 0, values: {} } });
+  const apply = app.module.__testing.applyControls;
+  assert.equal(apply(payload('first', 8, false), 8), true);
+  assert.equal(app.own(), undefined);
+  assert.equal(apply(payload('first', 7, true), 7), false);
+  assert.equal(app.own(), undefined, 'older settings cannot re-enable takeover');
+  assert.equal(apply(payload('second', 0, true), 10), true);
+  assert.ok(app.own());
+  assert.equal(apply(payload('never-accepted-old-response', 99, false), 9), false);
+  assert.ok(app.own(), 'the request-generation floor also rejects unseen old instances');
+});
+
+test('a healthy control stream still retries a session compatibility failure without settings polling', async (t) => {
+  const opened = [];
+  class CarrierError extends Error {}
+  const remote = {
+    async $mount() { return () => {}; },
+    $stream(options) { return options; },
+    personaShell: { observe(key) { opened.push(key); return { key, send() {} }; } },
+  };
+  class SnapshotStream {
+    constructor(logical, callbacks) { this.logical = logical; this.callbacks = callbacks; }
+    start() {
+      const handle = this.logical.open(new AbortController().signal);
+      if (handle.key === '') this.callbacks.replace({ type: 'snapshot', instanceId: 'host', rev: 0,
+        rows: [], settings: { enabled: true }, switchesReady: true,
+        sessionSwitches: { instanceId: 'host', rev: 0, values: {} } });
+      else this.callbacks.failed(Object.assign(new Error('temporarily unavailable'), { code: 'gateway/service-unavailable' }));
+    }
+    async dispose() {}
+  }
+  const app = await mount(t, { remote, gateway: { RemoteSnapshotStream: SnapshotStream, RemoteStreamCarrierError: CarrierError } });
+  const release = app.module.__testing.watchState('s1', 7);
+  t.after(release);
+  const settingsReads = () => app.requests.filter((request) => request.url.endsWith('/settings')).length;
+  const before = settingsReads();
+  assert.equal(opened.filter((key) => key === 's1').length, 1);
+  await app.tick(5000);
+  assert.equal(opened.filter((key) => key === 's1').length, 2, 'the local controller retries only the failed session');
+  assert.equal(opened.filter((key) => key === '').length, 1, 'the healthy control stream stays attached');
+  assert.equal(settingsReads(), before, 'retrying a session does not reintroduce settings polling');
+});
 
 test('delegation reuses official component/locale/inject and never mutates the registration', async (t) => {
   const app = await mount(t);
@@ -192,7 +265,7 @@ test('reasoning, running, interrupted, empty and unsupported block layouts keep 
   }
 });
 
-test('placeholders and partial rewrites touch only text, and the settled hold is bounded per row', async (t) => {
+test('placeholders and partial rewrites touch only text, and pending rows never expose the report', async (t) => {
   const app = await mount(t, { host: { rev: 1, rows: [{ seq: 7, status: 'pending', text: '' }] } });
   await app.refresh();
   const image = { kind: 'image', attachment: {} };
@@ -200,12 +273,48 @@ test('placeholders and partial rewrites touch only text, and the settled hold is
   assert.equal(first(app.render(node)).props.node.data.blocks[0].text, '…');
   assert.equal(first(app.renderer.render()).props.node.data.blocks[1], image);
   await app.tick(app.module.__testing.HOLD_PLACEHOLDER_MS);
-  assert.equal(first(app.renderer.render()).props.node, node);
+  assert.equal(first(app.renderer.render()).props.node.data.blocks[0].text, '…', 'pending stays placeholder');
   app.state.rows[0].partial = 'rewriting [[0]]'; app.state.rows[0].partialLiterals = ['`safe`'];
   await app.refresh();
   assert.equal(first(app.renderer.render()).props.node.data.blocks[0].text, 'rewriting `safe`');
   app.state.rows = [{ seq: 8, status: 'pending', text: '' }]; await app.refresh();
   assert.equal(first(app.render(nodeOf(undefined, 'settled', 8))).props.node.data.blocks[0].text, '…');
+});
+
+test('cold state shows a loading placeholder instead of the official report', async (t) => {
+  const app = await mount(t, { host: { rev: 1,
+    rows: [{ seq: 7, status: 'ready', text: 'persona report', final: true }] } });
+  const node = nodeOf();
+  assert.equal(first(app.render(node)).props.node.data.blocks[0].text, '…',
+    'the first frame must not expose the original before /state arrives');
+  await app.refresh();
+  assert.equal(first(app.renderer.render()).props.node.data.blocks[0].text, 'persona report');
+});
+
+test('a known history row without a rewrite falls back to the official report', async (t) => {
+  const app = await mount(t, { host: { rev: 1, rows: [] } });
+  await app.refresh();
+  const tree = app.render(nodeOf());
+  assert.equal(first(tree).props.node.data.blocks[0].text, 'original report',
+    'a known history row with no row record is not a live pending step');
+});
+
+test('a live settled step with no state row starts with a placeholder', async (t) => {
+  const app = await mount(t, { host: { rev: 1, rows: [] } });
+  app.render(nodeOf(undefined, 'running', 7));
+  await app.refresh();
+  const tree = app.render(nodeOf(undefined, 'settled', 7));
+  assert.equal(first(tree).props.node.data.blocks[0].text, '…',
+    'a running step remembered as live is not treated as historical');
+});
+
+test('storage-switch loading uses a placeholder until the switch map is ready', async (t) => {
+  const app = await mount(t, { host: { rev: 1, switchesReady: false, sessionEnabled: false,
+    rows: [{ seq: 7, status: 'ready', text: 'persona report', final: true }] } });
+  await app.refresh();
+  assert.equal(first(app.render(nodeOf())).props.node.data.blocks[0].text, '…');
+  app.state.switchesReady = true; app.state.sessionEnabled = true; await app.refresh();
+  assert.equal(first(app.renderer.render()).props.node.data.blocks[0].text, 'persona report');
 });
 
 test('original controls and review hints remain siblings of the continuously mounted official report', async (t) => {

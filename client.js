@@ -8,6 +8,215 @@ window.__ModuleLoader__.load({
 
     const ROUTE = '/persona-shell';
 
+    // BEGIN GENERATED STATE TRANSPORT
+    function createRemoteContract() {
+  const boundedString = (value, max) => {
+    if (typeof value !== 'string' || value.length > max) throw new TypeError('Invalid state subscription');
+    return value;
+  };
+  const codec = (name, parse) => ({ mode: 'strict', typeSymbol: `persona-shell#${name}`, create: () => ({ parse }) });
+  const session = codec('SessionKey', (value) => boundedString(value, 200));
+  const view = codec('ViewLease', (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).some((key) => !['viewer', 'revision', 'visible'].includes(key))
+      || typeof value.visible !== 'boolean' || !Number.isSafeInteger(value.revision) || value.revision < 0
+      || boundedString(value.viewer, 100) === '') throw new TypeError('Invalid view lease');
+    return value;
+  });
+  const frame = codec('StateFrame', (value) => {
+    if (!value || !['snapshot', 'delta'].includes(value.type)
+      || typeof value.instanceId !== 'string' || !value.instanceId
+      || !Number.isSafeInteger(value.rev) || value.rev < 0) throw new TypeError('Invalid state frame');
+    return value;
+  });
+  return {
+    package: 'dsh-persona-shell',
+    descriptors: [{
+      id: 'dsh-persona-shell#personaShell/observe', service: 'personaShell', namespace: 'personaShell',
+      method: 'observe', mode: 'stream', invocation: { kind: 'direct' },
+      parameters: [{ name: 'key', wire: 'key', source: 'json', codec: session }],
+      cancellation: { parameter: 'signal' }, uplink: { codec: view }, result: frame,
+    }],
+  };
+}
+
+    function createClientTransport({ remote, SnapshotStream, CarrierError, contribution, onState, onStatus,
+  nextRequest, viewer, bindRemote, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  const entries = new Map();
+  const pendingCloses = new Set();
+  const compatibility = new Set(['gateway/definition-unavailable', 'gateway/invocation-unavailable',
+    'gateway/method-unavailable', 'gateway/service-unavailable', 'gateway/interactions-forbidden']);
+  let stopped = false;
+  let mounted = false;
+  let mounting;
+  let unmount;
+  let unbind;
+  let boundRemote = remote;
+  let leaseTimer;
+  let view;
+
+  const status = (entry, value, error) => {
+    if (entry.status === value && error === undefined) return;
+    entry.status = value;
+    onStatus(entry.key, value, error);
+  };
+  const trackClose = (promise) => {
+    const task = Promise.resolve(promise).catch(() => {});
+    pendingCloses.add(task);
+    void task.finally(() => pendingCloses.delete(task));
+    return task;
+  };
+  const close = (entry) => {
+    clearTimer(entry.deadline);
+    entry.token = undefined;
+    const stream = entry.stream;
+    entry.stream = undefined;
+    entry.handle = undefined;
+    return stream ? trackClose(stream.dispose()) : Promise.resolve();
+  };
+  const sendView = (entry) => {
+    if (!entry.handle || entry.key === '') return;
+    const visible = view?.visible === true && view.sessionId === entry.key;
+    try { entry.handle.send({ viewer, revision: view?.revision ?? 0, visible }); } catch { /* generation is closing */ }
+  };
+  const scheduleLease = () => {
+    clearTimer(leaseTimer);
+    leaseTimer = undefined;
+    if (stopped || view?.visible !== true) return;
+    const entry = entries.get(view.sessionId);
+    if (!entry?.handle) return;
+    leaseTimer = setTimer(() => { sendView(entry); scheduleLease(); }, 15000);
+  };
+
+  function open(entry) {
+    if (stopped || !mounted || !entry.count || entry.stream) return;
+    const token = {};
+    entry.token = token;
+    const current = () => !stopped && entry.token === token && entries.get(entry.key) === entry;
+    status(entry, 'starting');
+    let baseline;
+    let request;
+    const failed = (error) => {
+      if (!current()) return;
+      const carrier = error instanceof CarrierError || error?.cause instanceof CarrierError;
+      const fallback = compatibility.has(error?.code) || carrier || error?.code === 'persona-shell/stream-timeout';
+      // Auth/business/protocol failures remain visible diagnostics, not compatibility probes.
+      status(entry, fallback ? 'fallback' : 'blocked', error);
+      void close(entry);
+      scheduleLease();
+    };
+    const publish = (frame, snapshot) => {
+      if (!current()) return;
+      contribution.descriptors[0].result.create().parse(frame);
+      if (!frame.settings || typeof frame.settings !== 'object') throw new Error('Missing state settings');
+      if (snapshot) {
+        if (!Array.isArray(frame.rows)) throw new Error('Missing state baseline');
+        baseline = { ...frame };
+      } else {
+        if (!baseline || baseline.instanceId !== frame.instanceId || baseline.rev !== frame.baseRev
+          || frame.rev < baseline.rev || !Array.isArray(frame.upsert) || !Array.isArray(frame.removed)) {
+          throw new Error('State delta does not follow its baseline');
+        }
+        const rows = new Map(baseline.rows.map((row) => [row.seq, row]));
+        for (const seq of frame.removed) rows.delete(seq);
+        for (const row of frame.upsert) rows.set(row.seq, row);
+        baseline = { ...frame, rows: [...rows.values()].sort((a, b) => a.seq - b.seq) };
+      }
+      if (onState(entry.key, baseline, request) === false) return;
+      clearTimer(entry.deadline);
+      status(entry, 'ready');
+    };
+    const logical = remote.$stream({ name: `persona-shell:${entry.key || 'control'}`,
+      open(signal) {
+        request = nextRequest();
+        baseline = undefined;
+        const handle = boundRemote.personaShell.observe(entry.key, signal);
+        entry.handle = handle;
+        signal.addEventListener('abort', () => {
+          if (entry.handle === handle) { entry.handle = undefined; scheduleLease(); }
+        }, { once: true });
+        sendView(entry); scheduleLease();
+        return handle;
+      },
+      ended: () => new CarrierError('Persona Shell state stream ended'),
+    });
+    entry.stream = new SnapshotStream(logical, {
+      name: 'persona-shell', isSnapshot: (frame) => frame?.type === 'snapshot',
+      replace: (frame) => publish(frame, true), update: (frame) => publish(frame, false), failed,
+    });
+    entry.deadline = setTimer(() => {
+      const error = Object.assign(new Error('State stream did not open'), { code: 'persona-shell/stream-timeout' });
+      failed(error);
+    }, 10000);
+    entry.stream.start();
+  }
+
+  return {
+    start() {
+      return mounting ??= (async () => {
+        try {
+          unmount = await remote.$mount(contribution);
+          if (stopped) return;
+          const bind = (value) => {
+            if (stopped) return;
+            boundRemote = value;
+            mounted = value !== undefined;
+            for (const entry of entries.values()) {
+              if (mounted) open(entry);
+              else { void close(entry); status(entry, 'fallback'); }
+            }
+          };
+          if (bindRemote) unbind = bindRemote(bind);
+          else bind(remote);
+        } catch (error) {
+          if (!stopped) for (const entry of entries.values()) status(entry, 'fallback', error);
+        }
+      })();
+    },
+    subscribe(key) {
+      let entry = entries.get(key);
+      if (!entry) { entry = { key, count: 0, status: 'fallback' }; entries.set(key, entry); }
+      entry.count += 1;
+      open(entry);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (--entry.count > 0) return;
+        entries.delete(key);
+        void close(entry);
+        scheduleLease();
+      };
+    },
+    status: (key) => entries.get(key)?.status ?? 'fallback',
+    setView(value) {
+      view = value;
+      for (const entry of entries.values()) sendView(entry);
+      scheduleLease();
+    },
+    restart() {
+      for (const entry of entries.values()) {
+        if (!entry.stream && entry.status !== 'blocked') open(entry);
+      }
+    },
+    async dispose() {
+      stopped = true;
+      clearTimer(leaseTimer);
+      await Promise.all([...entries.values()].map(close));
+      entries.clear();
+      await Promise.all([...pendingCloses]);
+      await mounting;
+      const withdraw = unbind;
+      unbind = undefined;
+      await withdraw?.();
+      const release = unmount;
+      unmount = undefined;
+      await release?.();
+    },
+  };
+}
+    // END GENERATED STATE TRANSPORT
+
     /**
      * Bumped whenever the client changes shape.
      *
@@ -15,12 +224,37 @@ window.__ModuleLoader__.load({
      * just installed?" is answerable instead of assumed. A stale bundle and a
      * broken one look identical otherwise.
      */
-    const CLIENT_BUILD = 2026102814;
+    const CLIENT_BUILD = 2026102902;
 
     // --- host data -----------------------------------------------------------
 
     /** sessionId → newest state payload from the host half. */
     const states = new Map();
+    let hostInstance;
+    let requestSequence = 0;
+    let instanceRequestFloor = 0;
+    let controlRevision = -1;
+    let clientStopped = false;
+    const retiredInstances = new Set();
+
+    /** Instance changes replace the baseline; late replies cannot resurrect it. */
+    function acceptInstance(value, request) {
+      const instance = value?.instanceId;
+      if (typeof instance !== 'string' || instance === '') return hostInstance === undefined;
+      if (instance === hostInstance) return true;
+      if (retiredInstances.has(instance) || request < instanceRequestFloor) return false;
+      if (hostInstance !== undefined) retiredInstances.add(hostInstance);
+      hostInstance = instance;
+      instanceRequestFloor = request;
+      states.clear();
+      freshDecided.clear();
+      branchHistory.clear();
+      sessionSwitchRev = -1;
+      controlRevision = -1;
+      switchReady = false;
+      sessionOff.clear();
+      return true;
+    }
     /**
      * Cache key for one row.
      *
@@ -34,11 +268,33 @@ window.__ModuleLoader__.load({
     const branchHistory = new Map();
     /** `${sessionId}:${seq}` → whether the step was new when first seen. */
     const freshDecided = new Map();
+    /** `${sessionId}:${seq}` → this step was rendered while it was running. */
+    const liveSeen = new Set();
     /** `${sessionId}:${seq}` → the branch sequence, capped. */
     const diagnosticsTrail = new Map();
     const listeners = new Set();
     /** `${sessionId}` → poll handle, so several steps share one timer. */
     const pollers = new Map();
+    const stateSubscriptions = new Set();
+    let stateTransport;
+
+    function syncSubscription(entry) {
+      const status = stateTransport?.status(entry.sessionId);
+      if (status === 'ready' || status === 'blocked') {
+        entry.poll?.(); entry.poll = undefined;
+      } else if (!entry.poll) entry.poll = watchPolling(entry.sessionId, entry.seq);
+    }
+
+    function watch(sessionId, seq) {
+      const entry = { sessionId, seq };
+      stateSubscriptions.add(entry);
+      entry.remote = stateTransport?.subscribe(sessionId);
+      syncSubscription(entry);
+      return () => {
+        stateSubscriptions.delete(entry);
+        entry.poll?.(); entry.remote?.();
+      };
+    }
 
     /**
      * Per-session switch overrides. Only an explicit `false` is kept; a missing
@@ -87,6 +343,7 @@ window.__ModuleLoader__.load({
      * @returns {Promise<{ ok: boolean, aborted?: boolean }>}
      */
     async function refresh(sessionId, options = {}) {
+      const request = ++requestSequence;
       const { rev, wait, signal } = options;
       const query = new URLSearchParams({ session: sessionId });
       if (progressViewerSession === sessionId && (typeof document === 'undefined' || document.visibilityState !== 'hidden')) {
@@ -108,9 +365,8 @@ window.__ModuleLoader__.load({
           return { ok: false };
         }
         const value = await response.json();
-        const previous = states.get(sessionId);
-        states.set(sessionId, value);
-        if (previous === undefined || previous.rev !== value.rev) emit();
+        if (clientStopped || signal?.aborted || !acceptInstance(value, request)) return { ok: true };
+        applyState(sessionId, value);
         return { ok: true };
       } catch (error) {
         if (isAbortError(error)) return { ok: false, aborted: true };
@@ -119,6 +375,21 @@ window.__ModuleLoader__.load({
         });
         return { ok: false };
       }
+    }
+
+    function applyState(sessionId, value) {
+        const previous = states.get(sessionId);
+        // A stale response must not overwrite a newer snapshot; the same rev can
+        // still carry a meaningful switch-readiness transition after storage opens.
+        if (previous !== undefined && Number.isFinite(previous.rev)
+          && Number.isFinite(value?.rev) && value.rev < previous.rev) return;
+        const changed = previous === undefined
+          || previous.rev !== value?.rev
+          || previous.sessionEnabled !== value?.sessionEnabled
+          || previous.switchesReady !== value?.switchesReady
+          || previous.settings?.enabled !== value?.settings?.enabled;
+        states.set(sessionId, value);
+        if (changed) emit();
     }
 
     /**
@@ -132,7 +403,7 @@ window.__ModuleLoader__.load({
      * news (and still works through the Desktop IPC fetch carrier, unlike an
      * EventSource).
      */
-    function watch(sessionId, seq) {
+    function watchPolling(sessionId, seq) {
       const key = sessionId;
       let poller = pollers.get(key);
       if (poller === undefined) {
@@ -285,12 +556,16 @@ window.__ModuleLoader__.load({
     function setActiveSession(sessionId) {
       if (activeSessionId === sessionId) return;
       activeSessionId = sessionId;
+      // Warm the state cache before the chat rows mount. The header switch often
+      // mounts first; this removes the cold-state gap for restored conversations.
+      if (usableSessionId(sessionId)) void refresh(sessionId);
       refreshTakeover();
     }
 
     /** Update the client copy of the per-session switch map. */
-    function applySessionSwitches(payload) {
+    function applySessionSwitches(payload, request = ++requestSequence) {
       if (payload === null || typeof payload !== 'object') return;
+      if (!acceptInstance(payload, request)) return;
       const rev = Number.isInteger(payload.rev) ? payload.rev : 0;
       // A settings poll that started before a newer toggle reply must not undo
       // the answer: the switch revision is monotonic on the Host.
@@ -304,6 +579,19 @@ window.__ModuleLoader__.load({
       }
       for (const listener of switchListeners) listener();
       refreshTakeover();
+    }
+
+    function applyControls(value, request) {
+      if (!acceptInstance(value?.sessionSwitches ?? value, request)) return false;
+      const rev = value.controlRev ?? value.rev;
+      if (Number.isFinite(rev)) {
+        if (rev < controlRevision) return false;
+        controlRevision = rev;
+      }
+      if (typeof value.settings?.enabled === 'boolean') setGlobalEnabled(value.settings.enabled);
+      setProgressEnabled(value.settings?.progressNotices === true);
+      if (value.switchesReady !== false) applySessionSwitches(value.sessionSwitches, request);
+      return true;
     }
 
     function useSessionSwitch(sessionId) {
@@ -354,6 +642,8 @@ window.__ModuleLoader__.load({
       progressViewerSession = sessionId;
       progressViewRevision += 1;
       const visible = usableSessionId(sessionId) && (typeof document === 'undefined' || document.visibilityState !== 'hidden');
+      stateTransport?.setView({ sessionId, revision: progressViewRevision, visible });
+      // The legacy route also releases any lease left by a fallback generation.
       void fetch(`${ROUTE}/progress-view`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ viewer: progressViewerId, revision: progressViewRevision, visible,
@@ -422,6 +712,7 @@ window.__ModuleLoader__.load({
         if (pending || global !== true || typeof sessionId !== 'string') return;
         setPending(true);
         setFailed(false);
+        const request = ++requestSequence;
         try {
           const response = await fetch(`${ROUTE}/session-switch`, {
             method: 'POST',
@@ -430,7 +721,7 @@ window.__ModuleLoader__.load({
           });
           if (!response.ok) throw new Error(String(response.status));
           const value = await response.json();
-          applySessionSwitches(value?.sessionSwitches);
+          applySessionSwitches(value?.sessionSwitches, request);
         } catch {
           setFailed(true);
         } finally {
@@ -1319,6 +1610,14 @@ window.__ModuleLoader__.load({
     const HOLD_PLACEHOLDER_MS = 2500;
 
     /**
+     * How long an eligible row may stay in the state-loading placeholder
+     * before falling back to the official report. The host's state route is
+     * local and normally answers in a frame or two; this bound only protects
+     * a failed or stalled request from leaving a permanent blank.
+     */
+    const STATE_LOADING_MS = 500;
+
+    /**
      * Which body one settled row should render.
      *
      * Split out as a pure function because the interesting cases are timing
@@ -1343,7 +1642,9 @@ window.__ModuleLoader__.load({
       // honest answer immediately.
       if (row !== undefined && row.status !== 'pending') return 'plain';
       // A pending row is the only case where text is genuinely on its way.
-      if (row !== undefined) return conceded ? 'plain' : 'placeholder';
+      // The host keeps a rewrite pending until its own timeout; conceding here
+      // would show the original report while the rewrite is still running.
+      if (row !== undefined) return 'placeholder';
       // No row at all: the state has not caught up with this step yet. Showing
       // the report here is what produced the flash — the row is new, its rewrite
       // is being computed, and the plain text appeared first and was replaced a
@@ -1383,24 +1684,38 @@ window.__ModuleLoader__.load({
         && (groupPart === undefined || groupPart === 'response') && typeof seq === 'number'
         && usableSessionId(sessionId) && original !== ''
         && blocks.filter((block) => block?.kind === 'text').length === 1;
+      const key = rowKey(sessionId, seq);
+      const liveKey = rowKey(sessionId, node?.key);
+      if (typeof node?.key === 'string' && data?.status === 'running') liveSeen.add(liveKey);
       const { state } = useHostState(sessionId, eligible ? seq : undefined);
       const [comparison, setComparison] = React.useState(undefined);
       const [expiredKey, setExpiredKey] = React.useState(undefined);
-      const key = rowKey(sessionId, seq);
+      const [stateExpiredKey, setStateExpiredKey] = React.useState(undefined);
       const row = eligible ? state?.rows?.find((candidate) => candidate.seq === seq) : undefined;
-      const allowed = eligible && globalEnabled && state?.sessionEnabled !== false
+      const switchesReady = state?.switchesReady !== false;
+      const switchLoading = eligible && globalEnabled && state !== undefined && !switchesReady;
+      const allowed = eligible && globalEnabled && !switchLoading && state?.sessionEnabled !== false
         && state?.settings?.enabled !== false && sessionOff.get(sessionId) !== false;
       React.useEffect(() => {
         if (!allowed) return undefined;
         const timer = setTimeout(() => setExpiredKey(key), HOLD_PLACEHOLDER_MS);
         return () => clearTimeout(timer);
       }, [allowed, key]);
+      React.useEffect(() => {
+        if (!allowed || state !== undefined) return undefined;
+        const timer = setTimeout(() => setStateExpiredKey(key), STATE_LOADING_MS);
+        return () => clearTimeout(timer);
+      }, [allowed, key, state]);
       React.useEffect(() => { setComparison(undefined); }, [key, allowed, row?.status, row?.final]);
 
       if (allowed && !freshDecided.has(key) && state !== undefined) {
-        freshDecided.set(key, row === undefined);
+        freshDecided.set(key, liveSeen.has(liveKey));
       }
-      const branch = allowed ? rowBranch(row, expiredKey === key, freshDecided.get(key) === true) : 'plain';
+      const stateLoading = allowed && state === undefined && stateExpiredKey !== key;
+      const branch = !allowed
+        ? (switchLoading ? 'placeholder' : 'plain')
+        : stateLoading ? 'placeholder'
+          : rowBranch(row, expiredKey === key, freshDecided.get(key) === true);
       if (allowed && branchHistory.get(key) !== branch) {
         branchHistory.set(key, branch);
         const trace = diagnosticsTrail.get(key) ?? [];
@@ -2194,6 +2509,9 @@ window.__ModuleLoader__.load({
         renderOfficial,
         PersonaStep,
         refreshState: refresh,
+        watchState: watch,
+        getHostState: (sessionId) => states.get(sessionId),
+        applyControls,
         getChatRendererState: () => chatRendererState,
         unmaskPartial,
         chatTakeoverEnabled,
@@ -2211,6 +2529,7 @@ window.__ModuleLoader__.load({
         PROGRESS_PREFIX,
       },
       apply(ctx) {
+        clientStopped = false;
         // Owned by the plugin lifetime; both are cleared on unload below.
         let heartbeatTimer;
         // Announce this build as soon as the plugin is applied, then keep saying
@@ -2325,6 +2644,10 @@ window.__ModuleLoader__.load({
 
         const syncEnabled = async () => {
           if (stopped) return;
+          if (['ready', 'blocked'].includes(stateTransport?.status(''))) {
+            refreshTakeover(); stateTransport.restart(); scheduleSync(5000); return;
+          }
+          const request = ++requestSequence;
           // `AbortController` is a host global, not part of the module sandbox.
           // The guard is not paranoia: when it is missing the whole apply() throws
           // and the plugin never registers anything, which looks exactly like "the
@@ -2339,10 +2662,7 @@ window.__ModuleLoader__.load({
             if (response.ok) {
               const value = await response.json();
               if (stopped) return;
-              const enabled = value?.settings?.enabled;
-              if (typeof enabled === 'boolean') setGlobalEnabled(enabled);
-              setProgressEnabled(value?.settings?.progressNotices === true);
-              applySessionSwitches(value?.sessionSwitches);
+              applyControls(value, request);
             }
           } catch {
             // Keep the last confirmed state; a transient failure is not evidence
@@ -2354,6 +2674,7 @@ window.__ModuleLoader__.load({
           // Factory definitions have no public subscription on SlotRegistry;
           // child-slot changes wake us immediately, this also checks quiet churn.
           refreshTakeover();
+          stateTransport?.restart();
           scheduleSync(5000);
         };
 
@@ -2362,17 +2683,26 @@ window.__ModuleLoader__.load({
         // one more poller and one more heartbeat behind.
         const removeTimers = () => {
           stopped = true;
+          clientStopped = true;
           if (progressViewerSession !== undefined) announceProgressView(undefined);
           progressEnabled = false;
           clearTimeout(syncTimer);
           if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
           if (inFlightController !== undefined) inFlightController.abort();
+          for (const entry of stateSubscriptions) { entry.poll?.(); entry.remote?.(); }
+          stateSubscriptions.clear();
+          const closingTransport = stateTransport;
+          stateTransport = undefined;
           // The pollers are not part of the chat slot; a disabled plugin would
           // otherwise keep one 15s request per session alive after its UI was
           // unmounted.
           for (const poller of pollers.values()) poller.stop();
           pollers.clear();
           states.clear();
+          hostInstance = undefined;
+          retiredInstances.clear();
+          instanceRequestFloor = 0;
+          controlRevision = -1;
           sessionOff.clear();
           sessionSwitchRev = -1;
           switchReady = false;
@@ -2383,8 +2713,10 @@ window.__ModuleLoader__.load({
           refreshChatTakeover = () => {};
           branchHistory.clear();
           freshDecided.clear();
+          liveSeen.clear();
           diagnosticsTrail.clear();
           setChatRendererState('disabled');
+          return closingTransport?.dispose();
         };
         try {
           ctx.effect(() => removeTimers, 'persona-shell.client-timers');
@@ -2394,6 +2726,52 @@ window.__ModuleLoader__.load({
 
         // Start the loop; the first response decides whether to take over.
         void syncEnabled();
+
+        // Optional compatibility path: older compositions continue using the
+        // authenticated long-poll routes. Official Remote owns transport/auth.
+        if (typeof ctx.inject === 'function') ctx.inject(['remote'], (owner) => {
+          let gateway;
+          try { gateway = require('@deepseek-ai/dsh-api-gateway'); } catch { return; }
+          const remote = owner.get('remote');
+          if (stopped || stateTransport || typeof remote?.$stream !== 'function'
+            || typeof gateway.RemoteSnapshotStream !== 'function') return;
+          stateTransport = createClientTransport({ remote, SnapshotStream: gateway.RemoteSnapshotStream,
+            CarrierError: gateway.RemoteStreamCarrierError, contribution: createRemoteContract(),
+            bindRemote(bind) {
+              return owner.inject(['remote', 'remote.personaShell'], (consumer) => {
+                bind(consumer.get('remote'));
+                consumer.effect(() => () => bind(undefined));
+              });
+            },
+            viewer: progressViewerId, nextRequest: () => ++requestSequence,
+            onState(sessionId, value, request) {
+              if (stopped || !acceptInstance(value, request)) return false;
+              if (sessionId === '') {
+                applyControls(value, request);
+              } else applyState(sessionId, value);
+              return true;
+            },
+            onStatus(sessionId, status, error) {
+              for (const entry of stateSubscriptions) if (entry.sessionId === sessionId) syncSubscription(entry);
+              reportDiagnostics({ stateTransport: { status, error: error?.code ?? (error ? 'local-error' : undefined),
+                message: typeof error?.message === 'string' ? error.message.slice(0, 160) : undefined } });
+            },
+          });
+          stateTransport.subscribe('');
+          for (const entry of stateSubscriptions) entry.remote = stateTransport.subscribe(entry.sessionId);
+          if (progressViewerSession !== undefined) stateTransport.setView({ sessionId: progressViewerSession,
+            revision: progressViewRevision, visible: typeof document === 'undefined' || document.visibilityState !== 'hidden' });
+          void stateTransport.start();
+          const transport = stateTransport;
+          if (typeof owner.on === 'function') owner.on('connection/reset', () => transport.restart());
+          owner.effect(() => () => {
+            if (stateTransport === transport) {
+              stateTransport = undefined;
+              for (const entry of stateSubscriptions) { entry.remote = undefined; syncSubscription(entry); }
+            }
+            return transport.dispose();
+          });
+        });
 
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',

@@ -1,9 +1,12 @@
 {
   "name": "dsh-persona-shell",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Layer every assistant report in a persona outside the working prompt, with the original one click away.",
   "type": "module",
   "main": "index.js",
+  "engines": {
+    "dsh": "0.2.1-rc.3"
+  },
   "license": "MIT",
   "author": "crisvollerei",
   "repository": {
@@ -32,17 +35,21 @@
     "index.js",
     "client.js",
     "lib/*.js",
+    "CHANGELOG.md",
+    "docs/layers.svg",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.png"
   ],
   "dsh": {
+    "manifestVersion": 1,
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
       "platform": "web",
       "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-api-gateway",
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-client-ui-chat"
       ]
