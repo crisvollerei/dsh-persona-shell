@@ -22,6 +22,8 @@
   <a href="#配置参考">配置参考</a>
 </p>
 
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/crisvollerei/dsh-persona-shell)
+
 <p align="center">
   <img src="./docs/layers.svg" width="960" alt="工作层生成原始汇报，表达层只读汇报并改写口吻；人格文本不回写工作会话。">
 </p>
