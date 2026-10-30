@@ -1,5 +1,21 @@
 # 更新记录 / Changelog
 
+## 0.4.7
+
+### 中文
+
+#### 兼容性
+
+- 适配 DSH `0.2.1-rc.5`：将 `engines.dsh` 从精确版本改为兼容范围 `>=0.2.1-rc.3 <0.2.2-0`，避免新版 DSH 因版本锁定拒绝加载。
+- 已在 DSH `0.2.1-rc.5` 的官方渲染器与 Cordis 集成环境中验证；本次为兼容更新，不改变现有功能。
+
+### English
+
+#### Compatibility
+
+- Support DSH `0.2.1-rc.5` by widening `engines.dsh` from an exact version to `>=0.2.1-rc.3 <0.2.2-0`, so newer DSH releases are not rejected by the version lock.
+- Verified against the official renderer and Cordis integration environment on DSH `0.2.1-rc.5`; this is a compatibility-only update with no behavior changes.
+
 ## 0.4.6
 
 ### 中文

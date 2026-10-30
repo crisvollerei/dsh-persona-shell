@@ -57,7 +57,7 @@
 
 ## 安装
 
-需要已支持插件管理的 **DSH Desktop 或 Web**。开发与验证基于 `0.2.1-rc.3`，其他版本的兼容性请以实际使用为准。
+需要已支持插件管理的 **DSH Desktop 或 Web**。开发与验证基于 `0.2.1-rc.5`，兼容 `0.2.1-rc.3`–`0.2.1-rc.5`；其他版本的兼容性请以实际使用为准。
 
 ### 推荐：从 npm 安装
 
@@ -77,13 +77,13 @@ dsh plugin --profile <profile> add dsh-persona-shell
 从 [Releases](https://github.com/crisvollerei/dsh-persona-shell/releases) 下载当前版本的 `dsh-persona-shell-<version>.tgz`，然后在 **Plugins → Add plugin** 中选择 **Install a third-party plugin**，填入下载链接，例如：
 
 ```text
-https://github.com/crisvollerei/dsh-persona-shell/releases/download/v0.4.6/dsh-persona-shell-0.4.6.tgz
+https://github.com/crisvollerei/dsh-persona-shell/releases/download/v0.4.7/dsh-persona-shell-0.4.7.tgz
 ```
 
 也可以下载后通过 CLI 安装本地 tarball：
 
 ```bash
-dsh plugin --profile <profile> add ./dsh-persona-shell-0.4.6.tgz
+dsh plugin --profile <profile> add ./dsh-persona-shell-0.4.7.tgz
 ```
 
 #### Git 仓库
@@ -360,7 +360,7 @@ node scripts/build-client-sync.mjs --check
 
 可选集成脚本位于 `test/integration/`，不属于默认离线测试，也不安装项目运行时依赖：
 
-- `remote-runtime.mjs --deps <测试依赖目录/package.json>`：使用已发布的 `0.2.1-rc.3` Cordis、Typert Registry、Gateway、Connection 和流监督器，验证开关推送、重连、Host 独立重载、注入作用域、卸载及 owner-only 边界；模型为禁止调用的替身。
+- `remote-runtime.mjs --deps <测试依赖目录/package.json>`：使用已发布的 `0.2.1-rc.5` Cordis、Typert Registry、Gateway、Connection 和流监督器，验证开关推送、重连、Host 独立重载、注入作用域、卸载及 owner-only 边界；模型为禁止调用的替身。
 - `desktop-runtime.mjs --executable <已安装客户端.exe> --browser-deps <playwright/package.json>`：使用临时 `DSH_HOME` 和临时 Electron 用户目录运行官方 Desktop，检查推送、开关、空闲请求、页面重载和连接恢复；不读取现有密钥或会话，不调用真实模型。
 - `official-renderer.mjs`、`review-browser.mjs`、`comparison-browser.mjs`、`progress-runtime.mjs`：官方渲染、布局和播报生命周期的独立回归；具体依赖参数见各脚本开头。
 
