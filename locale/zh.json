@@ -4,6 +4,7 @@
     "description": "在系统提示词之外，为每条助手汇报套一层人格化转述，原文随时可查。"
   },
   "shell": {
+    "processNote": "过程补充：依据本阶段工具统计与会话节奏生成，不计入正文措辞评分。",
     "progressNotice": "静默状态播报（插件生成，不是主模型消息）",
     "showOriginal": "origin",
     "hideOriginal": "收起原文",

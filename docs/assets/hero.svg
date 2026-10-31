@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="312" viewBox="0 0 960 312" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">做事照旧，说话随你。</title>
+  <desc id="desc">人格套壳的概念插画：一张原始汇报信纸，叠上一张带有鲸鲸口吻的转述卡片。不是产品界面截图。</desc>
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="960" y2="312" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F5F0"/>
+      <stop offset=".54" stop-color="#F1F4FA"/>
+      <stop offset="1" stop-color="#E7EDFA"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="551" y1="141" x2="925" y2="283" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#344A7B"/>
+      <stop offset="1" stop-color="#243555"/>
+    </linearGradient>
+    <pattern id="ruling" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M0 27.5H28" stroke="#6D83AC" stroke-opacity=".055"/>
+    </pattern>
+    <clipPath id="frame"><rect x=".5" y=".5" width="959" height="311" rx="20"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="960" height="312" fill="url(#paper)"/>
+    <rect width="960" height="312" fill="url(#ruling)"/>
+    <circle cx="906" cy="42" r="185" stroke="#A6B9DB" stroke-opacity=".2"/>
+    <circle cx="906" cy="42" r="157" stroke="#A6B9DB" stroke-opacity=".16"/>
+    <path d="M397 313C413 266 468 271 488 229C508 187 459 153 484 104C509 55 565 68 598-12" stroke="#B9C9E3" stroke-opacity=".24" stroke-width="32"/>
+    <path d="M413 313C429 266 484 271 504 229C524 187 475 153 500 104C525 55 581 68 614-12" stroke="#FFFFFF" stroke-opacity=".72" stroke-width="2"/>
+
+    <path d="M40 41H58M49 32V50" stroke="#A58A52" stroke-width="1.5" stroke-linecap="round"/>
+    <text x="71" y="45" fill="#60708D" font-family="Consolas, monospace" font-size="12" letter-spacing="2">PERSONA SHELL / FOR DSH</text>
+    <g fill="#263A60" font-family="'Noto Serif CJK SC', 'Source Han Serif SC', 'Songti SC', SimSun, serif" font-size="49" font-weight="700">
+      <text x="40" y="123">做事照旧，</text>
+      <text x="40" y="186">说话随你。</text>
+    </g>
+    <path d="M43 211H99" stroke="#AD925E" stroke-width="2" stroke-linecap="round"/>
+    <text x="41" y="248" fill="#536784" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="17" letter-spacing="1">让汇报带上熟悉的语气。</text>
+    <text x="41" y="279" fill="#6D7C95" font-family="Consolas, monospace" font-size="11" letter-spacing="1.4">A FAMILIAR VOICE, ONE REPORT AT A TIME.</text>
+
+    <g transform="rotate(-4 712 113)">
+      <rect x="514" y="40" width="374" height="158" rx="12" fill="#B5C4DD" fill-opacity=".2"/>
+      <rect x="510" y="34" width="374" height="158" rx="12" fill="#FFFFFF" stroke="#CCD7E7"/>
+      <circle cx="533" cy="57" r="3" fill="#A8B5CA"/>
+      <text x="546" y="61" fill="#65758F" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="12">原始汇报</text>
+      <path d="M530 76H862" stroke="#E9EDF4"/>
+      <text x="530" y="104" fill="#354B6C" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="15">默认配置位于</text>
+      <rect x="530" y="116" width="164" height="25" rx="5" fill="#F0F3F8"/>
+      <text x="541" y="133" fill="#52698E" font-family="Consolas, monospace" font-size="13">cordis.patch.yml</text>
+      <path d="M711 128H846M530 159H801" stroke="#DBE3EE" stroke-width="5" stroke-linecap="round"/>
+    </g>
+
+    <rect x="551" y="146" width="374" height="142" rx="13" fill="#273C64" fill-opacity=".12"/>
+    <rect x="547" y="140" width="374" height="142" rx="13" fill="url(#ink)"/>
+    <path d="M571 159L575 164L571 169L567 164Z" fill="#D6BF8D"/>
+    <text x="586" y="169" fill="#D4E1F8" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="12">鲸鲸的汇报</text>
+    <text x="896" y="169" text-anchor="end" fill="#B5C9EC" font-family="Consolas, monospace" font-size="11">voice / 01</text>
+    <path d="M568 183H900" stroke="#B2C9EF" stroke-opacity=".22"/>
+    <text x="569" y="212" fill="#F4F7FF" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="15">默认配置在</text>
+    <rect x="670" y="194" width="165" height="25" rx="5" fill="#FFFFFF" fill-opacity=".09"/>
+    <text x="680" y="211" fill="#E0EAFE" font-family="Consolas, monospace" font-size="13">cordis.patch.yml</text>
+    <text x="843" y="212" fill="#F4F7FF" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="15">里哦。</text>
+    <text x="569" y="246" fill="#D4E1F8" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="15">需要的话，鲸鲸陪你看看原文。</text>
+    <circle cx="893" cy="256" r="4" stroke="#A5BFE8" stroke-opacity=".6"/>
+    <circle cx="905" cy="239" r="2" fill="#A5BFE8" fill-opacity=".6"/>
+  </g>
+  <rect x=".5" y=".5" width="959" height="311" rx="20" stroke="#DCE3EF"/>
+</svg>

@@ -29,6 +29,8 @@ import { buildProgressPrompt, createProgress } from './lib/progress.js';
 import { randomUUID } from 'node:crypto';
 import { createRemoteContract } from './lib/remote-contract.js';
 import { createStateStream } from './lib/state-stream.js';
+import { createToolUsage, restoreToolUsage } from './lib/tool-usage.js';
+import { runProcessRewrite, validateProcessNote } from './lib/process-rewrite.js';
 
 /** Cordis plugin name. */
 export const name = 'persona-shell';
@@ -53,7 +55,7 @@ const MAX_SESSION_SWITCHES = 500;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 2026102902;
+const HOST_BUILD = 2026110101;
 
 /**
  * How often a streaming rewrite may publish a new partial revision.
@@ -88,6 +90,32 @@ const PUBLIC_DIAGNOSTIC_KEYS = new Set([
  */
 function pickEnum(value, allowed, fallback) {
   return typeof value === 'string' && allowed.includes(value) ? value : fallback;
+}
+
+function waitWithSignal(value, signal) {
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(signal.reason ?? new Error('aborted'));
+    signal.addEventListener('abort', aborted, { once: true });
+    if (signal.aborted) aborted();
+    Promise.resolve(value).then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+  });
+}
+
+async function* streamWithSignal(llm, options) {
+  options.signal.throwIfAborted();
+  const iterator = llm.stream(options)[Symbol.asyncIterator]();
+  let ended = false;
+  try {
+    while (true) {
+      const next = await waitWithSignal(iterator.next(), options.signal);
+      if (next.done) { ended = true; return; }
+      yield next.value;
+    }
+  } finally {
+    if (!ended) {
+      try { Promise.resolve(iterator.return?.()).catch(() => {}); } catch { /* Best-effort adapter cleanup. */ }
+    }
+  }
 }
 
 /** Runtime schema for the row: a Standard Schema resolver with no dependencies. */
@@ -174,6 +202,7 @@ export function apply(ctx, rawConfig) {
     enabled: true,
     /** Whether narration from tool-calling steps is rewritten too. */
     includeToolSteps: cfg.includeToolSteps,
+    processToolUsage: cfg.processToolUsage,
     /** Whether accumulated reader observations reach the prompt at all. */
     memory: cfg.memory,
     reviewHints: cfg.reviewHints,
@@ -229,8 +258,11 @@ export function apply(ctx, rawConfig) {
    */
   let settingsRestored = false;
   let progressRestored = ctx.get('storageDomain') === undefined;
-  const pendingProgressSettings = new Map();
-  const pendingReviewSettings = new Map();
+  const pendingSettings = new Map();
+  let pendingMemoryClear = false;
+  let toolUsageRestored = ctx.get('storageDomain') === undefined;
+  let toolUsageRevision = 0;
+  const toolUsage = createToolUsage();
 
   /**
    * Whether the runtime `enabled` switch is known.
@@ -252,6 +284,10 @@ export function apply(ctx, rawConfig) {
   const inFlight = new Set();
   /** `${sessionId}:${seq}` → AbortController of the in-flight rewrite. */
   const activeRewrites = new Map();
+  const activeProcessRewrites = new Map();
+  const activeExtractions = new Set();
+  const modelTasks = new Set();
+  let personaRevision = 0;
   /** sessionId → running-turn facts harvested from the log. */
   const turnState = new Map();
   /** sessionId → the candidate text of the turn so far (`trigger: 'report'`). */
@@ -414,6 +450,23 @@ export function apply(ctx, rawConfig) {
     return active?.id ?? DEFAULT_PRESET_NAME;
   }
 
+  function invalidatePersona() {
+    personaRevision += 1;
+    samples.clear();
+    for (const controller of activeRewrites.values()) controller.abort(new Error('persona-changed'));
+  }
+
+  function trackModelTask(task) {
+    modelTasks.add(task);
+    void task.finally(() => modelTasks.delete(task)).catch(() => {});
+    return task;
+  }
+
+  function setSetting(key, value) {
+    settings[key] = value;
+    if (!settingsRestored) pendingSettings.set(key, value);
+  }
+
   function scheduleProfileSave() {
     if (store === undefined) return;
     if (profileTimer !== undefined) return;
@@ -478,6 +531,7 @@ export function apply(ctx, rawConfig) {
     store.putSettings({
       enabled: settings.enabled,
       includeToolSteps: settings.includeToolSteps,
+      processToolUsage: settings.processToolUsage,
       memory: settings.memory,
       reviewHints: settings.reviewHints,
       reviewThreshold: settings.reviewThreshold,
@@ -529,17 +583,23 @@ export function apply(ctx, rawConfig) {
    * working conversation is never touched, and the generated card is just data
    * until the user saves it.
    * @param {string} personaPrompt
-   * @param {{ provider: string, model: string }} route
+   * @param {string | undefined} sessionId
    */
-  async function extractPreset(personaPrompt, route) {
+  async function extractPreset(personaPrompt, sessionId) {
     const llm = getLlm();
     if (llm === undefined) return { ok: false, reason: 'no-llm' };
     const { system, user } = buildExtractPrompt(personaPrompt);
 
     const abort = new AbortController();
+    activeExtractions.add(abort);
     const timer = setTimeout(() => abort.abort(new Error('extract-timeout')), Math.max(2000, cfg.timeoutMs));
     let collected = '';
     try {
+      if (storeClosing) throw new Error('disposed');
+      const route = await waitWithSignal(resolveRouteAsync(sessionId), abort.signal);
+      abort.signal.throwIfAborted();
+      if (storeClosing) throw new Error('disposed');
+      if (route === undefined) return { ok: false, reason: 'no-route' };
       const options = {
         provider: route.provider,
         model: route.model,
@@ -548,19 +608,27 @@ export function apply(ctx, rawConfig) {
         signal: abort.signal,
       };
       if (settings.reasoningEffort !== '') options.reasoningEffort = settings.reasoningEffort;
-      for await (const chunk of llm.stream(options)) {
+      let finish;
+      for await (const chunk of streamWithSignal(llm, options)) {
+        abort.signal.throwIfAborted();
         if (chunk.type === 'text-delta') collected += chunk.text;
+        else if (chunk.type === 'finish') finish = chunk.reason?.kind;
       }
+      abort.signal.throwIfAborted();
+      if (storeClosing) throw new Error('disposed');
+      if (finish !== 'stop') return { ok: false, reason: `finish-${finish ?? 'missing'}` };
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message.slice(0, 120) : 'extract-failed' };
     } finally {
       clearTimeout(timer);
       abort.abort();
+      activeExtractions.delete(abort);
     }
     return parseExtractedPreset(collected);
   }
 
   const touch = (sessionId) => {
+    if (storeClosing) return;
     revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
     wakeStateWaiters(sessionId);
     stateStream.changed(sessionId);
@@ -621,7 +689,7 @@ export function apply(ctx, rawConfig) {
 
   /** The full rewrite gate: global master + restore window + session override. */
   function rewriteAllowedFor(sessionId) {
-    return settings.enabled === true && enabledRestored && sessionEnabledFor(sessionId);
+    return !storeClosing && settings.enabled === true && enabledRestored && sessionEnabledFor(sessionId);
   }
 
   /** Why rewriteAllowedFor() is false, for the row's skipped reason. */
@@ -674,6 +742,9 @@ export function apply(ctx, rawConfig) {
       model: row.model,
       distance: row.distance,
       review: row.review,
+      processNote: row.processNote,
+      processUsage: row.processUsage,
+      process: row.process === true,
       final: row.final === true,
       time: row.time,
     }))).catch((error) => warn(`persist failed for ${sessionId}`, error));
@@ -719,6 +790,9 @@ export function apply(ctx, rawConfig) {
           model: typeof saved.model === 'string' ? saved.model : '',
           distance: typeof saved.distance === 'object' ? saved.distance : undefined,
           review: restoreReview(saved.review),
+          processNote: saved.final === true ? undefined : validateProcessNote(saved.processNote, saved.processUsage),
+          processUsage: saved.final === true ? undefined : restoreToolUsage(saved.processUsage),
+          process: saved.process === true,
           final: saved.final === true,
           time: typeof saved.time === 'number' ? saved.time : Date.now(),
         });
@@ -747,6 +821,7 @@ export function apply(ctx, rawConfig) {
     for (const row of rows.values()) {
       if (row.sessionId !== sessionId) continue;
       if (row.final === true) return; // a live turn already marked one
+      if (row.process === true) continue;
       if (row.status !== 'ready') continue;
       if (newest === undefined || row.seq > newest.seq) newest = row;
     }
@@ -827,26 +902,28 @@ export function apply(ctx, rawConfig) {
    * Rewrite one text. Never throws: any failure settles the row without text,
    * which the page renders as the plain report.
    */
-  async function rewrite({ sessionId, seq, text }) {
+  async function rewrite({ sessionId, seq, text, usage, usageRevision }) {
     const key = `${sessionId}:${seq}`;
     if (inFlight.has(key)) return;
     inFlight.add(key);
 
     const row = rows.get(key);
     if (row === undefined) { inFlight.delete(key); return; }
-
+    const revision = personaRevision;
+    const processAllowed = () => rewriteAllowedFor(sessionId) && revision === personaRevision
+      && settings.includeToolSteps === true && settings.processToolUsage === true
+      && toolUsageRestored && usageRevision === toolUsageRevision;
+    const processMode = usage !== undefined && processAllowed();
     const settle = (status, reason, value) => {
+      if (storeClosing) return;
       row.status = status;
       row.reason = reason;
       row.text = value ?? '';
-      // A settled row never keeps a partial: the page treats `partial` as
-      // "keeps growing", and a stale one would freeze mid-sentence.
       row.partial = '';
       row.partialLiterals = undefined;
       touch(sessionId);
     };
 
-    // The switch may have been turned off between enqueue() and this call.
     if (!rewriteAllowedFor(sessionId)) {
       settle('skipped', rewriteBlockReason(sessionId));
       inFlight.delete(key);
@@ -854,22 +931,23 @@ export function apply(ctx, rawConfig) {
       return;
     }
 
+    // Route discovery belongs to the same cancellation and deadline as generation.
+    const abort = new AbortController();
+    activeRewrites.set(key, abort);
+    if (processMode) activeProcessRewrites.set(key, abort);
+    const timer = setTimeout(() => abort.abort(new Error('rewrite-timeout')), Math.max(1000, cfg.timeoutMs));
     try {
       const llm = getLlm();
       if (llm === undefined) { settle('skipped', 'no-llm'); return; }
-
-      const route = await resolveRouteAsync(sessionId);
-      if (route === undefined) { settle('skipped', 'no-route'); return; }
-      // The switch can change while the route is being resolved; check again
-      // before spending the model call.
+      const route = await waitWithSignal(resolveRouteAsync(sessionId), abort.signal);
+      abort.signal.throwIfAborted();
       if (!rewriteAllowedFor(sessionId)) { settle('skipped', rewriteBlockReason(sessionId)); return; }
+      if (revision !== personaRevision) { settle('skipped', 'persona-changed'); return; }
+      if (route === undefined) { settle('skipped', 'no-route'); return; }
 
       const { masked, literals } = mask(text);
-      // Prose is what gets rewritten; a text that is almost entirely literals
-      // (a bare diff or command) has nothing to re-speak.
       const prose = masked.replace(/\[\[\d+\]\]/g, '').trim();
       if (prose.length < 2) { settle('skipped', 'no-prose'); return; }
-
       const { system, user } = buildRewritePrompt({
         pack: settings.pack,
         masked,
@@ -877,71 +955,51 @@ export function apply(ctx, rawConfig) {
         history: samples.get(sessionId) ?? [],
         stage: turnState.get(sessionId)?.stage,
         memory: settings.memory === true ? memoryLines(profile, activePresetId()) : [],
+        processTools: processMode,
       });
-
-      const abort = new AbortController();
-      activeRewrites.set(key, abort);
-      const timer = setTimeout(
-        () => abort.abort(new Error('rewrite-timeout')),
-        Math.max(1000, cfg.timeoutMs),
-      );
-
+      const options = {
+        provider: route.provider,
+        model: route.model,
+        system,
+        messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
+        signal: abort.signal,
+      };
+      if (settings.reasoningEffort !== '') options.reasoningEffort = settings.reasoningEffort;
       let collected = '';
-      try {
-        const options = {
-          provider: route.provider,
-          model: route.model,
-          system,
-          messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
-          signal: abort.signal,
-        };
-        if (settings.reasoningEffort !== '') options.reasoningEffort = settings.reasoningEffort;
-
-        // Emit as the model writes. The partial text is the model's own output,
-        // so it is still masked; unmasking waits for the final, validated text.
-        // A throttle keeps a fast model from making every token a revision.
-        let lastEmit = 0;
-        const flush = (force) => {
-          const now = Date.now();
-          if (!force && now - lastEmit < STREAM_INTERVAL_MS) return;
-          lastEmit = now;
-          row.partial = collected;
-          // The page needs the literal table to put code back while streaming;
-          // markers alone would show as `[[0]]`.
-          row.partialLiterals = literals;
-          touch(sessionId);
-        };
-
-        for await (const chunk of llm.stream(options)) {
-          // A session or the global switch switched off mid-stream must not
-          // publish more persona text, and the call should stop rather than
-          // keep spending tokens.
-          if (!rewriteAllowedFor(sessionId)) {
-            const reason = rewriteBlockReason(sessionId);
-            abort.abort(new Error(reason));
-            settle('skipped', reason);
-            return;
-          }
+      let processNote;
+      let lastEmit = 0;
+      const flush = (force) => {
+        const now = Date.now();
+        if (!force && now - lastEmit < STREAM_INTERVAL_MS) return;
+        lastEmit = now;
+        row.partial = collected;
+        row.partialLiterals = literals;
+        touch(sessionId);
+      };
+      if (processMode) {
+        const result = await runProcessRewrite({ llm, options, usage, allowed: processAllowed,
+          maxChars: Math.ceil(Math.max(masked.length * cfg.maxRatio, masked.length + 200) * 6 + 1024),
+          onPartial(value) { collected = value; flush(false); } });
+        collected = result.text;
+        processNote = result.note;
+      } else {
+        let finish;
+        for await (const chunk of streamWithSignal(llm, options)) {
+          abort.signal.throwIfAborted();
+          if (!rewriteAllowedFor(sessionId)) throw new Error(rewriteBlockReason(sessionId));
           if (chunk.type === 'text-delta') {
             collected += chunk.text;
             flush(false);
           } else if (chunk.type === 'finish') {
-            const kind = chunk.reason?.kind;
-            if (kind === 'error' || kind === 'aborted') {
-              settle('skipped', `finish-${kind}`);
-              return;
-            }
+            finish = chunk.reason?.kind;
+            if (finish !== 'stop') throw new Error(`finish-${finish ?? 'unknown'}`);
           }
         }
-        flush(true);
-      } finally {
-        clearTimeout(timer);
-        abort.abort();
+        if (finish !== 'stop') throw new Error('finish-missing');
       }
-
-      // Validate in the masked vocabulary first: the markers are the whole
-      // contract, and unmasking destroys the evidence used to check it.
+      abort.signal.throwIfAborted();
       if (!rewriteAllowedFor(sessionId)) { settle('skipped', rewriteBlockReason(sessionId)); return; }
+      if (revision !== personaRevision) { settle('skipped', 'persona-changed'); return; }
       const verdict = validateRewrite({
         candidate: collected,
         original: masked,
@@ -954,12 +1012,12 @@ export function apply(ctx, rawConfig) {
       row.model = `${route.provider}/${route.model}`;
       row.status = 'ready';
       row.reason = '';
-      // The final text supersedes the stream; dropping the partial keeps the
-      // page from having to decide which of the two to trust.
+      if (processMode && processAllowed() && processNote && row.final !== true && toolUsage.claimNote(usage)) {
+        row.processNote = processNote;
+        row.processUsage = restoreToolUsage(usage);
+      }
       row.partial = '';
-      // Recorded for the operator, never used as a gate: whether a rewrite is
-      // "enough" is the persona card's job, and a number here would only be a
-      // second opinion that costs a whole extra call.
+      row.partialLiterals = undefined;
       row.distance = rewriteDistance(
         masked.replace(/\[\[\d+\]\]/g, ''),
         collected.replace(/\[\[\d+\]\]/g, ''),
@@ -972,30 +1030,28 @@ export function apply(ctx, rawConfig) {
       });
       touch(sessionId);
 
+      // Keep only masked samples from the current persona, without runtime observations.
+      if (processMode) return;
       const list = samples.get(sessionId) ?? [];
-      // Store the MASKED rewrite, never `row.text`.
-      //
-      // `row.text` has its literals restored, and the sample is fed back as
-      // `history` on the next call — so a code snippet, path or secret from one
-      // report was being sent to the model verbatim on the following step. That
-      // breaks the one guarantee this plugin makes about technical content: the
-      // model only ever sees `[[n]]` placeholders. The masked form still carries
-      // the voice, which is all continuity needs.
       list.push(verdict.text);
       while (list.length > Math.max(0, cfg.keepSamples)) list.shift();
       samples.set(sessionId, list);
     } catch (error) {
       settle('skipped', error instanceof Error ? error.message.slice(0, 120) : 'error');
-      warn(`rewrite failed for ${key}`, error);
+      if (!abort.signal.aborted) warn(`rewrite failed for ${key}`, error);
     } finally {
+      clearTimeout(timer);
+      abort.abort();
       activeRewrites.delete(key);
+      activeProcessRewrites.delete(key);
       inFlight.delete(key);
       trim(sessionId);
     }
   }
 
   /** Queue one text for rewriting. */
-  function enqueue(sessionId, seq, text) {
+  function enqueue(sessionId, seq, text, usage, process = false) {
+    if (rows.has(`${sessionId}:${seq}`)) return;
     rows.set(`${sessionId}:${seq}`, {
       sessionId,
       seq,
@@ -1004,9 +1060,10 @@ export function apply(ctx, rawConfig) {
       reason: '',
       model: '',
       time: Date.now(),
+      process,
     });
     touch(sessionId);
-    void rewrite({ sessionId, seq, text });
+    void trackModelTask(rewrite({ sessionId, seq, text, usage, usageRevision: toolUsageRevision }));
   }
 
   /** Skip a text without spending a call, but still tell the page why. */
@@ -1137,6 +1194,12 @@ export function apply(ctx, rawConfig) {
   });
 
   function onSessionEvent(session, event) {
+    const observeUsage = cfg.trigger === 'step' && toolUsageRestored && settings.processToolUsage === true
+      && settings.includeToolSteps === true && !storeClosing && rewriteAllowedFor(session?.id)
+      && !isSubagent(session) && session?.header?.origin !== 'subagent';
+    let usage;
+    if (observeUsage) usage = toolUsage.event(session, event);
+    else toolUsage.clear(session?.id);
     progress.event(session, event);
     const sessionId = session?.id;
     if (typeof sessionId !== 'string' || !settings.enabled || !enabledRestored) return;
@@ -1215,6 +1278,8 @@ export function apply(ctx, rawConfig) {
         const row = rows.get(`${sessionId}:${closing}`);
         if (row !== undefined) {
           row.final = true;
+          row.processNote = undefined;
+          row.processUsage = undefined;
           touch(sessionId);
         }
       }
@@ -1278,7 +1343,7 @@ export function apply(ctx, rawConfig) {
       return;
     }
 
-    enqueue(sessionId, event.seq, text);
+    enqueue(sessionId, event.seq, text, usage, hasToolCall(event));
   }
 
   ctx.effect(() => ctx.on('session/event', onSessionEvent), 'persona-shell.events');
@@ -1344,10 +1409,14 @@ export function apply(ctx, rawConfig) {
       // Adopt the persisted reader profile, keeping anything already observed
       // during the window before storage finished opening.
       const savedProfile = opened.getProfile();
-      if (savedProfile !== undefined) {
+      const clearedBeforeRestore = pendingMemoryClear;
+      if (clearedBeforeRestore) {
+        profile = emptyProfile();
+        pendingMemoryClear = false;
+      } else if (savedProfile !== undefined) {
         profile = savedProfile.messages >= profile.messages ? savedProfile : profile;
       }
-      if (profile.messages > 0) scheduleProfileSave();
+      if (clearedBeforeRestore || profile.messages > 0) scheduleProfileSave();
 
       // Restore saved presets, keeping every shipped preset first and always
       // present even if the stored copy is missing or corrupt.
@@ -1378,6 +1447,7 @@ export function apply(ctx, rawConfig) {
         const activeId = absorbed.get(savedActive) ?? savedActive;
         const active = presets.find((preset) => preset.id === activeId);
         if (active !== undefined) {
+          invalidatePersona();
           settings.pack = normalizePack(active.pack);
           settings.presetName = active.name;
         }
@@ -1391,6 +1461,7 @@ export function apply(ctx, rawConfig) {
         for (const key of ['enabled', 'includeToolSteps', 'memory', 'reviewHints', 'subagentSteps', 'subagentReports']) {
           if (typeof savedSettings[key] === 'boolean') settings[key] = savedSettings[key];
         }
+        if (typeof savedSettings.processToolUsage === 'boolean') settings.processToolUsage = savedSettings.processToolUsage;
         if (Number.isFinite(savedSettings.reviewThreshold)
           && savedSettings.reviewThreshold >= 0 && savedSettings.reviewThreshold <= 1) {
           settings.reviewThreshold = savedSettings.reviewThreshold;
@@ -1403,12 +1474,14 @@ export function apply(ctx, rawConfig) {
           if (typeof savedSettings[key] === 'string') settings[key] = savedSettings[key];
         }
       }
+      for (const [key, value] of pendingSettings) settings[key] = value;
       // The switches are now authoritative; memory collection may resume — but
       // never during shutdown, where nothing should keep publishing state.
       if (!storeClosing) {
         settingsRestored = true;
         enabledRestored = true;
         progressRestored = true;
+        toolUsageRestored = true;
       }
 
       // Per-session overrides. A missing/corrupt record means "all sessions
@@ -1446,10 +1519,7 @@ export function apply(ctx, rawConfig) {
         pendingSessionSwitchValues.clear();
         saveSessionSwitches();
       }
-      for (const [key, value] of pendingProgressSettings) settings[key] = value;
-      if (pendingProgressSettings.size > 0) { pendingProgressSettings.clear(); saveSettings(); }
-      for (const [key, value] of pendingReviewSettings) settings[key] = value;
-      if (pendingReviewSettings.size > 0) { pendingReviewSettings.clear(); saveSettings(); }
+      if (pendingSettings.size > 0) { pendingSettings.clear(); saveSettings(); }
       // A held /state request may have observed the storage-opening values;
       // wake every known session so the client can leave its loading state.
       for (const id of revisions.keys()) touch(id);
@@ -1529,6 +1599,8 @@ export function apply(ctx, rawConfig) {
         partial: row.partial === undefined ? '' : row.partial,
         partialLiterals: row.partialLiterals === undefined ? undefined : row.partialLiterals,
         reason: row.reason,
+        processNote: row.final !== true && settings.processToolUsage === true && settings.includeToolSteps === true ? row.processNote : undefined,
+        processUsage: row.final !== true && settings.processToolUsage === true && settings.includeToolSteps === true ? row.processUsage : undefined,
         distance: row.distance,
         review: row.review,
         // True for the step that closed its turn; the page puts the badge and
@@ -1693,6 +1765,7 @@ export function apply(ctx, rawConfig) {
         // the history the reader had.
         turnState.delete(sessionId);
         candidates.delete(sessionId);
+        toolUsage.clear(sessionId);
       }
       progress.configure(sessionId);
       saveSessionSwitches();
@@ -1790,15 +1863,16 @@ export function apply(ctx, rawConfig) {
       let body;
       try { body = JSON.parse(raw === '' ? '{}' : raw); } catch { sendJson(res, 400, { error: 'invalid json' }); return; }
       const action = body?.action;
+      if (storeState === 'opening' && action !== 'generate') {
+        sendJson(res, 503, { error: 'storage-not-ready' }); return;
+      }
 
       // --- generate from a persona prompt -----------------------------------
       if (action === 'generate') {
         const personaPrompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
         if (personaPrompt.length < 20) { sendJson(res, 400, { error: 'prompt too short' }); return; }
         if (personaPrompt.length > 24000) { sendJson(res, 400, { error: 'prompt too long' }); return; }
-        const route = await resolveRouteAsync(currentSessionHint());
-        if (route === undefined) { sendJson(res, 200, { ok: false, reason: 'no-route' }); return; }
-        const result = await extractPreset(personaPrompt, route);
+        const result = await trackModelTask(extractPreset(personaPrompt, currentSessionHint()));
         if (result.ok !== true) { sendJson(res, 200, { ok: false, reason: result.reason }); return; }
         sendJson(res, 200, { ok: true, preset: result.preset });
         return;
@@ -1829,8 +1903,10 @@ export function apply(ctx, rawConfig) {
         }
         savePreset(entry);
         saveActivePreset(entry.id);
+        invalidatePersona();
         settings.pack = entry.pack;
         settings.presetName = entry.name;
+        progress.configure();
         for (const id of revisions.keys()) touch(id);
         sendJson(res, 200, { ok: true, presets: presets.map(presetForClient), active: settings.presetName, settings });
         return;
@@ -1868,6 +1944,7 @@ export function apply(ctx, rawConfig) {
         const id = typeof body.id === 'string' ? body.id : '';
         const target = presets.find((preset) => preset.id === id);
         if (target === undefined) { sendJson(res, 404, { error: 'preset not found' }); return; }
+        invalidatePersona();
         settings.pack = normalizePack(target.pack);
         settings.presetName = target.name;
         progress.configure();
@@ -1890,6 +1967,7 @@ export function apply(ctx, rawConfig) {
         // stored pointer has to move with it, or the next restart restores a
         // preset that is gone.
         if (settings.presetName === target.name) {
+          invalidatePersona();
           settings.pack = normalizePack(presets[0]?.pack);
           settings.presetName = presets[0]?.name ?? DEFAULT_PRESET_NAME;
           progress.configure();
@@ -1928,7 +2006,13 @@ export function apply(ctx, rawConfig) {
       let patch;
       try { patch = JSON.parse(raw === '' ? '{}' : raw); } catch { sendJson(res, 400, { error: 'invalid json' }); return; }
       if (patch !== null && typeof patch === 'object') {
+        if (patch.pack !== undefined && storeState === 'opening') {
+          sendJson(res, 503, { error: 'storage-not-ready' }); return;
+        }
+        const processChanged = ['enabled', 'includeToolSteps', 'processToolUsage']
+          .some((key) => typeof patch[key] === 'boolean' && patch[key] !== settings[key]);
         if (patch.pack !== undefined) {
+          invalidatePersona();
           settings.pack = normalizePack(patch.pack);
           // Write the edit back into the preset it belongs to. Without this the
           // change lived only in memory: the presets table still held the old
@@ -1936,10 +2020,10 @@ export function apply(ctx, rawConfig) {
           // "my edits do not save".
           persistActivePack();
         }
-        if (typeof patch.provider === 'string') settings.provider = patch.provider.trim();
-        if (typeof patch.model === 'string') settings.model = patch.model.trim();
-        if (typeof patch.reasoningEffort === 'string') settings.reasoningEffort = patch.reasoningEffort.trim();
-        if (typeof patch.enabled === 'boolean') settings.enabled = patch.enabled;
+        if (typeof patch.provider === 'string') setSetting('provider', patch.provider.trim());
+        if (typeof patch.model === 'string') setSetting('model', patch.model.trim());
+        if (typeof patch.reasoningEffort === 'string') setSetting('reasoningEffort', patch.reasoningEffort.trim());
+        if (typeof patch.enabled === 'boolean') setSetting('enabled', patch.enabled);
         if (patch.enabled === false) {
           // Stop any rewrite already spending tokens under the old switch.
           for (const controller of activeRewrites.values()) controller.abort(new Error('disabled'));
@@ -1950,31 +2034,37 @@ export function apply(ctx, rawConfig) {
             candidates.delete(id);
           }
         }
-        if (typeof patch.includeToolSteps === 'boolean') settings.includeToolSteps = patch.includeToolSteps;
-        if (typeof patch.memory === 'boolean') settings.memory = patch.memory;
+        if (typeof patch.includeToolSteps === 'boolean') setSetting('includeToolSteps', patch.includeToolSteps);
+        if (typeof patch.processToolUsage === 'boolean') {
+          setSetting('processToolUsage', patch.processToolUsage);
+        }
+        if (processChanged) {
+          toolUsageRevision++;
+          toolUsage.clear();
+          for (const controller of activeProcessRewrites.values()) controller.abort(new Error('process-disabled'));
+        }
+        if (typeof patch.memory === 'boolean') setSetting('memory', patch.memory);
         if (typeof patch.reviewHints === 'boolean') {
-          settings.reviewHints = patch.reviewHints;
-          if (!settingsRestored) pendingReviewSettings.set('reviewHints', patch.reviewHints);
+          setSetting('reviewHints', patch.reviewHints);
         }
         if (Number.isFinite(patch.reviewThreshold) && patch.reviewThreshold >= 0 && patch.reviewThreshold <= 1) {
-          settings.reviewThreshold = patch.reviewThreshold;
-          if (!settingsRestored) pendingReviewSettings.set('reviewThreshold', patch.reviewThreshold);
+          setSetting('reviewThreshold', patch.reviewThreshold);
         }
         if (typeof patch.progressNotices === 'boolean') {
-          settings.progressNotices = patch.progressNotices;
-          if (!progressRestored) pendingProgressSettings.set('progressNotices', patch.progressNotices);
+          setSetting('progressNotices', patch.progressNotices);
         }
         if (Number.isInteger(patch.progressMinutes) && patch.progressMinutes >= 1 && patch.progressMinutes <= 60) {
-          settings.progressMinutes = patch.progressMinutes;
-          if (!progressRestored) pendingProgressSettings.set('progressMinutes', patch.progressMinutes);
+          setSetting('progressMinutes', patch.progressMinutes);
         }
-        if (typeof patch.subagentSteps === 'boolean') settings.subagentSteps = patch.subagentSteps;
-        if (typeof patch.subagentReports === 'boolean') settings.subagentReports = patch.subagentReports;
+        if (typeof patch.subagentSteps === 'boolean') setSetting('subagentSteps', patch.subagentSteps);
+        if (typeof patch.subagentReports === 'boolean') setSetting('subagentReports', patch.subagentReports);
         // Clearing the learned profile is a user right, not a debug affordance:
         // the plugin collects observations about them, so discarding them must
         // be one click away.
         if (patch.clearMemory === true) {
           profile = emptyProfile();
+          pendingMemoryClear = !settingsRestored;
+          memorySamples.length = 0;
           scheduleProfileSave();
         }
         // Persist the switches and the route. The page reports 「已保存」, so a
@@ -2050,9 +2140,11 @@ export function apply(ctx, rawConfig) {
     storeClosing = true;
     stateStream.close();
     progress.dispose();
+    toolUsage.dispose();
     // Stop rewrites before dropping the rows they would settle into: a model
     // stream must not keep spending tokens after the plugin is gone.
     for (const controller of activeRewrites.values()) controller.abort(new Error('disposed'));
+    for (const controller of activeExtractions) controller.abort(new Error('disposed'));
     // Release every held long-poll request before tearing down: a response left
     // waiting on a dead plugin would hang until its timeout.
     for (const waiters of [...stateWaiters.values()]) {
@@ -2107,7 +2199,7 @@ export function apply(ctx, rawConfig) {
       : Promise.allSettled(pending)
         .then(() => closing.close())
         .catch((error) => warn('store close failed', error));
-    return Promise.all([owned, Promise.allSettled(tasks)])
+    return Promise.all([owned, Promise.allSettled(tasks), Promise.allSettled([...modelTasks])])
       .catch((error) => warn('store teardown failed', error));
   }, 'persona-shell.dispose');
 }

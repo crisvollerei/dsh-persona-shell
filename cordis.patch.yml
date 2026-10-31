@@ -4,6 +4,7 @@
       config:
         enabled: true
         trigger: step
+        processToolUsage: false
         progressNotices: false
         progressMinutes: 5
         provider: ''

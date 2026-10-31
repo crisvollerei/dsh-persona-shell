@@ -1,7 +1,7 @@
 {
   "name": "dsh-persona-shell",
-  "version": "0.4.7",
-  "description": "Layer every assistant report in a persona outside the working prompt, with the original one click away.",
+  "version": "0.4.8",
+  "description": "在工作提示词之外，为 DeepSeek Harness 的助手汇报提供人格化转述，原文随时可查。",
   "type": "module",
   "main": "index.js",
   "engines": {
@@ -36,7 +36,8 @@
     "client.js",
     "lib/*.js",
     "CHANGELOG.md",
-    "docs/layers.svg",
+    "docs/**/*.md",
+    "docs/**/*.svg",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.png"

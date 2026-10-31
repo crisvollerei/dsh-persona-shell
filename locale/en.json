@@ -4,6 +4,7 @@
     "description": "Re-speaks each assistant report in a persona, outside the working prompt, with the original available on demand."
   },
   "shell": {
+    "processNote": "Process aside based on this stage's tool counts and session pacing; excluded from the body wording-change score.",
     "progressNotice": "Quiet-turn status (plugin-generated, not a message from the working model)",
     "showOriginal": "origin",
     "hideOriginal": "Hide original",

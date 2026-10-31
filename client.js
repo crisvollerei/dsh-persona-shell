@@ -224,7 +224,7 @@ window.__ModuleLoader__.load({
      * just installed?" is answerable instead of assumed. A stale bundle and a
      * broken one look identical otherwise.
      */
-    const CLIENT_BUILD = 2026102902;
+    const CLIENT_BUILD = 2026110101;
 
     // --- host data -----------------------------------------------------------
 
@@ -1748,6 +1748,14 @@ window.__ModuleLoader__.load({
           }, t('shell.showOriginal') ?? 'origin'),
         ) : null,
         report,
+        ready && row.final !== true && state?.settings?.processToolUsage === true
+          && state?.settings?.includeToolSteps !== false && typeof row.processNote === 'string'
+          && row.processNote !== '' && Array.from(row.processNote).length <= 40
+          ? h('small', { 'data-persona-shell': 'process-note',
+            title: t('shell.processNote') ?? '过程补充：依据本阶段工具统计与会话节奏生成，不计入正文措辞评分。',
+            style: { display: 'block', marginTop: '4px', fontSize: '12px', lineHeight: '1.6',
+              color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' } }, row.processNote)
+          : null,
         ready && !comparisonOpen && reviewNeeded(row, original, state?.settings)
           ? h(ReviewHint, { key: `${key}:${row.review.sourceHash}:${row.review.targetHash}`, original, review: row.review, t, renderOriginal })
           : null,
@@ -1891,7 +1899,22 @@ window.__ModuleLoader__.load({
      */
     function SettingsSection() {
       const [settings, setSettings] = React.useState(undefined);
+      const settingsRef = React.useRef(undefined);
+      const [packDrafts, setPackDrafts] = React.useState({});
+      const draftsRef = React.useRef({ values: {}, versions: {}, revision: 0 });
+      const writes = React.useRef(Promise.resolve());
+      const editorGeneration = React.useRef(0);
+      const editorScope = editorGeneration.current;
+      const [presetBusy, setPresetBusy] = React.useState(false);
+      const presetBusyRef = React.useRef(false);
+      const presetLoadRevision = React.useRef(0);
+      const statusTimer = React.useRef(undefined);
+      const mounted = React.useRef(true);
       const [rendererState, setRendererState] = React.useState(chatRendererState);
+      React.useEffect(() => {
+        mounted.current = true;
+        return () => { mounted.current = false; clearTimeout(statusTimer.current); };
+      }, []);
       React.useEffect(() => {
         const listener = () => setRendererState(chatRendererState);
         rendererListeners.add(listener);
@@ -1914,12 +1937,37 @@ window.__ModuleLoader__.load({
       const [personaPrompt, setPersonaPrompt] = React.useState('');
       const [generating, setGenerating] = React.useState(false);
       const [generated, setGenerated] = React.useState(undefined);
+      const [generatedSource, setGeneratedSource] = React.useState('');
+      const generatingRef = React.useRef(false);
       const [presetStatus, setPresetStatus] = React.useState('');
       /** Name the user chose for a freshly generated preset. */
       const [generatedName, setGeneratedName] = React.useState('');
       /** Preset id being renamed, if the inline editor is open. */
       const [renaming, setRenaming] = React.useState(undefined);
       const [renameValue, setRenameValue] = React.useState('');
+
+      // Keep writes in user order; card drafts remain separate from server snapshots.
+      const queueWrite = (write) => {
+        const task = writes.current.then(write, write);
+        writes.current = task.catch(() => {});
+        return task;
+      };
+      const acceptSettings = (value) => { settingsRef.current = value; setSettings(value); };
+      const showStatus = (value, temporary = false) => {
+        if (!mounted.current) return;
+        clearTimeout(statusTimer.current);
+        setStatus(value);
+        if (temporary) statusTimer.current = setTimeout(() => setStatus(''), 1500);
+      };
+      const setDraft = (field, value) => {
+        if (presetBusyRef.current || editorGeneration.current !== editorScope) return false;
+        const draft = draftsRef.current;
+        const revision = draft.revision + 1;
+        draftsRef.current = { values: { ...draft.values, [field]: value },
+          versions: { ...draft.versions, [field]: revision }, revision };
+        setPackDrafts(draftsRef.current.values);
+        return true;
+      };
 
       React.useEffect(() => {
         let cancelled = false;
@@ -1948,14 +1996,16 @@ window.__ModuleLoader__.load({
       const refreshPresets = async (payload) => {
         let value = payload;
         if (value === undefined) {
+          const revision = presetLoadRevision.current;
           try {
             const response = await fetch(`${ROUTE}/presets`);
             if (!response.ok) return;
             value = await response.json();
+            if (revision !== presetLoadRevision.current) return;
           } catch {
             return;
           }
-        }
+        } else presetLoadRevision.current += 1;
         const list = Array.isArray(value?.presets) ? value.presets : [];
         setPresets(list);
         const activeName = typeof value?.active === 'string' ? value.active : '';
@@ -1966,29 +2016,51 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => { void refreshPresets(); }, []);
 
-      const presetAction = async (body) => {
-        const result = await postPreset(body);
-        if (result?.ok === true) {
-          // The whole reply: it carries both the list and which preset is now
-          // active, and the selection must move with it or the button looks dead.
-          await refreshPresets({ presets: result.presets, active: result.active });
-          if (result.settings !== undefined) setSettings(result.settings);
-          setPresetStatus('');
-        } else {
-          setPresetStatus(`失败：${result?.reason ?? '未知原因'}`);
-        }
-        return result;
+      const presetAction = (body) => {
+        if (presetBusyRef.current) return Promise.resolve({ ok: false, reason: 'preset-change-pending' });
+        presetBusyRef.current = true;
+        setPresetBusy(true);
+        editorGeneration.current += 1;
+        const replacesCard = body.action === 'apply' || body.action === 'save'
+          || (body.action === 'delete' && body.id === activePresetId);
+        return queueWrite(async () => {
+          try {
+            // A failed blur save must not disappear when another card is selected.
+            const changes = draftChanges();
+            if (replacesCard && changes.length > 0 && !(await persistPackChanges(changes))?.settings) {
+              setPresetStatus('切换前保存人格修改失败，请重试。');
+              return { ok: false, reason: 'unsaved-persona-edits' };
+            }
+            const result = await postPreset(body);
+            if (result?.ok === true) {
+              await refreshPresets({ presets: result.presets, active: result.active });
+              if (result.settings !== undefined) acceptSettings(result.settings);
+              setPresetStatus('');
+            } else {
+              setPresetStatus(`失败：${result?.reason ?? '未知原因'}`);
+            }
+            return result;
+          } finally {
+            presetBusyRef.current = false;
+            setPresetBusy(false);
+          }
+        });
       };
 
       const generatePreset = async () => {
+        if (generatingRef.current || presetBusyRef.current) return;
+        generatingRef.current = true;
+        const prompt = personaPrompt;
         setGenerating(true);
         setPresetStatus('正在读取人设…');
         setGenerated(undefined);
         setGeneratedName('');
-        const result = await postPreset({ action: 'generate', prompt: personaPrompt });
+        const result = await postPreset({ action: 'generate', prompt });
+        generatingRef.current = false;
         setGenerating(false);
         if (result?.ok === true) {
           setGenerated(result.preset);
+          setGeneratedSource(prompt);
           // Seeded from the generated suggestion, but editable: it is a starting
           // point, not the user's decision.
           setGeneratedName(result.preset?.name ?? '');
@@ -2029,10 +2101,11 @@ window.__ModuleLoader__.load({
 
       const pack = settings?.pack;
 
-      const save = async (patch) => {
+      const writeSettings = async (patch) => {
+        showStatus('正在保存…');
         const result = await postSettings(patch);
         if (result?.settings !== undefined) {
-          setSettings(result.settings);
+          acceptSettings(result.settings);
           // Saving can change the learned profile (a clear resets it), so the
           // memory panel refreshes from the same response rather than going stale.
           if (Array.isArray(result.memory)) setMemoryLines(result.memory);
@@ -2042,12 +2115,40 @@ window.__ModuleLoader__.load({
           if (Array.isArray(result.presets)) {
             await refreshPresets({ presets: result.presets, active: result.settings.presetName });
           }
-          setStatus('已保存');
-          setTimeout(() => setStatus(''), 1500);
+          showStatus('已保存', true);
         } else {
-          setStatus('保存失败');
+          showStatus('保存失败，请重试');
         }
+        return result;
       };
+      const save = (patch) => queueWrite(() => writeSettings(patch));
+      const draftChanges = () => Object.entries(draftsRef.current.values)
+        .map(([field, value]) => ({ field, value, version: draftsRef.current.versions[field] }));
+      const persistPackChanges = async (changes) => {
+        const nextPack = { ...settingsRef.current?.pack };
+        for (const { field, value } of changes) {
+          if (field === 'subagent') nextPack.address = { ...nextPack.address, subagent: value };
+          else nextPack[field] = field === 'identity' ? value : value.split('\n').filter((line) => line.trim() !== '');
+        }
+        const result = await writeSettings({ pack: nextPack });
+        if (result?.settings !== undefined) {
+          const draft = draftsRef.current;
+          const values = { ...draft.values };
+          const versions = { ...draft.versions };
+          for (const { field, version } of changes) if (versions[field] === version) {
+            delete values[field]; delete versions[field];
+          }
+          draftsRef.current = { ...draft, values, versions };
+          setPackDrafts(values);
+        }
+        return result;
+      };
+      const savePackField = (field, value) => {
+        if (!setDraft(field, value)) return Promise.resolve();
+        const change = { field, value, version: draftsRef.current.versions[field] };
+        return queueWrite(() => persistPackChanges([change]));
+      };
+      const draftValue = (field, value) => Object.hasOwn(packDrafts, field) ? packDrafts[field] : value;
 
       if (settings === undefined) {
         return h('div', null,
@@ -2055,7 +2156,7 @@ window.__ModuleLoader__.load({
           h('div', { style: hintStyle }, '正在读取设置…'),
           h(LoadSettings, {
             onLoaded: (value) => {
-              setSettings(value.settings);
+              acceptSettings(value.settings);
               setMemoryLines(Array.isArray(value.memory) ? value.memory : []);
               setMemoryStats(value.memoryStats);
             },
@@ -2093,8 +2194,18 @@ window.__ModuleLoader__.load({
           ),
           h('span', { style: hintStyle },
             '开启后，带工具调用的中间步骤（"现在改常量…"这类叙述）也会套壳；'
-            + '关掉则只改写每轮最终的汇报，中间步骤保持原样。',
+            + '关闭后跳过这些带工具调用的步骤。严格只改每轮最终汇报需将插件行配置 trigger 设为 report。',
           ),
+          h('label', { style: { ...toggleRowStyle, marginTop: '10px' } },
+            h('input', { type: 'checkbox', checked: settings?.processToolUsage === true,
+              disabled: settings?.includeToolSteps === false,
+              onChange: (event) => save({ processToolUsage: event.target.checked }) }),
+            h('span', { style: labelStyle }, '允许过程转述参考运行信息（默认关闭）'),
+          ),
+          h('span', { style: hintStyle },
+            '只读查询上一次阶段性汇报后的工具统计、可确认的工作性质，以及本会话轮次、本地小时和轮间间隔。'
+            + '人设可自行查询并补充一句，最多 40 字、每轮最多 3 条；查询会增加一次模型续接。'
+            + '不读取工具参数或输出正文；仅在本地归并受支持的文件结果元数据，不发送路径。未知信息不猜测，不进入最终汇报及其口吻样例。'),
         ),
 
         h('div', { style: { height: '6px' } }),
@@ -2203,7 +2314,7 @@ window.__ModuleLoader__.load({
           ),
           h('span', { style: hintStyle },
             '跨会话统计你的提问语言、称呼方式和句子长短，用来微调套壳语气。'
-            + '只保存计数，不保存你说过的话。',
+            + '语言、长短等观察只保存计数；明确提出的风格纠正会保留文本。',
           ),
           memoryLines && memoryLines.length > 0
             ? h('div', { style: memoryBoxStyle },
@@ -2259,6 +2370,7 @@ window.__ModuleLoader__.load({
                   : h('button', {
                     type: 'button',
                     style: toggleStyle,
+                    disabled: presetBusy,
                     onClick: () => presetAction({ action: 'apply', id: preset.id }),
                   }, '启用'),
                 preset.builtin === true
@@ -2266,6 +2378,7 @@ window.__ModuleLoader__.load({
                   : h('button', {
                     type: 'button',
                     style: toggleStyle,
+                    disabled: presetBusy,
                     onClick: () => startRename(preset),
                   }, '改名'),
                 preset.builtin === true
@@ -2273,6 +2386,7 @@ window.__ModuleLoader__.load({
                   : h('button', {
                     type: 'button',
                     style: { ...toggleStyle, color: 'var(--dsw-alias-label-tertiary)' },
+                    disabled: presetBusy,
                     onClick: () => presetAction({ action: 'delete', id: preset.id }),
                   }, '删除'),
               ))),
@@ -2286,10 +2400,11 @@ window.__ModuleLoader__.load({
               h('input', {
                 style: { ...inputStyle, flex: 1 },
                 value: renameValue,
+                disabled: presetBusy,
                 onChange: (event) => setRenameValue(event.target.value),
                 onKeyDown: (event) => { if (event.key === 'Enter') commitRename(); },
               }),
-              h('button', { type: 'button', style: primaryButtonStyle, onClick: commitRename }, '保存'),
+              h('button', { type: 'button', style: primaryButtonStyle, disabled: presetBusy, onClick: commitRename }, '保存'),
               h('button', {
                 type: 'button',
                 style: toggleStyle,
@@ -2315,7 +2430,7 @@ window.__ModuleLoader__.load({
             h('button', {
               type: 'button',
               style: primaryButtonStyle,
-              disabled: generating || personaPrompt.trim().length < 20,
+              disabled: generating || presetBusy || personaPrompt.trim().length < 20,
               onClick: () => generatePreset(),
             }, generating ? '生成中…' : '生成预设'),
             presetStatus !== '' ? h('span', { style: hintStyle }, presetStatus) : null,
@@ -2330,6 +2445,7 @@ window.__ModuleLoader__.load({
                 h('input', {
                   style: { ...inputStyle, flex: 1 },
                   value: generatedName,
+                  disabled: presetBusy,
                   placeholder: '给这个预设起个名字',
                   onChange: (event) => setGeneratedName(event.target.value),
                 }),
@@ -2347,21 +2463,24 @@ window.__ModuleLoader__.load({
                 h('button', {
                   type: 'button',
                   style: primaryButtonStyle,
-                  disabled: generatedName.trim() === '',
-                  onClick: () => {
-                    presetAction({
+                  disabled: presetBusy || generatedName.trim() === '',
+                  onClick: async () => {
+                    const result = await presetAction({
                       action: 'save',
                       name: generatedName.trim(),
                       pack: generated,
-                      source: personaPrompt,
+                      source: generatedSource,
                     });
-                    setGenerated(undefined);
-                    setGeneratedName('');
+                    if (result?.ok === true) {
+                      setGenerated(undefined);
+                      setGeneratedName('');
+                    }
                   },
                 }, '保存并启用'),
                 h('button', {
                   type: 'button',
                   style: toggleStyle,
+                  disabled: presetBusy,
                   onClick: () => { setGenerated(undefined); setPresetStatus(''); },
                 }, '丢弃'),
               ),
@@ -2375,11 +2494,10 @@ window.__ModuleLoader__.load({
           h('span', { style: labelStyle }, '身份'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '56px', resize: 'vertical' },
-            value: pack?.identity ?? '',
-            onChange: (event) => setSettings({
-              ...settings, pack: { ...pack, identity: event.target.value },
-            }),
-            onBlur: (event) => save({ pack: { ...pack, identity: event.target.value } }),
+            disabled: presetBusy,
+            value: draftValue('identity', pack?.identity ?? ''),
+            onChange: (event) => setDraft('identity', event.target.value),
+            onBlur: (event) => savePackField('identity', event.target.value),
           }),
         ),
 
@@ -2387,11 +2505,10 @@ window.__ModuleLoader__.load({
           h('span', { style: labelStyle }, '汇报里的说话规则（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '76px', resize: 'vertical' },
-            value: (pack?.report ?? []).join('\n'),
-            onChange: (event) => setSettings({
-              ...settings, pack: { ...pack, report: event.target.value.split('\n') },
-            }),
-            onBlur: (event) => save({ pack: { ...pack, report: event.target.value.split('\n').filter((line) => line.trim() !== '') } }),
+            disabled: presetBusy,
+            value: draftValue('report', (pack?.report ?? []).join('\n')),
+            onChange: (event) => setDraft('report', event.target.value),
+            onBlur: (event) => savePackField('report', event.target.value),
           }),
         ),
 
@@ -2399,11 +2516,10 @@ window.__ModuleLoader__.load({
           h('span', { style: labelStyle }, '通用语感（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '76px', resize: 'vertical' },
-            value: (pack?.voice ?? []).join('\n'),
-            onChange: (event) => setSettings({
-              ...settings, pack: { ...pack, voice: event.target.value.split('\n') },
-            }),
-            onBlur: (event) => save({ pack: { ...pack, voice: event.target.value.split('\n').filter((line) => line.trim() !== '') } }),
+            disabled: presetBusy,
+            value: draftValue('voice', (pack?.voice ?? []).join('\n')),
+            onChange: (event) => setDraft('voice', event.target.value),
+            onBlur: (event) => savePackField('voice', event.target.value),
           }),
         ),
 
@@ -2411,11 +2527,10 @@ window.__ModuleLoader__.load({
           h('span', { style: labelStyle }, '语气示例（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '56px', resize: 'vertical' },
-            value: (pack?.samples ?? []).join('\n'),
-            onChange: (event) => setSettings({
-              ...settings, pack: { ...pack, samples: event.target.value.split('\n') },
-            }),
-            onBlur: (event) => save({ pack: { ...pack, samples: event.target.value.split('\n').filter((line) => line.trim() !== '') } }),
+            disabled: presetBusy,
+            value: draftValue('samples', (pack?.samples ?? []).join('\n')),
+            onChange: (event) => setDraft('samples', event.target.value),
+            onBlur: (event) => savePackField('samples', event.target.value),
           }),
         ),
 
@@ -2423,11 +2538,10 @@ window.__ModuleLoader__.load({
           h('span', { style: labelStyle }, '避免出现（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '56px', resize: 'vertical' },
-            value: (pack?.avoid ?? []).join('\n'),
-            onChange: (event) => setSettings({
-              ...settings, pack: { ...pack, avoid: event.target.value.split('\n') },
-            }),
-            onBlur: (event) => save({ pack: { ...pack, avoid: event.target.value.split('\n').filter((line) => line.trim() !== '') } }),
+            disabled: presetBusy,
+            value: draftValue('avoid', (pack?.avoid ?? []).join('\n')),
+            onChange: (event) => setDraft('avoid', event.target.value),
+            onBlur: (event) => savePackField('avoid', event.target.value),
           }),
         ),
 
@@ -2435,14 +2549,10 @@ window.__ModuleLoader__.load({
           h('span', { style: labelStyle }, '子代理称呼'),
           h('input', {
             style: inputStyle,
-            value: pack?.address?.subagent ?? '',
-            onChange: (event) => setSettings({
-              ...settings,
-              pack: { ...pack, address: { ...(pack?.address ?? {}), subagent: event.target.value } },
-            }),
-            onBlur: (event) => save({
-              pack: { ...pack, address: { ...(pack?.address ?? {}), subagent: event.target.value } },
-            }),
+            disabled: presetBusy,
+            value: draftValue('subagent', pack?.address?.subagent ?? ''),
+            onChange: (event) => setDraft('subagent', event.target.value),
+            onBlur: (event) => savePackField('subagent', event.target.value),
           }),
         ),
 

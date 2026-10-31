@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="156" viewBox="0 0 960 156" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">从工作到表达</title>
+  <desc id="desc">工作层照常执行，提交原始汇报后，表达层单独转述。人格版只用于插件存储与展示，不写回工作会话。</desc>
+  <defs>
+    <linearGradient id="voice" x1="686" y1="16" x2="944" y2="140" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#344A7B"/><stop offset="1" stop-color="#273A60"/>
+    </linearGradient>
+  </defs>
+  <rect x="16.5" y="16.5" width="257" height="123" rx="12" fill="#F4F6FA" stroke="#DCE3EF"/>
+  <rect x="351.5" y="16.5" width="257" height="123" rx="12" fill="#F9F7F1" stroke="#E5DFD0"/>
+  <rect x="686" y="16" width="258" height="124" rx="12" fill="url(#voice)"/>
+  <g font-family="Consolas, monospace" font-size="11" letter-spacing="1.4">
+    <text x="36" y="43" fill="#647897">01 / WORK</text>
+    <text x="371" y="43" fill="#89764E">02 / REPORT</text>
+    <text x="706" y="43" fill="#B9CEEF">03 / VOICE</text>
+  </g>
+  <g font-family="'Microsoft YaHei', 'PingFang SC', sans-serif">
+    <text x="36" y="81" fill="#2F4469" font-size="25" font-weight="600">照常完成工作</text>
+    <text x="371" y="81" fill="#504C42" font-size="25" font-weight="600">提交原始汇报</text>
+    <text x="706" y="81" fill="#F5F8FF" font-size="25" font-weight="600">换一种口吻</text>
+    <text x="36" y="115" fill="#60728C" font-size="13">原有提示词、工具与会话记录</text>
+    <text x="371" y="115" fill="#80765F" font-size="13">原文保留，随时对照</text>
+    <text x="706" y="115" fill="#C5D6F1" font-size="13">独立调用，仅用于插件展示与存储</text>
+  </g>
+  <g stroke="#8299BD" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M292 78H333M327 72L333 78L327 84"/>
+    <path d="M627 78H668M662 72L668 78L662 84"/>
+  </g>
+</svg>

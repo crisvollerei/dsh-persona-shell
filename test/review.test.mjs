@@ -490,8 +490,9 @@ test('ready mid-turn reports show hints without disturbing the main Markdown doc
   const renderer = hookRenderer(document);
   const original = '## 检查\n\n条件确认后再继续。';
   const text = '## 鲸鲸汇报\n\n条件都核过啦，接着往前走哦。';
-  const row = { seq: 1, status: 'ready', text, final: false, review: assess(original, text) };
-  const host = { rev: 1, settings: { enabled: true, reviewHints: true, reviewThreshold: 0 }, rows: [row] };
+  const row = { seq: 1, status: 'ready', text, final: false, review: assess(original, text), processNote: '哼，这段工具可没闲着。' };
+  const host = { rev: 1, settings: { enabled: true, reviewHints: true, reviewThreshold: 0,
+    processToolUsage: true, includeToolSteps: true }, rows: [row] };
   const { module } = loadClient({
     React: renderer.React, document,
     fetch: async (url) => ({ ok: true, json: async () => String(url).includes('/state') ? host : { settings: host.settings } }),
@@ -517,6 +518,23 @@ test('ready mid-turn reports show hints without disturbing the main Markdown doc
   assert.equal(nodes(tree).filter((node) => node.type === module.__testing.ReviewHint).length, 1, 'a non-final report can carry a hint');
   assert.equal(nodes(tree).filter((node) => node.type === 'button').length, 0, 'no final-row header was added');
   assert.deepEqual(nodes(tree).filter((node) => node.type === AssistantNodeView).map((node) => node.props.node.data.blocks[0].text), [text]);
+  const note = (root) => nodes(root).find((node) => node.props['data-persona-shell'] === 'process-note');
+  assert.deepEqual(note(tree).children, [row.processNote], 'plain text is a separate sibling, outside official report text');
+  const official = nodes(tree).find((node) => node.type === AssistantNodeView);
+  host.settings.processToolUsage = false;
+  tree = renderer.render();
+  assert.equal(note(tree), undefined);
+  assert.equal(nodes(tree).find((node) => node.type === AssistantNodeView).type, official.type);
+  host.settings.processToolUsage = true;
+  row.final = true;
+  assert.equal(note(renderer.render()), undefined, 'final reports never display an aside');
+  row.final = false;
+  host.settings.includeToolSteps = false;
+  assert.equal(note(renderer.render()), undefined);
+  host.settings.includeToolSteps = true;
+  row.processNote = '字'.repeat(41);
+  assert.equal(note(renderer.render()), undefined, 'the client also bounds restored/wire notes');
+  row.processNote = '哼，这段工具可没闲着。';
   host.settings.reviewHints = false;
   assert.equal(nodes(renderer.render()).filter((node) => node.type === module.__testing.ReviewHint).length, 0);
   host.settings.reviewHints = true;
@@ -525,6 +543,7 @@ test('ready mid-turn reports show hints without disturbing the main Markdown doc
   row.text = '';
   tree = renderer.render();
   assert.equal(nodes(tree).filter((node) => node.type === module.__testing.ReviewHint).length, 0);
+  assert.equal(note(tree), undefined, 'a pending body never exposes the optional note');
   assert.deepEqual(nodes(tree).filter((node) => node.type === AssistantNodeView).map((node) => node.props.node.data.blocks[0].text), ['正文尚在生成']);
 });
 
@@ -595,4 +614,19 @@ test('settings controls persist the hint switch and commit a threshold only afte
   assert.equal(nodes(tree).find((node) => node.props.type === 'number').props.value, 7);
   await nodes(tree).find((node) => node.props.type === 'number').props.onBlur({ target: { value: '0' } });
   assert.equal(writes.length, countBefore + 1, 'invalid intervals do not get saved');
+  const toggle = (root, label) => nodes(nodes(root).find((node) => node.type === 'label'
+    && nodes(node).some((child) => child.children.includes(label)))).find((node) => node.type === 'input');
+  const usageLabel = '允许过程转述参考运行信息（默认关闭）';
+  assert.equal(toggle(tree, usageLabel).props.checked, false);
+  await toggle(tree, usageLabel).props.onChange({ target: { checked: true } });
+  tree = renderer.render();
+  assert.deepEqual(writes.at(-1), { processToolUsage: true });
+  assert.equal(toggle(tree, usageLabel).props.checked, true);
+  await toggle(tree, '同时改写阶段性输出').props.onChange({ target: { checked: false } });
+  tree = renderer.render();
+  assert.equal(toggle(tree, usageLabel).props.disabled, true);
+  assert.equal(toggle(tree, usageLabel).props.checked, true, 'the nested preference survives disabling process rewrites');
+  const rows = nodes(tree).filter((node) => node.props.style?.margin === '0 0 14px');
+  assert.ok(rows.some((node) => nodes(node).some((child) => child.children.includes(usageLabel))
+    && nodes(node).some((child) => child.children.includes('同时改写阶段性输出'))), 'both controls share the same settings group');
 });
