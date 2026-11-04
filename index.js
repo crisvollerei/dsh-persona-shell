@@ -23,7 +23,7 @@ import { buildExtractPrompt, parseExtractedPreset } from './lib/preset.js';
 import { buildRewritePrompt, rewriteDistance, validateRewrite } from './lib/prompt.js';
 import { assessRewrite, restoreReview } from './lib/review.js';
 import { Config, resolveConfig } from './lib/config.js';
-import { observeFeedback, observeMessage, memoryLines, emptyProfile } from './lib/memory.js';
+import { observeMessage, emptyProfile } from './lib/memory.js';
 import { openStore } from './lib/store.js';
 import { buildProgressPrompt, createProgress } from './lib/progress.js';
 import { randomUUID } from 'node:crypto';
@@ -31,6 +31,8 @@ import { createRemoteContract } from './lib/remote-contract.js';
 import { createStateStream } from './lib/state-stream.js';
 import { createToolUsage, restoreToolUsage } from './lib/tool-usage.js';
 import { runProcessRewrite, validateProcessNote } from './lib/process-rewrite.js';
+import { createStructuredMemory } from './lib/structured-memory.js';
+import { buildMemoryPrompt, createMemoryConsolidator } from './lib/memory-consolidation.js';
 
 /** Cordis plugin name. */
 export const name = 'persona-shell';
@@ -55,7 +57,7 @@ const MAX_SESSION_SWITCHES = 500;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 2026110101;
+const HOST_BUILD = 2026110402;
 
 /**
  * How often a streaming rewrite may publish a new partial revision.
@@ -205,6 +207,7 @@ export function apply(ctx, rawConfig) {
     processToolUsage: cfg.processToolUsage,
     /** Whether accumulated reader observations reach the prompt at all. */
     memory: cfg.memory,
+    memoryExtraction: cfg.memoryExtraction,
     reviewHints: cfg.reviewHints,
     reviewThreshold: cfg.reviewThreshold,
     progressNotices: cfg.progressNotices,
@@ -328,6 +331,8 @@ export function apply(ctx, rawConfig) {
    * table once storage opens.
    */
   let profile = emptyProfile();
+  let memoryWrites = Promise.resolve();
+  const memories = createStructuredMemory({ changed: () => scheduleProfileSave() });
   /** Debounced writer for the profile row. */
   let profileTimer;
 
@@ -413,7 +418,13 @@ export function apply(ctx, rawConfig) {
    * not describe how the user wants a different character to speak.
    * @param {string} text
    */
-  function observeUserText(text) {
+  function observeUserText(text, context) {
+    const before = memories.snapshot().entries.filter((e) => e.status === 'active').map((e) => e.id).join();
+    if (Number.isSafeInteger(context.seq) && !memories.observe({ ...context, text,
+      queue: settings.memoryExtraction === true })) return;
+    if (before !== memories.snapshot().entries.filter((e) => e.status === 'active').map((e) => e.id).join()) {
+      invalidatePersona('memory-changed');
+    }
     // Record what was actually sampled, so a surprising ratio can be traced to a
     // specific message instead of guessed at. Lengths and counts only: this is a
     // debugging aid, and it must not become a second copy of the user's words.
@@ -421,7 +432,6 @@ export function apply(ctx, rawConfig) {
       len: text.length,
       han: (text.match(/[\u4e00-\u9fff]/g) ?? []).length,
       latin: (text.match(/[A-Za-z]/g) ?? []).length,
-      head: text.slice(0, 24).replace(/\s+/g, ' '),
       at: Date.now(),
     };
     memorySamples.push(sample);
@@ -431,9 +441,8 @@ export function apply(ctx, rawConfig) {
     diagnostics.memorySamples = memorySamples;
 
     profile = observeMessage(profile, text);
-    const presetId = activePresetId();
-    profile = observeFeedback(profile, text, presetId);
     scheduleProfileSave();
+    memoryConsolidator.notify();
   }
 
   /** Recent memory samples, for diagnosing a surprising ratio. */
@@ -450,10 +459,10 @@ export function apply(ctx, rawConfig) {
     return active?.id ?? DEFAULT_PRESET_NAME;
   }
 
-  function invalidatePersona() {
+  function invalidatePersona(reason = 'persona-changed') {
     personaRevision += 1;
     samples.clear();
-    for (const controller of activeRewrites.values()) controller.abort(new Error('persona-changed'));
+    for (const controller of activeRewrites.values()) controller.abort(new Error(reason));
   }
 
   function trackModelTask(task) {
@@ -473,7 +482,28 @@ export function apply(ctx, rawConfig) {
     profileTimer = setTimeout(() => {
       profileTimer = undefined;
       store.putProfile(profile).catch((error) => warn('profile persist failed', error));
+      void saveMemory().catch((error) => warn('memory persist failed', error));
     }, 1500);
+  }
+
+  function saveMemory() {
+    if (store === undefined) return Promise.resolve();
+    const opened = store;
+    const snapshot = memories.snapshot();
+    memoryWrites = memoryWrites.catch(() => {}).then(() => opened.putMemory(snapshot));
+    return memoryWrites;
+  }
+
+  function readerMemoryLines(sessionId = currentSessionHint(), text = '') {
+    return memories.select({ personaId: activePresetId(), sessionId, text })
+      .map((entry) => entry.content);
+  }
+
+  function memoryState() {
+    const snapshot = memories.snapshot();
+    return { revision: snapshot.revision, entries: snapshot.entries,
+      activePersonaId: activePresetId(), activePresetName: settings.presetName, sessionId: currentSessionHint() ?? null,
+      extraction: memoryConsolidator.state() };
   }
 
   /**
@@ -533,6 +563,7 @@ export function apply(ctx, rawConfig) {
       includeToolSteps: settings.includeToolSteps,
       processToolUsage: settings.processToolUsage,
       memory: settings.memory,
+      memoryExtraction: settings.memoryExtraction,
       reviewHints: settings.reviewHints,
       reviewThreshold: settings.reviewThreshold,
       progressNotices: settings.progressNotices,
@@ -626,6 +657,52 @@ export function apply(ctx, rawConfig) {
     }
     return parseExtractedPreset(collected);
   }
+
+  async function extractMemories(batch, parentSignal) {
+    const abort = new AbortController();
+    const cancelled = () => abort.abort(parentSignal.reason);
+    parentSignal.addEventListener('abort', cancelled, { once: true });
+    if (parentSignal.aborted) cancelled();
+    activeExtractions.add(abort);
+    const timer = setTimeout(() => abort.abort(new Error('memory-timeout')), Math.max(1000, cfg.timeoutMs));
+    try {
+      abort.signal.throwIfAborted();
+      if (storeClosing) throw new Error('disposed');
+      const llm = getLlm();
+      if (!llm) throw new Error('no-llm');
+      const route = await waitWithSignal(resolveRouteAsync(batch.sources[0].sessionId), abort.signal);
+      abort.signal.throwIfAborted();
+      if (!route || storeClosing) throw new Error('no-route');
+      const prompt = buildMemoryPrompt(batch);
+      const options = { ...route, system: prompt.system,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt.user }] }], signal: abort.signal };
+      let text = ''; let finish;
+      for await (const chunk of streamWithSignal(llm, options)) {
+        abort.signal.throwIfAborted();
+        if (chunk.type === 'text-delta') text += chunk.text;
+        if (text.length > 16384) throw new Error('memory-too-long');
+        if (chunk.type === 'finish') finish = chunk.reason?.kind;
+        if (chunk.type === 'error') throw new Error('memory-stream-error');
+      }
+      abort.signal.throwIfAborted();
+      if (finish !== 'stop') throw new Error('memory-incomplete');
+      const value = JSON.parse(text);
+      if (!value || Array.isArray(value) || Object.keys(value).length !== 1 || !Array.isArray(value.entries)) {
+        throw new Error('memory-format');
+      }
+      return value.entries;
+    } finally {
+      clearTimeout(timer); abort.abort(); activeExtractions.delete(abort);
+      parentSignal.removeEventListener('abort', cancelled);
+    }
+  }
+
+  const memoryConsolidator = createMemoryConsolidator({
+    memory: memories,
+    enabled: () => !storeClosing && settingsRestored && settings.enabled === true
+      && settings.memory === true && settings.memoryExtraction === true,
+    run: (batch, signal) => trackModelTask(extractMemories(batch, signal)),
+  });
 
   const touch = (sessionId) => {
     if (storeClosing) return;
@@ -954,7 +1031,7 @@ export function apply(ctx, rawConfig) {
         literalCount: literals.length,
         history: samples.get(sessionId) ?? [],
         stage: turnState.get(sessionId)?.stage,
-        memory: settings.memory === true ? memoryLines(profile, activePresetId()) : [],
+        memory: settings.memory === true ? readerMemoryLines(sessionId, text) : [],
         processTools: processMode,
       });
       const options = {
@@ -1194,6 +1271,7 @@ export function apply(ctx, rawConfig) {
   });
 
   function onSessionEvent(session, event) {
+    if (storeClosing) return;
     const observeUsage = cfg.trigger === 'step' && toolUsageRestored && settings.processToolUsage === true
       && settings.includeToolSteps === true && !storeClosing && rewriteAllowedFor(session?.id)
       && !isSubagent(session) && session?.header?.origin !== 'subagent';
@@ -1234,9 +1312,11 @@ export function apply(ctx, rawConfig) {
     // still holds its default `true` — a user who had switched memory off would
     // have their first messages collected and persisted before the saved value
     // came back. Collection waits until the real value is known.
-    if (settings.memory === true && settingsRestored && isUserMessage(event)) {
+    if (settings.memory === true && settingsRestored && isUserMessage(event) && !isSubagent(session)
+      && session?.header?.origin !== 'subagent') {
       const text = stripInjectedContext(userTextOf(event));
-      if (text !== undefined && !looksLikePastedPersona(text)) observeUserText(text);
+      if (text !== undefined && !looksLikePastedPersona(text)) observeUserText(text,
+        { sessionId, seq: event.seq, personaId: activePresetId() });
     }
 
     if (event.type === 'request/header') {
@@ -1410,6 +1490,7 @@ export function apply(ctx, rawConfig) {
       // during the window before storage finished opening.
       const savedProfile = opened.getProfile();
       const clearedBeforeRestore = pendingMemoryClear;
+      memories.restore(opened.getMemory(), { clear: clearedBeforeRestore });
       if (clearedBeforeRestore) {
         profile = emptyProfile();
         pendingMemoryClear = false;
@@ -1417,6 +1498,8 @@ export function apply(ctx, rawConfig) {
         profile = savedProfile.messages >= profile.messages ? savedProfile : profile;
       }
       if (clearedBeforeRestore || profile.messages > 0) scheduleProfileSave();
+      memories.migrate(profile);
+      profile = { ...profile, stated: {} };
 
       // Restore saved presets, keeping every shipped preset first and always
       // present even if the stored copy is missing or corrupt.
@@ -1458,7 +1541,7 @@ export function apply(ctx, rawConfig) {
       // memory for someone who switched it off is worse than an inconvenience.
       const savedSettings = opened.getSettings();
       if (savedSettings !== null && typeof savedSettings === 'object') {
-        for (const key of ['enabled', 'includeToolSteps', 'memory', 'reviewHints', 'subagentSteps', 'subagentReports']) {
+        for (const key of ['enabled', 'includeToolSteps', 'memory', 'memoryExtraction', 'reviewHints', 'subagentSteps', 'subagentReports']) {
           if (typeof savedSettings[key] === 'boolean') settings[key] = savedSettings[key];
         }
         if (typeof savedSettings.processToolUsage === 'boolean') settings.processToolUsage = savedSettings.processToolUsage;
@@ -1475,6 +1558,7 @@ export function apply(ctx, rawConfig) {
         }
       }
       for (const [key, value] of pendingSettings) settings[key] = value;
+      if (!settings.memory || !settings.memoryExtraction) memories.discardQueue();
       // The switches are now authoritative; memory collection may resume — but
       // never during shutdown, where nothing should keep publishing state.
       if (!storeClosing) {
@@ -1519,11 +1603,13 @@ export function apply(ctx, rawConfig) {
         pendingSessionSwitchValues.clear();
         saveSessionSwitches();
       }
+      for (const id of sessionSwitches.keys()) memories.discardSession(id);
       if (pendingSettings.size > 0) { pendingSettings.clear(); saveSettings(); }
       // A held /state request may have observed the storage-opening values;
       // wake every known session so the client can leave its loading state.
       for (const id of revisions.keys()) touch(id);
       progress.configure();
+      memoryConsolidator.notify();
     }, (error) => {
       storeError = error instanceof Error ? error.message : String(error);
       // Nothing can be restored. The question is what "unknown" should mean, and
@@ -1623,7 +1709,7 @@ export function apply(ctx, rawConfig) {
       messages: profile.messages,
       hanShare: profile.totalChars > 0 ? Number((profile.hanChars / profile.totalChars).toFixed(2)) : 0,
       meanSentence: profile.sentences > 0 ? Math.round(profile.chars / profile.sentences) : 0,
-      stated: Array.isArray(profile.stated) ? profile.stated.length : 0,
+      stated: memories.select({ personaId: activePresetId(), sessionId: currentSessionHint() }).length,
       updatedAt: profile.updatedAt,
     };
   }
@@ -1755,6 +1841,8 @@ export function apply(ctx, rawConfig) {
         pendingSessionSwitchValues.set(sessionId, body.enabled);
       }
       if (body.enabled === false) {
+        memoryConsolidator.cancel();
+        if (settingsRestored) memories.discardSession(sessionId);
         // Stop spending tokens on a session the user just turned off. The
         // abort is observed by the stream loop and settles the row skipped.
         for (const [key, controller] of activeRewrites) {
@@ -1771,6 +1859,7 @@ export function apply(ctx, rawConfig) {
       saveSessionSwitches();
       touch(sessionId);
       touch('');
+      memoryConsolidator.notify();
       sendJson(res, 200, {
         ok: true,
         sessionId,
@@ -1836,7 +1925,7 @@ export function apply(ctx, rawConfig) {
         // rather than taken on faith.
         memory: {
           messages: profile.messages,
-          lines: memoryLines(profile, activePresetId()),
+          lines: readerMemoryLines(),
           enabled: settings.memory === true,
         },
       });
@@ -1851,6 +1940,59 @@ export function apply(ctx, rawConfig) {
         // the user waits on a call that cannot succeed.
         route: resolveRoute(currentSessionHint()) ?? null,
       });
+      return;
+    }
+
+    if (path === ROUTE + '/memory' && req.method === 'GET') {
+      sendJson(res, 200, memoryState()); return;
+    }
+    if (path === ROUTE + '/memory/handoffs' && req.method === 'GET') {
+      const sessionId = url.searchParams.get('session');
+      const personaId = url.searchParams.get('persona');
+      if (!sessionId || !personaId) { sendJson(res, 400, { error: 'session-and-persona-required' }); return; }
+      sendJson(res, 200, { handoffs: memories.snapshot().handoffs.filter((h) =>
+        h.sessionId === sessionId && h.toPersonaId === personaId).map((h) => ({
+          ...h, ...memories.handoffContext(h.id, { sessionId, personaId }),
+        })) });
+      return;
+    }
+    if ([ROUTE + '/memory', ROUTE + '/memory/handoffs'].includes(path) && req.method === 'POST') {
+      if (!settingsRestored || !store || storeClosing) {
+        sendJson(res, 503, { error: 'storage-not-ready' }); return;
+      }
+      let raw = '';
+      for await (const piece of req) {
+        raw += piece;
+        if (raw.length > 32768) { sendJson(res, 413, { error: 'too large' }); return; }
+      }
+      let body;
+      try { body = JSON.parse(raw); } catch { sendJson(res, 400, { error: 'invalid json' }); return; }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        sendJson(res, 400, { error: 'invalid-memory-action' }); return;
+      }
+      if (body.action === 'consolidate' && path === ROUTE + '/memory') {
+        if (!settings.memory || !settings.memoryExtraction || !settings.enabled) {
+          sendJson(res, 400, { error: 'memory-extraction-disabled' }); return;
+        }
+        void memoryConsolidator.start();
+        sendJson(res, 200, memoryState()); return;
+      }
+      let result;
+      try {
+        const personaIds = [body.entry?.personaId, body.personaId, body.fromPersonaId, body.toPersonaId].filter(Boolean);
+        if (personaIds.some((id) => !presets.some((preset) => preset.id === id))) throw new Error('persona-not-found');
+        memoryConsolidator.cancel();
+        result = path === ROUTE + '/memory/handoffs' ? memories.handoff(body) : memories.mutate(body);
+        if (path === ROUTE + '/memory' && body.action !== 'reject') invalidatePersona('memory-changed');
+      } catch (error) {
+        memoryConsolidator.notify();
+        const reason = error instanceof Error ? error.message : 'invalid-memory-action';
+        sendJson(res, reason.endsWith('-conflict') ? 409 : 400, { error: reason }); return;
+      }
+      try { await saveMemory(); }
+      catch { sendJson(res, 503, { error: 'memory-save-failed' }); return; }
+      memoryConsolidator.notify();
+      sendJson(res, 200, { ...memoryState(), result });
       return;
     }
 
@@ -1986,7 +2128,7 @@ export function apply(ctx, rawConfig) {
       sendJson(res, 200, {
         instanceId, controlRev: revisions.get('') ?? 0,
         settings,
-        memory: memoryLines(profile, activePresetId()),
+        memory: readerMemoryLines(),
         memoryStats: memoryStats(),
         presets: presets.map(presetForClient),
         // Per-session overrides ride on the settings read the page already
@@ -2043,7 +2185,15 @@ export function apply(ctx, rawConfig) {
           toolUsage.clear();
           for (const controller of activeProcessRewrites.values()) controller.abort(new Error('process-disabled'));
         }
-        if (typeof patch.memory === 'boolean') setSetting('memory', patch.memory);
+        if (typeof patch.memory === 'boolean') {
+          if (patch.memory !== settings.memory) invalidatePersona('memory-changed');
+          setSetting('memory', patch.memory);
+        }
+        if (typeof patch.memoryExtraction === 'boolean') setSetting('memoryExtraction', patch.memoryExtraction);
+        if (patch.memory === false || patch.memoryExtraction === false || patch.enabled === false) {
+          memoryConsolidator.cancel();
+          if (settingsRestored) memories.discardQueue();
+        }
         if (typeof patch.reviewHints === 'boolean') {
           setSetting('reviewHints', patch.reviewHints);
         }
@@ -2063,19 +2213,27 @@ export function apply(ctx, rawConfig) {
         // be one click away.
         if (patch.clearMemory === true) {
           profile = emptyProfile();
+          memoryConsolidator.cancel();
+          memories.clear();
+          invalidatePersona('memory-cleared');
           pendingMemoryClear = !settingsRestored;
           memorySamples.length = 0;
           scheduleProfileSave();
+          if (store && settingsRestored) {
+            try { await Promise.all([store.putProfile(profile), saveMemory()]); }
+            catch { sendJson(res, 503, { error: 'memory-save-failed' }); return; }
+          }
         }
         // Persist the switches and the route. The page reports 「已保存」, so a
         // restart that restored the defaults would make that a lie.
         saveSettings();
+        memoryConsolidator.notify();
         if (['enabled', 'progressNotices', 'progressMinutes', 'pack', 'provider', 'model'].some((key) => key in patch)) progress.configure();
         for (const id of revisions.keys()) touch(id);
       }
       sendJson(res, 200, {
         settings,
-        memory: memoryLines(profile, activePresetId()),
+        memory: readerMemoryLines(),
         memoryStats: memoryStats(),
         // Returned so the page can show which preset the edit landed in — an
         // edit to the builtin forks a new preset, and the user has to see that.
@@ -2141,6 +2299,7 @@ export function apply(ctx, rawConfig) {
     stateStream.close();
     progress.dispose();
     toolUsage.dispose();
+    const memoryDrain = memoryConsolidator.dispose();
     // Stop rewrites before dropping the rows they would settle into: a model
     // stream must not keep spending tokens after the plugin is gone.
     for (const controller of activeRewrites.values()) controller.abort(new Error('disposed'));
@@ -2167,6 +2326,7 @@ export function apply(ctx, rawConfig) {
     const pending = [];
     if (store !== undefined) {
       pending.push(store.putProfile(profile).catch((error) => warn('profile flush failed', error)));
+      pending.push(saveMemory().catch((error) => warn('memory flush failed', error)));
     }
     for (const [sessionId, timer] of persistTimers) {
       clearTimeout(timer);
@@ -2199,7 +2359,7 @@ export function apply(ctx, rawConfig) {
       : Promise.allSettled(pending)
         .then(() => closing.close())
         .catch((error) => warn('store close failed', error));
-    return Promise.all([owned, Promise.allSettled(tasks), Promise.allSettled([...modelTasks])])
+    return Promise.all([owned, memoryDrain, Promise.allSettled(tasks), Promise.allSettled([...modelTasks])])
       .catch((error) => warn('store teardown failed', error));
   }, 'persona-shell.dispose');
 }

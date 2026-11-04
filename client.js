@@ -224,7 +224,7 @@ window.__ModuleLoader__.load({
      * just installed?" is answerable instead of assumed. A stale bundle and a
      * broken one look identical otherwise.
      */
-    const CLIENT_BUILD = 2026110101;
+    const CLIENT_BUILD = 2026110402;
 
     // --- host data -----------------------------------------------------------
 
@@ -1787,41 +1787,8 @@ window.__ModuleLoader__.load({
       lineHeight: '1.5',
     };
     const labelStyle = { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' };
-    /** Box listing what long-term memory currently claims. */
-    const memoryBoxStyle = {
-      margin: '8px 0 0',
-      padding: '8px 10px',
-      borderRadius: '6px',
-      border: '0.5px solid var(--dsw-alias-border-l1)',
-      background: 'var(--dsw-alias-bg-layer-2)',
-      fontSize: '12px',
-      lineHeight: '1.6',
-      color: 'var(--dsw-alias-label-secondary)',
-    };
     const memoryLineStyle = { color: 'var(--dsw-alias-label-primary)' };
-    /** Preset list rows: one line each, actions pushed to the right. */
-    const presetListStyle = {
-      margin: '8px 0 0',
-      border: '0.5px solid var(--dsw-alias-border-l1)',
-      borderRadius: '6px',
-      overflow: 'hidden',
-    };
-    const presetRowStyle = {
-      display: 'flex',
-      alignItems: 'center',
-      gap: '8px',
-      padding: '7px 10px',
-      fontSize: '12px',
-      borderBottom: '0.5px solid var(--dsw-alias-border-l1)',
-    };
     const presetNameStyle = { color: 'var(--dsw-alias-label-primary)' };
-    const presetTagStyle = {
-      fontSize: '10px',
-      padding: '0 5px',
-      borderRadius: '4px',
-      background: 'var(--dsw-alias-bg-layer-2)',
-      color: 'var(--dsw-alias-label-tertiary)',
-    };
     const presetPreviewStyle = {
       margin: '8px 0 0',
       padding: '8px 10px',
@@ -1850,7 +1817,7 @@ window.__ModuleLoader__.load({
       font: 'inherit',
       fontSize: '13px',
     };
-    const hintStyle = { fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)', lineHeight: '1.5' };
+    const hintStyle = { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', lineHeight: '1.65' };
     const sectionTitleStyle = { margin: '0 0 12px', fontSize: '15px', fontWeight: '600' };
 
     async function postSettings(patch) {
@@ -1897,6 +1864,279 @@ window.__ModuleLoader__.load({
      * Settings page: the persona pack, the rewrite route, and the on/off switch.
      * Written through the plugin's own host route so no codegen is involved.
      */
+    const SETTINGS_CSS = [
+      '[data-persona-shell="settings"],[data-persona-shell="memory-panel"]{--dsh-persona-accent:var(--dsw-alias-brand-primary,#3976c3);--dsh-persona-border:var(--dsw-alias-border-l1,#d8dfe7);--dsh-persona-bg:var(--dsw-alias-bg-layer-1,#fff);--dsh-persona-soft:var(--dsw-alias-bg-layer-2,#f5f7fa);--dsh-persona-text:var(--dsw-alias-label-primary,#203044);--dsh-persona-muted:var(--dsw-alias-label-secondary,#607080);color:var(--dsh-persona-text)}',
+      '.dsh-persona-settings{max-width:880px;width:100%;min-width:0;font:inherit;line-height:1.6;padding:2px 0 12px}',
+      '.dsh-persona-settings *,.dsh-persona-memory *{box-sizing:border-box}',
+      '.dsh-persona-settings-hero{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:22px;padding:22px 24px;border:1px solid var(--dsh-persona-border);border-radius:14px;background:var(--dsh-persona-soft);background:linear-gradient(115deg,color-mix(in srgb,var(--dsh-persona-accent) 8%,var(--dsh-persona-bg)),var(--dsh-persona-bg))}',
+      '.dsh-persona-eyebrow{font-size:10px;letter-spacing:.16em;color:var(--dsh-persona-accent);font-weight:650;margin-bottom:5px}',
+      '.dsh-persona-settings-hero h2{font:inherit;font-size:21px;line-height:1.4;font-weight:650;letter-spacing:-.02em;margin:0 0 7px}',
+      '.dsh-persona-settings-hero p{font-size:12px;line-height:1.7;margin:0;color:var(--dsh-persona-muted)}',
+      '.dsh-persona-save-state{font-size:11px;white-space:nowrap;color:var(--dsh-persona-muted);padding:4px 9px;border:1px solid var(--dsh-persona-border);border-radius:20px;background:var(--dsh-persona-bg)}',
+      '.dsh-persona-section{border:1px solid var(--dsh-persona-border);border-radius:12px;margin:0 0 14px;padding:20px;background:var(--dsh-persona-bg);min-width:0}',
+      '.dsh-persona-section-heading{display:flex;align-items:flex-start;gap:11px;margin-bottom:16px}',
+      '.dsh-persona-step{font-size:11px;font-variant-numeric:tabular-nums;line-height:25px;color:var(--dsh-persona-accent);border-bottom:2px solid var(--dsh-persona-accent);min-width:21px}',
+      '.dsh-persona-section-heading h3{font:inherit;font-weight:650;font-size:15px;margin:0 0 3px;line-height:1.5}',
+      '.dsh-persona-section-heading p,.dsh-persona-section-note{font-size:12px;color:var(--dsh-persona-muted);margin:0;line-height:1.7}',
+      '.dsh-persona-section-note{margin:0 0 14px}',
+      '.dsh-persona-preset-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;overflow:auto;overscroll-behavior:contain;padding:1px}',
+      '.dsh-persona-preset-grid[data-many="true"]{max-height:320px}',
+      '.dsh-persona-preset{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:13px 14px;border:1px solid var(--dsh-persona-border);border-radius:9px;min-width:0;background:var(--dsh-persona-bg)}',
+      '.dsh-persona-preset[data-active="true"]{border-color:var(--dsh-persona-accent);background:color-mix(in srgb,var(--dsh-persona-accent) 5%,var(--dsh-persona-bg))}',
+      '.dsh-persona-preset-name{min-width:0;flex:1 1 130px;overflow-wrap:anywhere;font-size:13px}',
+      '.dsh-persona-preset-description{display:block;font-size:11px;line-height:1.5;color:var(--dsh-persona-muted);font-weight:400;white-space:normal;margin-top:3px}',
+      '.dsh-persona-preset-tag{font-size:10px;color:var(--dsh-persona-muted);align-self:flex-start;border:1px solid var(--dsh-persona-border);border-radius:4px;padding:0 5px}',
+      '.dsh-persona-preset-actions{display:flex;align-items:center;gap:10px;justify-content:flex-end;flex:1 0 100%}',
+      '.dsh-persona-preset-actions button{font-size:12px;line-height:1.6}',
+      '.dsh-persona-selected-label{font-size:11px;color:var(--dsh-persona-accent)}',
+      '.dsh-persona-persona-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}',
+      '.dsh-persona-persona-tools:has(>.dsh-persona-fold[open]){grid-template-columns:minmax(0,1fr)}',
+      '.dsh-persona-fold{border:1px solid var(--dsh-persona-border);border-radius:10px;min-width:0;margin-bottom:14px;background:var(--dsh-persona-bg)}',
+      '.dsh-persona-persona-tools>.dsh-persona-fold{margin-bottom:0}',
+      '.dsh-persona-fold>summary{position:relative;display:flex;align-items:center;gap:12px;list-style:none;cursor:pointer;padding:15px 39px 15px 17px;min-height:66px;user-select:none}',
+      '.dsh-persona-fold>summary::-webkit-details-marker{display:none}',
+      '.dsh-persona-fold>summary::after{content:"+";position:absolute;right:17px;top:50%;transform:translateY(-50%);font-size:19px;line-height:1;color:var(--dsh-persona-muted);font-weight:400}',
+      '.dsh-persona-fold[open]>summary::after{content:"-"}',
+      '.dsh-persona-fold[open]>summary{border-bottom:1px solid var(--dsh-persona-border)}',
+      '.dsh-persona-fold-title{display:block;font-size:13px;font-weight:600;line-height:1.6}',
+      '.dsh-persona-fold-note{display:block;font-size:11px;line-height:1.6;color:var(--dsh-persona-muted);margin-top:2px}',
+      '.dsh-persona-fold-badge{margin-left:auto;white-space:nowrap;font-size:10px;color:var(--dsh-persona-muted);border:1px solid var(--dsh-persona-border);border-radius:20px;padding:1px 7px}',
+      '.dsh-persona-fold-body{padding:17px;min-width:0}',
+      '.dsh-persona-inline-fold{border:0;margin:0}.dsh-persona-inline-fold>summary{min-height:30px;padding:2px 25px 2px 0}.dsh-persona-inline-fold .dsh-persona-fold-note{display:none}.dsh-persona-inline-fold .dsh-persona-fold-title{font-size:12px;font-weight:400;color:var(--dsh-persona-muted)}.dsh-persona-inline-fold>.dsh-persona-fold-body{padding:12px 0 0}.dsh-persona-inline-fold>summary::after{right:3px;font-size:15px}',
+      '.dsh-persona-editor-grid,.dsh-persona-advanced-grid,.dsh-persona-common-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px 20px;min-width:0}',
+      '.dsh-persona-editor-field:first-child,.dsh-persona-editor-field:last-child,.dsh-persona-wide{grid-column:1/-1}',
+      '.dsh-persona-settings textarea,.dsh-persona-settings select,.dsh-persona-settings input:not([type=checkbox]):not([type=range]):not([type=number]){max-width:100%;min-width:0;width:100%}',
+      '.dsh-persona-settings textarea{line-height:1.7;resize:vertical}',
+      '.dsh-persona-settings input[type=checkbox],.dsh-persona-memory input[type=checkbox]{accent-color:var(--dsh-persona-accent);flex-shrink:0;width:15px;height:15px;margin:1px 0}',
+      '.dsh-persona-settings .dsh-persona-setting-field{margin-bottom:0!important;gap:7px!important;min-width:0}',
+      '.dsh-persona-settings .dsh-persona-setting-field>label>span{font-size:13px!important;font-weight:550;color:var(--dsh-persona-text)!important}',
+      '.dsh-persona-process-options{padding-bottom:17px;margin-bottom:17px;border-bottom:1px solid var(--dsh-persona-border)}',
+      '.dsh-persona-common-grid{margin-bottom:17px}',
+      '.dsh-persona-settings .dsh-persona-subheading{font:inherit;font-size:13px;font-weight:600;margin:0 0 12px}',
+      '.dsh-persona-help-copy{font-size:12px;line-height:1.8;color:var(--dsh-persona-muted)}',
+      '.dsh-persona-help-copy p{margin:0 0 10px}.dsh-persona-help-copy p:last-child{margin-bottom:0}',
+      '.dsh-persona-footer-note{font-size:11px;line-height:1.7;color:var(--dsh-persona-muted);margin:16px 2px 0}',
+      '.dsh-persona-settings :is(button,input,select,textarea,summary):focus-visible,.dsh-persona-memory :is(button,input,select,textarea,summary):focus-visible{outline:2px solid var(--dsh-persona-accent);outline-offset:3px}',
+      '.dsh-persona-memory{font:inherit;min-width:0}',
+      '.dsh-persona-memory .dsh-persona-fold{margin-top:13px;margin-bottom:0}',
+      '.dsh-persona-memory .dsh-persona-fold>summary{min-height:52px;padding:11px 36px 11px 13px}',
+      '.dsh-persona-memory .dsh-persona-fold-body{padding:13px}',
+      '.dsh-persona-memory-list{max-height:390px;overflow:auto;overscroll-behavior:contain;min-width:0;padding-right:4px}',
+      '.dsh-persona-memory-entry{padding:14px 0;border-top:1px solid var(--dsh-persona-border)}',
+      '.dsh-persona-memory-entry:first-child{border-top:0}',
+      '.dsh-persona-memory-content{font-size:13px;line-height:1.8;margin:5px 0;overflow-wrap:anywhere;white-space:pre-wrap}',
+      '.dsh-persona-memory-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0 8px}',
+      '.dsh-persona-memory-toolbar>select{min-width:0;max-width:100%}',
+      '.dsh-persona-settings .dsh-persona-memory-toolbar>select{width:auto;max-width:230px;flex:1}',
+      '.dsh-persona-settings .dsh-persona-memory .dsh-persona-fold-body select{width:auto;min-width:0;flex:1}',
+      '.dsh-persona-memory-footer{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}',
+      '@media(max-width:600px){.dsh-persona-settings-hero{padding:18px;gap:12px;margin-bottom:15px}.dsh-persona-settings-hero h2{font-size:19px}.dsh-persona-section{padding:16px}.dsh-persona-editor-grid,.dsh-persona-advanced-grid,.dsh-persona-common-grid,.dsh-persona-persona-tools{grid-template-columns:minmax(0,1fr)}.dsh-persona-preset-grid[data-many="true"]{max-height:430px}.dsh-persona-common-grid{gap:20px}.dsh-persona-fold>summary{padding-left:15px}.dsh-persona-fold-body{padding:15px}.dsh-persona-inline-fold>summary{padding-left:0}.dsh-persona-inline-fold>.dsh-persona-fold-body{padding-left:0;padding-right:0}}',
+      '@media(max-width:400px){.dsh-persona-preset-grid{grid-template-columns:minmax(0,1fr)}.dsh-persona-fold-note{font-size:11px}.dsh-persona-fold-badge{font-size:10px;padding:0 5px}}',
+    ].join('\n');
+
+    function settingsHeading(number, title, note) {
+      return h('div', { className: 'dsh-persona-section-heading' }, h('span', { className: 'dsh-persona-step', 'aria-hidden': true }, number),
+        h('div', null, h('h3', null, title), h('p', null, note)));
+    }
+
+    function settingsFold(id, title, description, content, options = {}) {
+      return h('details', { className: 'dsh-persona-fold' + (options.compact ? ' dsh-persona-inline-fold' : ''), 'data-settings-fold': id, open: options.open },
+        h('summary', null, h('span', null, h('span', { className: 'dsh-persona-fold-title' }, title),
+          h('span', { className: 'dsh-persona-fold-note' }, description)),
+        options.badge ? h('span', { className: 'dsh-persona-fold-badge' }, options.badge) : null),
+        h('div', { className: 'dsh-persona-fold-body' }, content));
+    }
+
+    function personaSummary(preset) {
+      if (preset.name.startsWith('大肥鱼')) return '鲸鲸的轻松口吻';
+      if (preset.name.startsWith('大肥龙')) return '管事大姐大的直爽风格';
+      if (preset.name.startsWith('Claude')) return '理性、克制，规矩感强';
+      if (preset.name.startsWith('鲸鲸')) return '转述「姐姐」汇报的实验风格';
+      return (preset.pack?.identity ?? '你自己的说话风格').replace(/\s+/g, ' ').slice(0, 36);
+    }
+
+    function MemoryPanel({ settings, save, presets }) {
+      const [data, setData] = React.useState(undefined);
+      const [notice, setNotice] = React.useState('');
+      const [busy, setBusy] = React.useState(false);
+      const busyRef = React.useRef(false);
+      const revision = React.useRef(0);
+      const currentPreset = React.useRef(settings.presetName);
+      currentPreset.current = settings.presetName;
+      const expectedPersona = presets.find((p) => p.name === settings.presetName)?.id;
+      const scopePending = !data || (data.activePresetName !== undefined
+        ? data.activePresetName !== settings.presetName : expectedPersona && expectedPersona !== data.activePersonaId);
+      const [content, setContent] = React.useState('');
+      const [kind, setKind] = React.useState('preference');
+      const [scope, setScope] = React.useState('persona');
+      const [filter, setFilter] = React.useState('current');
+      const [editing, setEditing] = React.useState(undefined);
+      const [editContent, setEditContent] = React.useState('');
+      const [editScope, setEditScope] = React.useState('persona');
+      const labels = { preference: '表达偏好', agreement: '互动约定', context: '会话情况', episode: '共同经历',
+        shared: '所有人格共享', persona: '仅对应人格', session: '仅对应会话',
+        active: '已采用', candidate: '待采纳', superseded: '已替代', rejected: '已忽略',
+        manual: '手动记录', explicit: '用户明确表达', model: '后台整理', legacy: '旧版迁移' };
+      const errorText = (code) => ({
+        'memory-conflict': '这条记忆已被其他操作修改，请刷新后重试。',
+        'storage-not-ready': '存储尚未就绪，请稍后重试。',
+        'memory-save-failed': '保存失败，内容仍保留，请稍后重试。',
+        'memory-capacity': '记忆已满，请删除不再需要的条目。',
+        'private-memory-needs-scope': '互动约定和共同经历请保留在对应人格或会话中。',
+        'memory-extraction-disabled': '请先开启记忆与后台整理。',
+      }[code] ?? '操作未完成，请刷新后重试。');
+      const refresh = async () => {
+        const token = ++revision.current;
+        try {
+          const response = await fetch(ROUTE + '/memory');
+          if (!response.ok) throw new Error('load');
+          const value = await response.json();
+          if (revision.current === token) setData(value);
+        } catch { if (revision.current === token) setNotice('暂时无法读取记忆，请稍后刷新。'); }
+      };
+      React.useEffect(() => {
+        void refresh();
+        return () => { revision.current += 1; };
+      }, [settings.memory, settings.memoryExtraction, settings.presetName]);
+      const write = async (body) => {
+        if (busyRef.current || scopePending || currentPreset.current !== settings.presetName) return false;
+        busyRef.current = true; setBusy(true);
+        const token = ++revision.current;
+        setNotice('正在保存…');
+        try {
+          const response = await fetch(ROUTE + '/memory', { method: 'POST',
+            headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+          const value = await response.json();
+          if (!response.ok) throw new Error(value.error);
+          if (revision.current === token) {
+            setData(value); setNotice(body.action === 'consolidate' ? '已安排整理，稍后可刷新查看候选。' : '已保存');
+          }
+          return true;
+        } catch (error) { setNotice(errorText(error.message)); return false; }
+        finally { busyRef.current = false; setBusy(false); }
+      };
+      const scopeFields = (value) => ({ scope: value,
+        personaId: value === 'persona' ? data?.activePersonaId : null,
+        sessionId: value === 'session' ? data?.sessionId : null });
+      const scopeSelect = (value, change) => h('select', { style: inputStyle, value,
+        disabled: busy || scopePending, onChange: (event) => change(event.target.value), 'aria-label': '记忆适用范围' },
+      h('option', { value: 'persona' }, '当前人格'),
+      h('option', { value: 'shared' }, '所有人格'),
+      h('option', { value: 'session', disabled: !data?.sessionId }, '当前会话（角色共享）'));
+      const entries = (scopePending ? [] : data?.entries ?? []).filter((entry) => filter === 'all' || (
+        ['active', 'candidate'].includes(entry.status) && (entry.expiresAt === null || entry.expiresAt > Date.now())
+          && (entry.scope === 'shared'
+          || entry.personaId === data?.activePersonaId
+          || (entry.scope === 'session' && !entry.personaId && entry.sessionId === data?.sessionId))));
+      const memoryRows = entries.map((entry) => h('div', { key: entry.id, 'data-persona-shell': 'memory-entry', 'data-memory-id': entry.id,
+            className: 'dsh-persona-memory-entry' },
+          h('div', { style: hintStyle }, (labels[entry.kind] ?? entry.kind) + ' · '
+            + (entry.expiresAt !== null && entry.expiresAt <= Date.now() ? '已过期' : labels[entry.status] ?? entry.status)
+            + ' · ' + (labels[entry.origin] ?? '未知来源')
+            + ' · ' + (entry.scope === 'persona'
+              ? (presets.find((p) => p.id === entry.personaId)?.name ?? '已移除的人格') : labels[entry.scope])
+            + (entry.pinned ? ' · 已置顶' : '')),
+          editing?.id === entry.id ? h('div', null,
+            h('textarea', { style: { ...inputStyle, width: '100%', minHeight: '64px' },
+              maxLength: 240, value: editContent, disabled: busy,
+              'aria-label': '修改记忆内容', onChange: (event) => setEditContent(event.target.value) }),
+            scopeSelect(editScope, setEditScope),
+            h('button', { type: 'button', style: primaryButtonStyle, disabled: busy || !editContent.trim(),
+              onClick: async () => {
+                if (await write({ action: 'update', id: editing.id, version: editing.version,
+                  content: editContent, pinned: editing.pinned, ...(editScope === editing.scope
+                    ? { scope: editing.scope, personaId: editing.personaId, sessionId: editing.sessionId }
+                    : scopeFields(editScope)) })) setEditing(undefined);
+              } }, '保存记忆修改'),
+            h('button', { type: 'button', style: toggleStyle, disabled: busy,
+              onClick: () => setEditing(undefined) }, '取消修改'))
+            : h('div', { className: 'dsh-persona-memory-content' }, entry.content),
+          entry.evidence?.length ? h('details', null, h('summary', { style: hintStyle }, '查看来源'),
+            ...entry.evidence.map((ref, index) => h('div', { key: index, style: { ...hintStyle, overflowWrap: 'anywhere' } },
+              ref.quote))) : h('div', { style: hintStyle },
+            entry.origin === 'legacy' ? '来自旧版记录，没有逐条原始依据。' : '由你手动记录。'),
+          h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' } },
+            ...(entry.status === 'candidate' ? ['accept', 'reject'].map((action) => h('button', {
+              key: action, type: 'button', style: toggleStyle, disabled: busy,
+              onClick: () => write({ action, id: entry.id, version: entry.version }),
+            }, action === 'accept' ? '采纳' : '忽略')) : []),
+            h('button', { type: 'button', style: toggleStyle, disabled: busy,
+              onClick: () => { setEditing(entry); setEditContent(entry.content); setEditScope(entry.scope); } }, '修改'),
+            h('button', { type: 'button', style: toggleStyle, disabled: busy || entry.status !== 'active',
+              onClick: () => write({ action: 'update', id: entry.id, version: entry.version, content: entry.content,
+                pinned: !entry.pinned, scope: entry.scope, personaId: entry.personaId, sessionId: entry.sessionId }) },
+            entry.pinned ? '取消置顶' : '置顶'),
+            h('button', { type: 'button', style: toggleStyle, disabled: busy,
+              onClick: () => write({ action: 'delete', id: entry.id, version: entry.version }) }, '删除'))));
+      const manualEditor = h('div', { style: { marginTop: '12px' } },
+
+            h('textarea', { style: { ...inputStyle, width: '100%', minHeight: '64px', margin: '6px 0' },
+              value: content, maxLength: 240,
+              disabled: busy, 'aria-label': '新增记忆内容', placeholder: '例如：称呼我为阿晴；汇报先说结果，再补充条件。',
+              onChange: (event) => setContent(event.target.value) }),
+            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } },
+              h('select', { style: inputStyle, value: kind, disabled: busy, 'aria-label': '记忆类型',
+                onChange: (event) => setKind(event.target.value) },
+              ...['preference', 'agreement', 'context', 'episode'].map((value) =>
+                h('option', { key: value, value }, labels[value]))),
+              scopeSelect(scope, setScope),
+              h('button', { type: 'button', style: primaryButtonStyle,
+                disabled: busy || scopePending || !content.trim() || (scope === 'session' && !data?.sessionId),
+                onClick: async () => {
+                  if (await write({ action: 'add', entry: { kind, content, ...scopeFields(scope) } })) setContent('');
+                } }, '添加记忆')));
+      const clearControl = h('button', { type: 'button', style: toggleStyle, disabled: busy,
+            onClick: async () => {
+              if (busyRef.current) return;
+              busyRef.current = true; setBusy(true); revision.current += 1;
+              try {
+                const result = await save({ clearMemory: true });
+                if (result?.settings) { setEditing(undefined); await refresh(); setNotice('已清空记忆与待整理内容'); }
+                else setNotice('清空未完成，请稍后重试。');
+              } finally { busyRef.current = false; setBusy(false); }
+            } }, '清空记忆');
+      return h('div', { className: 'dsh-persona-memory', style: { ...fieldStyle, marginBottom: 0 }, 'data-persona-shell': 'memory-panel' },
+        h('style', null, SETTINGS_CSS),
+        h('label', { style: toggleRowStyle },
+          h('input', { type: 'checkbox', checked: settings.memory !== false,
+            onChange: (event) => save({ memory: event.target.checked }) }),
+          h('span', { style: labelStyle }, '记住偏好与约定')),
+        h('span', { style: hintStyle },
+          '记住你希望怎样被回应。关闭后停止采集和使用，已有记录会保留。'),
+        settingsFold('memory-extraction', '后台整理', '可选，额外调用转述模型',
+          h('div', null, h('label', { style: { ...toggleRowStyle, marginTop: '8px' } },
+          h('input', { type: 'checkbox', checked: settings.memoryExtraction === true,
+            disabled: settings.memory === false,
+            onChange: (event) => save({ memoryExtraction: event.target.checked }) }),
+          h('span', { style: labelStyle }, '后台整理记忆候选（默认关闭）')),
+        h('span', { style: hintStyle },
+          '开启后会把有上限的用户短消息片段发送给当前转述模型，增加模型用量。约每5分钟或积累8条同会话消息整理一次，候选采纳后才使用。'),
+            h('div', { className: 'dsh-persona-memory-footer' },
+              h('span', { style: hintStyle }, data?.extraction?.status === 'running' ? '正在整理…'
+                : data?.extraction?.status === 'failed' ? '上次整理未完成，可稍后重试。'
+                : '待整理 ' + (data?.extraction?.pending ?? 0) + ' 条'),
+              h('button', { type: 'button', style: toggleStyle,
+                disabled: busy || !settings.memory || !settings.memoryExtraction,
+                onClick: () => write({ action: 'consolidate' }) }, '整理一次'))),
+          { badge: settings.memoryExtraction ? '已开启' : '已关闭' }),
+        h('div', { className: 'dsh-persona-memory-toolbar' },
+          h('span', { style: labelStyle }, '记忆管理'),
+          h('select', { style: inputStyle, value: filter, 'aria-label': '筛选记忆',
+            onChange: (event) => setFilter(event.target.value) },
+            h('option', { value: 'current' }, '当前人格与共享'),
+            h('option', { value: 'all' }, '全部（含历史状态）')),
+          h('button', { type: 'button', style: toggleStyle, disabled: busy, onClick: refresh }, '刷新记忆')),
+        h('div', { style: hintStyle }, entries.filter((entry) => entry.status === 'active').length + ' 条已采用 · '
+          + entries.filter((entry) => entry.status === 'candidate').length + ' 条待采纳'),
+        h('div', { className: 'dsh-persona-memory-list' }, ...memoryRows),
+        scopePending ? h('p', { style: hintStyle }, '正在读取当前人格的记忆…')
+          : entries.length === 0 ? h('p', { style: hintStyle }, '还没有记忆。可以手动记一条，也可以继续对话。') : null,
+        settingsFold('memory-add', '手动记一条', '选择内容与适用范围', manualEditor,
+          { badge: content.trim() ? '有草稿' : undefined }),
+        h('div', { className: 'dsh-persona-memory-footer' }, h('span', { style: hintStyle, role: 'status', 'aria-live': 'polite' }, notice)),
+        settingsFold('memory-clear', '清理记忆', '清空全部记忆、待整理内容和交接记录', clearControl));
+    }
+
     function SettingsSection() {
       const [settings, setSettings] = React.useState(undefined);
       const settingsRef = React.useRef(undefined);
@@ -2164,26 +2404,7 @@ window.__ModuleLoader__.load({
         );
       }
 
-      return h('div', null,
-        h('h2', { style: sectionTitleStyle }, '人格套壳'),
-        h('div', { style: hintStyle },
-          '在系统提示词之外，为每条助手汇报套一层人格化转述。原汇报始终可查，套壳失败时自动保留原文。',
-        ),
-        // The transcript already shows the degradation; this explains it where
-        // the reader can act on it. Silence here would send them hunting.
-        shippedRendererOk
-          ? null
-          : h('div', { style: warningStyle },
-            '独立预览的备用 Markdown 组件不可用，备用预览显示为纯文本；主消息仍由官方组件渲染。',
-          ),
-        rendererState.status === 'incompatible' || rendererState.status === 'error'
-          ? h('div', { style: warningStyle, role: 'status' },
-            '未能安全接入官方助手渲染器，已暂停人格显示并保留官方原文。',
-            ` (${rendererState.reason})`,
-          ) : null,
-        h('div', { style: { height: '14px' } }),
-
-        h('div', { style: fieldStyle },
+      const processControls = h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
           h('label', { style: toggleRowStyle },
             h('input', {
               type: 'checkbox',
@@ -2193,33 +2414,26 @@ window.__ModuleLoader__.load({
             h('span', { style: labelStyle }, '同时改写阶段性输出'),
           ),
           h('span', { style: hintStyle },
-            '开启后，带工具调用的中间步骤（"现在改常量…"这类叙述）也会套壳；'
-            + '关闭后跳过这些带工具调用的步骤。严格只改每轮最终汇报需将插件行配置 trigger 设为 report。',
+            '让带工具调用的阶段汇报也使用当前人格。',
           ),
           h('label', { style: { ...toggleRowStyle, marginTop: '10px' } },
             h('input', { type: 'checkbox', checked: settings?.processToolUsage === true,
               disabled: settings?.includeToolSteps === false,
               onChange: (event) => save({ processToolUsage: event.target.checked }) }),
-            h('span', { style: labelStyle }, '允许过程转述参考运行信息（默认关闭）'),
+            h('span', { style: labelStyle }, '允许过程转述参考运行信息'),
           ),
           h('span', { style: hintStyle },
-            '只读查询上一次阶段性汇报后的工具统计、可确认的工作性质，以及本会话轮次、本地小时和轮间间隔。'
-            + '人设可自行查询并补充一句，最多 40 字、每轮最多 3 条；查询会增加一次模型续接。'
-            + '不读取工具参数或输出正文；仅在本地归并受支持的文件结果元数据，不发送路径。未知信息不猜测，不进入最终汇报及其口吻样例。'),
-        ),
-
-        h('div', { style: { height: '6px' } }),
-
-        h('div', { style: fieldStyle },
+            '参考这段工作的轻量统计，单独补充一句。可选，会增加一次模型续接。'),
+        );
+      const quietControls = h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
           h('label', { style: toggleRowStyle },
             h('input', { type: 'checkbox', checked: settings.progressNotices === true,
               onChange: (event) => save({ progressNotices: event.target.checked }) }),
-            h('span', { style: labelStyle }, '静默状态播报（默认关闭）'),
+            h('span', { style: labelStyle }, '静默状态播报'),
           ),
           h('span', { style: hintStyle },
-            '当前正在查看的主会话长时间没有正文时，根据可观察的活动额外调用一次模型，生成一两句人格播报。'
-            + '固定前缀 ◈；不写入主会话，无新事实不重复调用，每轮最多 3 次。不能据此判断任务完成或是否卡住。'),
-          h('label', { style: { ...toggleRowStyle, marginTop: '6px' } },
+            '等待较久时听到一句状态播报。可选，会额外调用模型。'),
+          h('label', { hidden: settings.progressNotices !== true, style: { ...toggleRowStyle, display: settings.progressNotices === true ? 'flex' : 'none', marginTop: '8px', flexWrap: 'wrap' } },
             h('span', { style: labelStyle }, '静默多久后播报（分钟）'),
             h('input', { type: 'number', min: 1, max: 60, step: 1, style: { ...inputStyle, width: '76px' },
               disabled: settings.progressNotices !== true,
@@ -2235,9 +2449,8 @@ window.__ModuleLoader__.load({
               onKeyDown: (event) => { if (event.key === 'Enter') event.currentTarget.blur(); },
             }),
           ),
-        ),
-
-        h('div', { style: fieldStyle },
+        );
+      const reviewControls = h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
           h('label', { style: toggleRowStyle },
             h('input', {
               type: 'checkbox',
@@ -2247,10 +2460,10 @@ window.__ModuleLoader__.load({
             h('span', { style: labelStyle }, '改写变化提示'),
           ),
           h('span', { style: hintStyle },
-            '措辞变化分数达到阈值时，在该条汇报末尾显示 ※；否定、条件、不确定性、数字、字面量顺序等只作为提示面板里的解释。'
-            + '悬停或键盘聚焦预览原文，点击固定。本地启发式检查，不增加模型调用，也不保证语义一致。'),
-          h('details', { style: { marginTop: '6px' } },
-            h('summary', { style: { ...hintStyle, cursor: 'pointer' } }, '高级：提示阈值'),
+            '变化较大时显示 ※，方便对照原文。只在本地检查，不增加模型调用。')
+        );
+      const thresholdControls = h('details', { style: { marginTop: '6px' } },
+            h('summary', { style: { ...hintStyle, cursor: 'pointer' } }, '调整变化提示阈值'),
             h('label', { style: { ...toggleRowStyle, marginTop: '6px' } },
               h('span', { style: labelStyle }, `措辞变化阈值：${Math.round((reviewThresholdDraft ?? settings.reviewThreshold ?? 0.55) * 100)}/100`),
               h('input', {
@@ -2270,15 +2483,8 @@ window.__ModuleLoader__.load({
             h('span', { style: hintStyle },
               '默认 55；越低越容易提示，移开焦点后保存。低于阈值不显示；关键表达变化只作解释，不绕过阈值。'
               + '修改只影响已有评估的显示，不重新改写；旧记录不补算。'),
-          ),
-        ),
-
-        h('div', { style: { height: '6px' } }),
-
-        // --- subagent conversations -------------------------------------------
-        // Two switches, not one: a helper's progress chatter and its conclusion
-        // are read by different people at different times.
-        h('div', { style: fieldStyle },
+          );
+      const subagentControls = h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
           h('span', { style: { ...labelStyle, marginBottom: '2px' } }, '子代理会话'),
           h('label', { style: toggleRowStyle },
             h('input', {
@@ -2298,75 +2504,33 @@ window.__ModuleLoader__.load({
             h('span', { style: labelStyle }, '改写子代理的结论输出'),
           ),
           h('span', { style: hintStyle }, '子代理的最终答复；如果会转述给你，可以打开。'),
-        ),
+        );
+      const personaControls = h('div', { className: 'dsh-persona-personas' },
 
-        h('div', { style: { height: '6px' } }),
 
-        // --- long-term memory ------------------------------------------------
-        h('div', { style: fieldStyle },
-          h('label', { style: toggleRowStyle },
-            h('input', {
-              type: 'checkbox',
-              checked: settings?.memory !== false,
-              onChange: (event) => save({ memory: event.target.checked }),
-            }),
-            h('span', { style: labelStyle }, '记住我的习惯'),
-          ),
-          h('span', { style: hintStyle },
-            '跨会话统计你的提问语言、称呼方式和句子长短，用来微调套壳语气。'
-            + '语言、长短等观察只保存计数；明确提出的风格纠正会保留文本。',
-          ),
-          memoryLines && memoryLines.length > 0
-            ? h('div', { style: memoryBoxStyle },
-              h('div', { style: { ...labelStyle, marginBottom: '4px' } }, '目前学到的'),
-              ...memoryLines.map((line, index) => h('div', { key: index, style: memoryLineStyle }, `· ${line}`)),
-              memoryStats !== undefined
-                ? h('div', { style: { ...hintStyle, marginTop: '6px' } },
-                  `基于 ${memoryStats.messages} 条消息`
-                  + (memoryStats.meanSentence > 0 ? `，平均每句 ${memoryStats.meanSentence} 字` : ''),
-                )
-                : null,
-            )
-            : h('div', { style: hintStyle }, '还没有足够的样本，继续聊天就会开始学习。'),
-          h('div', { style: { marginTop: '6px' } },
-            h('button', {
-              type: 'button',
-              style: toggleStyle,
-              onClick: () => save({ clearMemory: true }),
-            }, '清空记忆'),
-          ),
-        ),
-
-        h('div', { style: { height: '6px' } }),
-
-        // --- persona presets --------------------------------------------------
-        h('div', { style: fieldStyle },
-          h('span', { style: labelStyle }, '人设预设'),
-          h('span', { style: hintStyle }, '当前：' + (activePresetName ?? '大肥鱼（默认）')),
           // Say where edits go before they are made: an edit to the builtin
           // forks a new preset, and that is surprising if it is not announced.
-          h('span', { style: hintStyle },
-            '下面编辑的人格卡会保存到当前预设；编辑内置预设时会自动另存为一个新预设。',
-          ),
+
 
           presets && presets.length > 0
-            ? h('div', { style: presetListStyle },
-              ...presets.map((preset) => h('div', {
+            ? h('div', { className: 'dsh-persona-preset-grid', 'data-many': presets.length > 4 },
+              ...[...presets].sort((a, b) => Number(b.id === activePresetId) - Number(a.id === activePresetId)).map((preset) => h('div', {
                 key: preset.id,
-                style: presetRowStyle,
+                className: 'dsh-persona-preset', 'data-preset-id': preset.id, 'data-active': preset.id === activePresetId,
               },
               h('span', {
+                className: 'dsh-persona-preset-name',
                 style: {
                   ...presetNameStyle,
                   fontWeight: preset.id === activePresetId ? '600' : '400',
                 },
-              }, preset.name),
+              }, preset.name, h('small', { className: 'dsh-persona-preset-description' }, personaSummary(preset))),
               preset.builtin === true
-                ? h('span', { style: presetTagStyle }, '内置')
+                ? h('span', { className: 'dsh-persona-preset-tag' }, '内置')
                 : null,
-              h('div', { style: { display: 'flex', gap: '10px', marginLeft: 'auto' } },
+              h('div', { className: 'dsh-persona-preset-actions' },
                 preset.id === activePresetId
-                  ? null
+                  ? h('span', { className: 'dsh-persona-selected-label' }, '已选择')
                   : h('button', {
                     type: 'button',
                     style: toggleStyle,
@@ -2396,7 +2560,7 @@ window.__ModuleLoader__.load({
           // Inline rename: a dialog would be heavier than the operation, and the
           // page already has the preset in hand.
           renaming !== undefined
-            ? h('div', { style: { ...presetPreviewStyle, display: 'flex', gap: '8px', alignItems: 'center' } },
+            ? h('div', { style: { ...presetPreviewStyle, display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
               h('input', {
                 style: { ...inputStyle, flex: 1 },
                 value: renameValue,
@@ -2412,21 +2576,19 @@ window.__ModuleLoader__.load({
               }, '取消'),
             )
             : null,
-        ),
-
-        h('div', { style: fieldStyle },
+        );
+      const generatorControls = h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
           h('span', { style: labelStyle }, '从人设提示词生成预设'),
           h('span', { style: hintStyle },
-            '把你写的人设提示词整段粘进来，会提取出「说话风格」，丢掉外貌和背景故事——'
-            + '因为这里只需要知道怎么把汇报换种口气讲。生成后可以先预览再保存。',
+            '粘贴人设提示词，提取说话风格。生成后可预览、改名，再保存启用。',
           ),
           h('textarea', {
             style: { ...inputStyle, minHeight: '88px', resize: 'vertical' },
-            placeholder: '粘贴人设提示词…',
+            'aria-label': '人设提示词', placeholder: '粘贴人设提示词…',
             value: personaPrompt,
             onChange: (event) => setPersonaPrompt(event.target.value),
           }),
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '6px' } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '6px' } },
             h('button', {
               type: 'button',
               style: primaryButtonStyle,
@@ -2446,7 +2608,7 @@ window.__ModuleLoader__.load({
                   style: { ...inputStyle, flex: 1 },
                   value: generatedName,
                   disabled: presetBusy,
-                  placeholder: '给这个预设起个名字',
+                  'aria-label': '新预设名称', placeholder: '给这个预设起个名字',
                   onChange: (event) => setGeneratedName(event.target.value),
                 }),
               ),
@@ -2459,7 +2621,7 @@ window.__ModuleLoader__.load({
                 ? h('div', { style: { ...memoryLineStyle, marginTop: '4px' } },
                   `示例：${generated.samples.join(' ／ ')}`)
                 : null,
-              h('div', { style: { display: 'flex', gap: '10px', marginTop: '8px' } },
+              h('div', { style: { display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '8px' } },
                 h('button', {
                   type: 'button',
                   style: primaryButtonStyle,
@@ -2486,81 +2648,83 @@ window.__ModuleLoader__.load({
               ),
             )
             : null,
-        ),
-
-        h('div', { style: { height: '6px' } }),
-
-        h('div', { style: fieldStyle },
+        );
+      const editorControls = h('div', { className: 'dsh-persona-editor-grid' }, h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '身份'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '56px', resize: 'vertical' },
             disabled: presetBusy,
+            'aria-label': '身份',
             value: draftValue('identity', pack?.identity ?? ''),
             onChange: (event) => setDraft('identity', event.target.value),
             onBlur: (event) => savePackField('identity', event.target.value),
           }),
         ),
 
-        h('div', { style: fieldStyle },
+        h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '汇报里的说话规则（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '76px', resize: 'vertical' },
             disabled: presetBusy,
+            'aria-label': '汇报里的说话规则',
             value: draftValue('report', (pack?.report ?? []).join('\n')),
             onChange: (event) => setDraft('report', event.target.value),
             onBlur: (event) => savePackField('report', event.target.value),
           }),
         ),
 
-        h('div', { style: fieldStyle },
+        h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '通用语感（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '76px', resize: 'vertical' },
             disabled: presetBusy,
+            'aria-label': '通用语感',
             value: draftValue('voice', (pack?.voice ?? []).join('\n')),
             onChange: (event) => setDraft('voice', event.target.value),
             onBlur: (event) => savePackField('voice', event.target.value),
           }),
         ),
 
-        h('div', { style: fieldStyle },
+        h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '语气示例（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '56px', resize: 'vertical' },
             disabled: presetBusy,
+            'aria-label': '语气示例',
             value: draftValue('samples', (pack?.samples ?? []).join('\n')),
             onChange: (event) => setDraft('samples', event.target.value),
             onBlur: (event) => savePackField('samples', event.target.value),
           }),
         ),
 
-        h('div', { style: fieldStyle },
+        h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '避免出现（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '56px', resize: 'vertical' },
             disabled: presetBusy,
+            'aria-label': '避免出现',
             value: draftValue('avoid', (pack?.avoid ?? []).join('\n')),
             onChange: (event) => setDraft('avoid', event.target.value),
             onBlur: (event) => savePackField('avoid', event.target.value),
           }),
         ),
 
-        h('div', { style: fieldStyle },
+        h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '子代理称呼'),
           h('input', {
             style: inputStyle,
             disabled: presetBusy,
+            'aria-label': '子代理称呼',
             value: draftValue('subagent', pack?.address?.subagent ?? ''),
             onChange: (event) => setDraft('subagent', event.target.value),
             onBlur: (event) => savePackField('subagent', event.target.value),
           }),
-        ),
-
-        h('div', { style: fieldStyle },
+        ));
+      const modelControls = h('div', { className: 'dsh-persona-model-fields' }, h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
           h('span', { style: labelStyle }, '改写所用模型'),
           h('select', {
             style: inputStyle,
-            value: settings?.provider ?? '',
+            'aria-label': '改写所用模型', value: settings?.provider ?? '',
             onChange: (event) => save({ provider: event.target.value, model: '' }),
           },
           h('option', { value: '' }, '跟随会话当前模型'),
@@ -2569,20 +2733,60 @@ window.__ModuleLoader__.load({
         ),
 
         settings?.provider !== undefined && settings.provider !== ''
-          ? h('div', { style: fieldStyle },
+          ? h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
             h('span', { style: labelStyle }, '模型'),
             h('select', {
               style: inputStyle,
-              value: settings.model ?? '',
+              'aria-label': '模型', value: settings.model ?? '',
               onChange: (event) => save({ model: event.target.value }),
             },
             h('option', { value: '' }, '该提供方的默认模型'),
             models.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.name))),
           )
-          : null,
-
-        status === '' ? null : h('div', { style: { ...hintStyle, color: 'var(--dsw-alias-brand-primary)' } }, status),
-      );
+          : null);
+      return h('div', { 'data-persona-shell': 'settings', className: 'dsh-persona-settings' },
+        h('style', null, SETTINGS_CSS),
+        h('header', { className: 'dsh-persona-settings-hero' },
+          h('div', null,
+            h('div', { className: 'dsh-persona-eyebrow' }, 'PERSONA SHELL'),
+            h('h2', null, '人格套壳'),
+            h('p', null, '先选一个人格，其他选项可以慢慢调整。原文始终可查。')),
+          h('span', { className: 'dsh-persona-save-state', role: 'status', 'aria-live': 'polite' }, status || '修改自动保存')),
+        shippedRendererOk ? null : h('div', { style: warningStyle },
+          '独立原文预览暂以纯文本显示，聊天正文仍由官方组件渲染。'),
+        rendererState.status === 'incompatible' || rendererState.status === 'error'
+          ? h('div', { style: warningStyle, role: 'status' }, '人格显示已暂停，当前保留官方原文。',
+            h('details', null, h('summary', null, '查看原因'), rendererState.reason)) : null,
+        h('section', { className: 'dsh-persona-section', 'aria-label': '选择人格' },
+          settingsHeading('01', '选择人格', '当前：' + (settings.presetName || activePresetName || '大肥鱼（默认）')
+            + (presets.length > 4 ? ' · 共 ' + presets.length + ' 个，可滚动选择' : '')),
+          personaControls,
+          h('div', { className: 'dsh-persona-persona-tools' },
+            settingsFold('create-persona', '创建新人格', '从你的人设提示词开始', generatorControls,
+              { open: generated !== undefined ? true : undefined }),
+            settingsFold('edit-persona', '调整当前人格', Object.keys(packDrafts).length
+              ? '有尚未保存的输入' : '身份、语气、示例与称呼',
+              h('div', null, h('p', { className: 'dsh-persona-section-note' },
+                '编辑后自动保存；调整内置人格会另存一份，原版始终保留。'), editorControls)))),
+        h('section', { className: 'dsh-persona-section', 'aria-label': '日常转述' },
+          settingsHeading('02', '日常转述', '常用开关放在这里，保持默认也能开始。'),
+          h('div', { className: 'dsh-persona-process-options' }, processControls),
+          h('div', { className: 'dsh-persona-common-grid' }, reviewControls, quietControls),
+          settingsFold('rewrite-help', '这些选项如何工作', '调用用量与原文边界',
+            h('div', { className: 'dsh-persona-help-copy' },
+              h('p', null, '阶段性输出关闭后跳过带工具调用的步骤。严格只改最终汇报，需要在插件行配置 trigger: report。'),
+              h('p', null, '过程运行信息仅提供分类统计与轻量会话节奏；可选补充最多40字、每轮最多3条，不进入最终汇报。查询会增加一次模型续接。'),
+              h('p', null, '静默播报仅为前台正在查看的主会话生成，标记为 ◈；每轮最多3次，无新事实不重复调用，也不代表任务完成。'),
+              h('p', null, '※ 只衡量措辞变化，不保证语义一致。重要事实、条件和风险仍应对照原文。')), { compact: true })),
+        settingsFold('memory', '记忆与约定', '管理偏好、查看来源，按需要整理候选',
+          h(MemoryPanel, { settings, save, presets }),
+          { badge: settings.memory === false ? '已关闭' : '已开启' }),
+        settingsFold('advanced', '高级设置', '转述模型、子代理与提示阈值',
+          h('div', { className: 'dsh-persona-advanced-grid' },
+            h('div', null, h('h3', { className: 'dsh-persona-subheading' }, '转述模型'), modelControls),
+            h('div', null, subagentControls),
+            h('div', { className: 'dsh-persona-wide' }, thresholdControls))),
+        h('p', { className: 'dsh-persona-footer-note' }, '人格只影响表达。工作会话保留原始汇报，转述失败时自动显示原文。'));
     }
 
     /** Loads settings once, from any session the host knows. */
@@ -2612,6 +2816,8 @@ window.__ModuleLoader__.load({
        * the main transcript always delegates to the official assistant.
        */
       __testing: {
+        MemoryPanel,
+        SettingsSection,
         rowBranch,
         renderMarkdown,
         resolveChatDelegate,

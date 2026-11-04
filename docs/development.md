@@ -41,6 +41,8 @@ node scripts/build-client-sync.mjs --check
 - `desktop-runtime.mjs --executable <已安装客户端.exe> --browser-deps <playwright/package.json>`：使用临时 `DSH_HOME` 和临时 Electron 用户目录运行官方 Desktop，检查推送、开关、空闲请求、页面重载和连接恢复；不读取现有密钥或会话，不调用真实模型。
 - `process-runtime.mjs --deps <SDK 测试依赖目录/package.json>`：用已发布的 `0.2.1-rc.x` LLM SDK 核对增量/完整工具块、原生 assistant/tool 消息和提供方重放信息；不调用真实模型。
 - `official-renderer.mjs`、`review-browser.mjs`、`comparison-browser.mjs`、`progress-runtime.mjs`：官方渲染、布局和播报生命周期的独立回归；具体依赖参数见各脚本开头。
+- `memory-browser.mjs --deps <React/esbuild 依赖目录/package.json> --browser-deps <Playwright 依赖目录/package.json>`：运行真实 React 记忆管理界面，检查候选采纳、失败重试、角色归属及桌面/手机布局；可通过 `--executable` 指定浏览器。
+- `settings-browser.mjs`：沿用上述依赖参数检查完整设置页的默认折叠、草稿保留、生成预设重试、键盘展开、模型选择及深浅色/窄屏布局；使用本地模拟 Host，不调用模型。
 
 `/persona-shell/ping` 的 `stateSync` 只公开流的数量统计与客户端状态枚举，供存活与连接排查。官方参考：[API Gateway](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/api-gateway.zh.md) · [添加 Remote API](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-remote-api.zh.md)。
 
@@ -64,7 +66,9 @@ lib/
   process-rewrite.js  过程转述的受限函数续接与独立短补充
   pack.js             人格卡归一化与默认人格
   preset.js           从人设提示词提取人格卡
-  memory.js           跨会话观察与按预设保存的风格纠正
+  memory.js           旧版统计与本地语气纠正识别
+  structured-memory.js 记忆条目、来源、范围、版本、候选与接力记录
+  memory-consolidation.js 后台整理调度、取消、批次提交与提炼提示
   config.js           默认配置与 Standard Schema
   store.js            结果、预设与风格记忆的存储
   remote-contract.js  Host/Client 共享的严格 Remote 边界

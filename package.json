@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-shell",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "在工作提示词之外，为 DeepSeek Harness 的助手汇报提供人格化转述，原文随时可查。",
   "type": "module",
   "main": "index.js",

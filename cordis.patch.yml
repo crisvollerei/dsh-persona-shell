@@ -5,6 +5,7 @@
         enabled: true
         trigger: step
         processToolUsage: false
+        memoryExtraction: false
         progressNotices: false
         progressMinutes: 5
         provider: ''

@@ -18,7 +18,8 @@
 | `trigger` | `step` · 每个汇报都改写；设为 `report` 则只改每轮最终汇报。 |
 | `includeToolSteps` | `true` · 是否改写带工具调用的中间步骤。 |
 | `processToolUsage` | `false` · 允许主会话过程转述查询阶段工具计数、可确认的工作性质与轻量会话节奏；需同时开启阶段性改写，仅适用于 `trigger: step`。 |
-| `memory` | `true` · 是否启用跨会话风格记忆。 |
+| `memory` | `true` · 是否采集和使用结构化表达记忆；关闭后保留已存条目，停止采集和使用。 |
+| `memoryExtraction` | `false` · 是否额外调用转述模型，后台整理用户短消息为记忆候选；需同时开启记忆与总开关。 |
 | `reviewHints` | `true` · 是否显示本地改写变化提示。 |
 | `reviewThreshold` | `0.55` · 措辞变化提示阈值，范围 `0..1`；达到阈值才显示，关键表达变化只作解释。 |
 | `progressNotices` | `false` · 是否在当前查看的主会话静默时，额外生成带 `◈` 前缀的状态播报。 |

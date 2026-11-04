@@ -598,7 +598,7 @@ test('settings controls persist the hint switch and commit a threshold only afte
   assert.deepEqual(writes.at(-1), { reviewThreshold: 0.25 });
   assert.equal(nodes(tree).find((node) => node.props.type === 'range').props.value, 0.25);
   const progressSwitch = (root) => nodes(nodes(root).find((node) => node.type === 'label'
-    && nodes(node).some((child) => child.children.includes('静默状态播报（默认关闭）')))).find((node) => node.type === 'input');
+    && nodes(node).some((child) => child.children.includes('静默状态播报')))).find((node) => node.type === 'input');
   assert.equal(progressSwitch(tree).props.checked, false);
   assert.equal(nodes(tree).find((node) => node.props.type === 'number').props.disabled, true);
   await progressSwitch(tree).props.onChange({ target: { checked: true } });
@@ -616,7 +616,7 @@ test('settings controls persist the hint switch and commit a threshold only afte
   assert.equal(writes.length, countBefore + 1, 'invalid intervals do not get saved');
   const toggle = (root, label) => nodes(nodes(root).find((node) => node.type === 'label'
     && nodes(node).some((child) => child.children.includes(label)))).find((node) => node.type === 'input');
-  const usageLabel = '允许过程转述参考运行信息（默认关闭）';
+  const usageLabel = '允许过程转述参考运行信息';
   assert.equal(toggle(tree, usageLabel).props.checked, false);
   await toggle(tree, usageLabel).props.onChange({ target: { checked: true } });
   tree = renderer.render();
