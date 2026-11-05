@@ -1,5 +1,21 @@
 # 更新记录 / Changelog
 
+## 0.4.10
+
+### 中文
+
+#### 兼容性
+
+- 适配 DSH `0.2.2-rc.1`：将 `engines.dsh` 从 `>=0.2.1-rc.3 <0.2.2-0` 放宽为 `>=0.2.1-rc.3 <0.3.0-0`，0.2.2 系列（含候选版与正式版）不再因版本上限被拒绝加载。
+- 在 DSH `0.2.2-rc.1` 官方 Web 运行时中实际加载验证：Host 事件（`session/event`、`agent/assistant-stream`、`agent/status`）、`llm` / `agents` / `webServer` / `storageDomain` / `typert` 服务与官方客户端注入均正常，设置页与诊断接口可用；本次为纯兼容更新，不改变现有功能与存储格式。
+
+### English
+
+#### Compatibility
+
+- Support DSH `0.2.2-rc.1` by widening `engines.dsh` from `>=0.2.1-rc.3 <0.2.2-0` to `>=0.2.1-rc.3 <0.3.0-0`, so the 0.2.2 series (prereleases and stable) is no longer rejected by the upper bound.
+- Verified by loading the plugin into the official DSH `0.2.2-rc.1` Web runtime: the Host events (`session/event`, `agent/assistant-stream`, `agent/status`), the `llm` / `agents` / `webServer` / `storageDomain` / `typert` services, and official client injection all work, with the settings page and diagnostic routes responding. Compatibility-only update with no behavior or storage-format changes.
+
 ## 0.4.9
 
 ### 设置界面
