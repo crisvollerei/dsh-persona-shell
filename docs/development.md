@@ -25,6 +25,8 @@ node --test 'test/*.test.mjs'
 | **静默播报** | 可控时钟下的静默阈值、事实去重、调用上限、超时、视图租约、取消与等待用户。 |
 | **过程运行信息** | 阶段分界与去重、跨区间返回、文件元数据去重和未知状态、轮间间隔与时钟变化、固定快照、函数续接、补充限长及正文/最终汇报隔离。 |
 | **状态同步** | 快照与增量、慢消费者合并、跨实例版本、启动恢复、订阅重试、取消与卸载。 |
+| **角色消息区** | 无主动调用、独立房间与共享时间线、接收人与私有记忆隔离、保存后生成、请求去重、重试/取消、成员变更、临时快捷回复与组合头像。 |
+| **参考来源与焦点** | 点击前零额外读取、全局初始化、固定来源、被动读取与取消、项目名称投影、焦点频率、关联提醒去重、参考范围隔离与快捷回复过滤。 |
 
 ## 状态同步开发与联调
 
@@ -39,16 +41,19 @@ node scripts/build-client-sync.mjs --check
 
 - `remote-runtime.mjs --deps <测试依赖目录/package.json>`：使用脚本锁定的 `0.2.1-rc.3` Cordis、Typert Registry、Gateway、Connection 和流监督器，验证开关推送、重连、Host 独立重载、注入作用域、卸载及 owner-only 边界；模型为禁止调用的替身。
 - `desktop-runtime.mjs --executable <已安装客户端.exe> --browser-deps <playwright/package.json>`：使用临时 `DSH_HOME` 和临时 Electron 用户目录运行官方 Desktop，检查推送、开关、空闲请求、页面重载和连接恢复；不读取现有密钥或会话，不调用真实模型。
-- `process-runtime.mjs --deps <SDK 测试依赖目录/package.json>`：用已发布的 `0.2.1-rc.x` LLM SDK 核对增量/完整工具块、原生 assistant/tool 消息和提供方重放信息；不调用真实模型。
+- `process-runtime.mjs --deps <SDK 测试依赖目录/package.json>`：用已发布的 `0.2.1-rc.3` 和 `0.2.2-rc.1` LLM SDK 分别核对增量/完整工具块、原生 assistant/tool 消息和提供方重放信息；不调用真实模型。
 - `official-renderer.mjs`、`review-browser.mjs`、`comparison-browser.mjs`、`progress-runtime.mjs`：官方渲染、布局和播报生命周期的独立回归；具体依赖参数见各脚本开头。
-- `memory-browser.mjs --deps <React/esbuild 依赖目录/package.json> --browser-deps <Playwright 依赖目录/package.json>`：运行真实 React 记忆管理界面，检查候选采纳、失败重试、角色归属及桌面/手机布局；可通过 `--executable` 指定浏览器。
+- `memory-browser.mjs --deps <React/esbuild 依赖目录/package.json> --browser-deps <Playwright 依赖目录/package.json>`：运行真实 React 和实际记忆状态模块，检查原话核对、更正、撤销、采用、失败重试、角色隔离与键盘、深浅色及手机布局；不调用外部模型，可通过 `--executable` 指定浏览器。
 - `settings-browser.mjs`：沿用上述依赖参数检查完整设置页的默认折叠、草稿保留、生成预设重试、键盘展开、模型选择及深浅色/窄屏布局；使用本地模拟 Host，不调用模型。
+- `expression-runtime.mjs --deps <SDK 依赖目录/package.json>`：使用正式发布的 LLM SDK 与本地适配器，检查默认关闭思考、强制思考最低档、显式强度和单次参数降级；不请求真实模型。
+- `conversations-browser.mjs`：同样使用本地模拟 Host 和真实 React，检查会话选择冲突、接力取消、逐条反馈、关闭保留草稿、迟到响应、键盘焦点及深浅色/窄屏布局。
+- `chat-rooms-browser.mjs`（`persona-chat-browser.mjs` 保留为同一套检查的入口）：沿用 React/esbuild 与 Playwright 参数，连接实际插件 Host、本地存储和确定性模型替身，检查房间与发言目标、历史署名、缩略图与组合头像、房间草稿和来源隔离、生成中换人与移除、失败保存重试、候选只填入不发送及深浅色/窄屏布局；不请求外部模型。
 
 `/persona-shell/ping` 的 `stateSync` 只公开流的数量统计与客户端状态枚举，供存活与连接排查。官方参考：[API Gateway](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/api-gateway.zh.md) · [添加 Remote API](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-remote-api.zh.md)。
 
 ## 版本约定
 
-未发布前的日常开发不提升包版本号；准备发布时递增补丁号（`0.0.1`），不跳 minor。
+日常开发不提升包版本号；修复版本递增补丁号，新增一组面向用户的功能时可按发布计划递增次版本号。Git 标签、GitHub Release 和 npm 使用同一版本号，Release 附件和 npm 使用同一个安装包。
 
 ## 源码导览
 
@@ -64,11 +69,20 @@ lib/
   work-nature.js      工作性质三态归类与本地文件元数据去重
   session-pacing.js   会话轮次、本地小时与轮间空闲间隔
   process-rewrite.js  过程转述的受限函数续接与独立短补充
+  expression-llm.js   插件独立调用的思考策略、能力选择与单次兼容降级
+  expression-memory.js 各发言渠道共享的表达偏好约束
+  memory-usage.js     有界的请求使用记录，仅保留引用、排除原因与发送状态
   pack.js             人格卡归一化与默认人格
   preset.js           从人设提示词提取人格卡
   memory.js           旧版统计与本地语气纠正识别
   structured-memory.js 记忆条目、来源、范围、版本、候选与接力记录
   memory-consolidation.js 后台整理调度、取消、批次提交与提炼提示
+  conversations.js    会话选择、版本检查、接力消费与串行持久化
+  persona-chat.js     独立角色聊天、去重、重试、取消与有界持久化
+  chat-prompt.js      仅使用本窗上下文的角色聊天提示与短消息协议
+  reply-suggestions.js 用户快捷回复候选提示与严格解析，不写入聊天
+  avatar.js           本地头像格式与版本地址，和模型语气卡分开
+  chat-profile.js     用户头像的独立版本记录、并发校验与串行持久化
   config.js           默认配置与 Standard Schema
   store.js            结果、预设与风格记忆的存储
   remote-contract.js  Host/Client 共享的严格 Remote 边界
@@ -76,6 +90,7 @@ lib/
   client-transport.js 官方流监督、订阅引用计数、兼容回退与续租
 scripts/              共享状态实现的浏览器嵌入与一致性检查
 locale/               中文与英文插件文案
+assets/avatars/       随插件提供的内置人格头像及来源说明
 test/                 离线与可选集成测试
 ```
 

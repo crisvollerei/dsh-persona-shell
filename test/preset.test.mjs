@@ -4,6 +4,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildExtractPrompt, parseExtractedPreset, PRESET_FIELDS } from '../lib/preset.js';
+
+test('extracted narration is explicit, bounded and defaults to an ordinary voice', () => {
+  const relay = parseExtractedPreset(JSON.stringify({ identity: '转述者', narration: { mode: 'relay', assistant: '姐姐（原助手）' } }));
+  assert.equal(relay.preset.narration.mode, 'relay');
+  assert.equal(relay.preset.narration.assistant, '姐姐');
+  const ordinary = parseExtractedPreset(JSON.stringify({ identity: '普通口吻' }));
+  assert.equal(ordinary.preset.narration.mode, 'voice');
+});
 import { normalizePack } from '../lib/pack.js';
 
 test('the extraction prompt asks for translation, not a summary', () => {

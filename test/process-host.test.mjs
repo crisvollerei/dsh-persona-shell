@@ -84,6 +84,8 @@ test('host supplies independent per-report counts and excludes all tool-informed
     { edit: { calls: 0, returned: 1, errors: 1, earlier_returns: 1 } },
   ]);
   const rows = (await f.state()).rows;
+  assert.ok(f.calls.length > 1 && f.calls.every((call) => call.reasoningEffort === 'off'),
+    'the initial process rewrite and every tool continuation prefer thinking off');
   assert.equal(rows.find((r) => r.seq === first.seq).processNote, '哼，这段调用了1次工具。');
   assert.equal(rows.find((r) => r.seq === second.seq).text, '接着看 `secret.js`。');
   assert.equal(rows.find((r) => r.seq === third.seq).status, 'ready');
@@ -126,14 +128,98 @@ test('disabled, final-only, report-trigger and subagent paths never offer the fu
     { subagentSteps: true, subagentReports: true }]) {
     const f = fixture(t, { config });
     if (config.subagentSteps) f.session.header.delegationDepth = 1;
-    f.start(); f.call('a'); f.result('a'); f.report(); f.report(false);
+    f.start(); f.call('a', 'private_connector_name'); f.result('a'); f.report(); f.report(false);
     f.emit('turn/end', { turn: 1, reason: { kind: 'completed' } }); await tick();
     assert.ok(f.calls.length > 0);
     for (const options of f.calls) {
       assert.equal(options.tools, undefined);
-      assert.doesNotMatch(options.system + JSON.stringify(options.messages), /get_tool_usage|process_note|since_previous_process_report|session_pacing|work_nature/);
+      assert.doesNotMatch(options.system + JSON.stringify(options.messages), /private_connector_name|DO_NOT_SEND|本步语境|get_tool_usage|process_note|since_previous_process_report|session_pacing|work_nature/);
     }
   }
+});
+
+test('only a qualifying closing report can be submitted in report-only mode', async (t) => {
+  const f = fixture(t, { config: { trigger: 'report', maxRewriteChars: 200 } });
+  const end = turn => f.emit('turn/end', { turn, reason: { kind: 'completed' } });
+  f.start(); f.report(false, '第一阶段，请稍等。');
+  const long = f.report(false, '长'.repeat(201)); end(1);
+  f.start(2); f.report(false, '第二阶段，请稍等。'); f.report(true); end(2);
+  f.start(3); f.report(false, '第三阶段，请稍等。');
+  f.emit('assistant/message', {turn:3, interrupted:true, message:{content:[{type:'text',text:'未写完'}]}}); end(3);
+  f.start(4); f.report(false, '新要求之前的回答。');
+  f.emit('user/message', {source:{kind:'user'},content:[{type:'text',text:'先处理另一个问题。'}]}); end(4);
+  f.start(5); f.report(false, '未结束的旧轮。'); f.start(6); end(6);
+  await tick(); assert.equal(f.calls.length, 0);
+  const rows = (await f.state()).rows;
+  assert.deepEqual(rows.filter(r => r.final).map(r => [r.seq,r.reason]), [[long.seq, 'too-long']]);
+  f.start(7);
+  const old = f.report(false, '旧草稿。'); const current = f.report(false, '最终结论。');
+  f.emit(old.type, old.data, {seq:old.seq}); end(7); await tick();
+  assert.equal(f.calls.length,1);
+  assert.equal((await f.state()).rows.find(r => r.seq === current.seq)?.final,true);
+  assert.match(f.calls[0].messages[0].content[0].text,/最终结论/);
+});
+
+test('opting into process observations shares the category, never the raw runtime tool identifier', async (t) => {
+  const f = fixture(t);
+  f.start(); f.call('sensitive-call', 'private_connector_name'); f.result('sensitive-call');
+  f.report(true); await tick(); f.report(false); await tick();
+  assert.equal(f.observations[0].categories.other.calls, 1);
+  for (const call of f.calls) assert.doesNotMatch(JSON.stringify(call.messages), /private_connector_name|sensitive-call|DO_NOT_SEND|本步语境/);
+  assert.equal(f.calls.at(-1).tools, undefined);
+});
+
+test('a truncated or failed working-model stream is never submitted for rewriting, even before turn/end', async (t) => {
+  for (const trigger of ['step','report']) {
+    const f = fixture(t, {config:{trigger}});
+    for (const [i,kind] of ['max-tokens','error','aborted','unknown-finish'].entries()) {
+      const turn=i+1; f.start(turn);
+      const clipped=f.emit('assistant/message',{turn,message:{content:[{type:'text',text:'可以上线，但是如果'}]},
+        stream:[{type:'chunk',time:100,chunk:{type:'finish',reason:{kind}}}]});
+      await tick(); assert.equal(f.calls.length,0);
+      f.emit('turn/end',{turn,reason:{kind:kind==='unknown-finish'?'completed':kind}});
+      assert.equal((await f.state()).rows.some(r=>r.seq===clipped.seq&&r.final),false);
+    }
+    f.start(5);
+    f.emit('assistant/message',{turn:5,message:{content:[{type:'text',text:'接着看 `secret.js`。'}]},
+      stream:[{type:'chunk',time:120,chunk:{type:'finish',reason:{kind:'stop'}}}]});
+    f.emit('turn/end',{turn:5,reason:{kind:'completed'}});await tick();assert.equal(f.calls.length,1);
+  }
+});
+
+test('a closing event must confirm completion; a legacy length stop withdraws the step rewrite', async(t)=>{
+  const f=fixture(t);
+  for(const [index,kind] of ['blocked','aborted','error','max-tokens'].entries()){
+    const turn=index+1;f.start(turn);
+    const event=f.report(false);await tick();assert.equal((await f.state()).rows.at(-1).status,'ready');
+    f.emit('turn/end',{turn,reason:{kind}});const row=(await f.state()).rows.find(r=>r.seq===event.seq);
+    assert.notEqual(row.final,true);
+    if(kind==='max-tokens'){assert.equal(row.status,'skipped');assert.equal(row.text,'');assert.equal(row.canRetry,false);}
+  }
+});
+
+test('toggling global rewriting cannot promote the stale candidate of an unviewed session', async(t)=>{
+  const f=fixture(t,{config:{trigger:'report'}});
+  f.start();f.report(false,'关闭前的进展。');
+  await f.request('settings',{enabled:false});f.report(false,'关闭期间的实际最终稿。');
+  await f.request('settings',{enabled:true});
+  f.emit('turn/end',{turn:1,reason:{kind:'completed'}});await tick();
+  assert.equal(f.calls.length,0);assert.deepEqual((await f.state()).rows,[]);
+  f.start(2);f.report(false);f.emit('turn/end',{turn:2,reason:{kind:'completed'}});await tick();
+  assert.equal(f.calls.length,1);assert.equal((await f.state()).rows[0].final,true);
+});
+
+test('attachment-only steering invalidates the previous report without collecting memory or inspecting the attachment', async(t)=>{
+  const f=fixture(t,{config:{trigger:'report'},domain:storage()});await tick();
+  for(const [i,type] of ['image','file'].entries()){
+    const turn=i+1;f.start(turn);f.report(false,'此前的结果。');
+    f.emit('user/message',{source:{kind:'user'},content:[{type,get attachment(){assert.fail('attachment data must stay private');}}]});
+    f.emit('turn/end',{turn,reason:{kind:'completed'}});await tick();
+  }
+  assert.equal(f.calls.length,0);assert.deepEqual((await f.state()).rows,[]);
+  assert.equal((await f.request('diagnostics')).memory.messages,0);
+  f.start(3);f.report(false);f.emit('user/message',{source:{kind:'runtime-context'},content:[{type:'image'}]});
+  f.emit('turn/end',{turn:3,reason:{kind:'completed'}});await tick();assert.equal(f.calls.length,1);
 });
 
 test('a repeated source event cannot replace or reissue the in-flight row', async (t) => {

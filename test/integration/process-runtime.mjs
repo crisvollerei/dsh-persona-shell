@@ -11,7 +11,7 @@ assert.ok(values.deps, 'Pass --deps <SDK dependency directory/package.json>');
 const require = createRequire(path.resolve(values.deps));
 const sdk = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-llm')));
 const version = require('@deepseek-ai/dsh-llm/package.json').version;
-assert.match(version, /^0\.2\.1-rc\./);
+assert.match(version, /^0\.2\.(?:1|2)-rc\.\d+$/);
 const usage = { available: true, scope: 'since_previous_process_report', categories: {
   read: { calls: 1, returned: 1, errors: 0, earlier_returns: 0 },
 }, work_nature: { is_read_only: true, files_touched: 0, ran_destructive_cmd: false },

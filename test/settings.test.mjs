@@ -82,6 +82,29 @@ function hookRenderer() {
   };
 }
 
+for (const scenario of ['ready', 'default', 'restart']) {
+  test(`conversation dialog rejects a late opening response after a newer ${scenario} state`, async (t) => {
+    const renderer = hookRenderer(), gate = deferred(); let definition;
+    const initial = { sessionId: 's', instanceId: 'old-host', stateRev: 10, revision: 0, personaId: null,
+      trigger: 'inherit', relay: null, ready: scenario !== 'ready', effectivePersonaId: 'whale', effectivePersonaName: '鲸鲸',
+      presets: [{ id: 'whale', name: '鲸鲸' }, { id: 'claude', name: 'Claude小姐' }] };
+    vm.runInNewContext(source, { window: { __ModuleLoader__: { load(value) { definition = value; } } },
+      setTimeout, clearTimeout, console, fetch: async () => { await gate.promise; return { ok: true, json: async () => copy(initial) }; } });
+    const module = definition.factory((id) => { if (id === 'react') return renderer.React; throw new Error(id); });
+    t.after(() => renderer.dispose());
+    let incoming = initial;
+    const component = () => module.__testing.ConversationPanel({ sessionId: 's', conversation: incoming, onClose() {} });
+    renderer.render(component);
+    incoming = { ...initial, stateRev: scenario === 'restart' ? 0 : 11, instanceId: scenario === 'restart' ? 'new-host' : initial.instanceId,
+      ready: true, effectivePersonaId: 'claude', effectivePersonaName: 'Claude小姐' };
+    renderer.render(component); gate.resolve(); await flush();
+    const tree = renderer.render(component);
+    assert.ok(text(tree).includes('正在使用：Claude小姐'), 'the current effective persona cannot revert');
+    const save = nodes(tree).find((node) => node.type === 'button' && text(node) === '保存会话选择');
+    assert.equal(save.props.disabled, false, 'readiness cannot revert to the opening snapshot');
+  });
+}
+
 function makeHost() {
   const base = normalizePack({ identity: '原始身份', report: ['原始汇报规则'], voice: ['原始语感'] });
   const other = normalizePack({ identity: '另一预设身份', report: ['另一汇报规则'] });
@@ -330,10 +353,10 @@ test('late initial preset list cannot undo the selection returned by saving a ge
   ui.prompt().props.onChange(event('这是足够长的人设提示词，请生成一个认真又温和的汇报角色。'));
   await ui.button('生成预设').props.onClick();
   await ui.button('保存并启用').props.onClick();
-  assert.match(ui.text(), /当前：建议名称/);
+  assert.ok(nodes(ui.render()).some((node) => node.props.key === 'generated' && node.props['data-active'] === true));
   host.presetsReadGate.resolve();
   await flush();
-  assert.match(ui.text(), /当前：建议名称/);
+  assert.ok(nodes(ui.render()).some((node) => node.props.key === 'generated' && node.props['data-active'] === true));
   assert.ok(nodes(ui.render()).some((node) => node.props.key === 'generated'));
   assert.equal(ui.field('身份').props.value, '生成的身份');
 });

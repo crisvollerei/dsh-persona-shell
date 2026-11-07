@@ -109,7 +109,6 @@ test('the shipped presets include Claude小姐 as a third complete card', () => 
   // The default preset must not be the only shipped character: the settings page
   // offers presets as alternatives, and a user should be able to switch to a
   // second voice without writing a persona prompt first.
-  assert.equal(BUILTIN_PRESETS.length, 4, 'exactly four shipped presets');
   const claude = BUILTIN_PRESETS.find((entry) => entry.name === 'Claude小姐');
   assert.ok(claude, 'the Claude preset is shipped');
   assert.equal(claude.id, 'Claude小姐', 'the id is stable so a saved selection can find it');
@@ -128,9 +127,9 @@ test('the shipped presets include Claude小姐 as a third complete card', () => 
   assert.equal(pack.address.subagent, '子代理', 'the whale helper name must not leak in');
 });
 
-test('the experimental 鲸鲸 card relays 姐姐, not its own work', () => {
-  const relay = BUILTIN_PRESETS.find((entry) => entry.name === '鲸鲸（实验性）');
-  assert.ok(relay, 'the experimental relay preset is shipped last');
+test('the experimental 小肥鱼 card relays 姐姐, not its own work', () => {
+  const relay = BUILTIN_PRESETS.find((entry) => entry.name === '小肥鱼（实验性）');
+  assert.ok(relay, 'the experimental relay preset is shipped');
   assert.equal(relay.id, '鲸鲸（实验性）');
   assert.equal(BUILTIN_PRESETS.indexOf(relay), 3, 'it is the fourth built-in');
 
@@ -138,9 +137,9 @@ test('the experimental 鲸鲸 card relays 姐姐, not its own work', () => {
   assert.match(pack.identity, /转述/, 'the card describes itself as a relay');
   assert.match(pack.identity, /姐姐/, 'the original assistant is named 姐姐');
   assert.match(pack.report.join(''), /姐姐/, 'the report rules make 姐姐 the subject');
-  assert.match(pack.report.join(''), /不要写成鲸鲸做的事/, 'it forbids claiming the work as its own');
-  assert.ok(pack.samples.some((line) => line.includes('鲸鲸帮姐姐转达')), 'a relay sample is present');
-  assert.ok(pack.avoid.join('').includes('不要把姐姐做的事说成鲸鲸自己做的'));
+  assert.match(pack.report.join(''), /不要写成小肥鱼做的事/, 'it forbids claiming the work as its own');
+  assert.ok(pack.samples.some((line) => line.includes('小肥鱼帮姐姐转达')), 'a relay sample is present');
+  assert.ok(pack.avoid.join('').includes('不要把姐姐做的事说成小肥鱼自己做的'));
   assert.ok(pack.avoid.join('').includes('不要把用户叫成「姐姐」'));
   assert.equal(pack.address.user, '你');
   assert.equal(pack.address.subagent, '小鲸鲸', 'the whale helper name is kept');
@@ -171,7 +170,7 @@ test('every shipped preset is a distinct, complete card', () => {
 test('prompt carries the marker count and forbids invention', () => {
   const pack = normalizePack(undefined);
   const { system, user } = buildRewritePrompt({
-    pack, masked: '改好了 [[0]] 。', literalCount: 1, history: ['上次这样说。'], stage: '刚执行了 read',
+    pack, masked: '改好了 [[0]] 。', literalCount: 1, history: ['上次这样说。'],
   });
   assert.ok(system.includes('1 个'));
   assert.ok(system.includes('不得新增原文没有的事实'));
@@ -181,7 +180,6 @@ test('prompt carries the marker count and forbids invention', () => {
   assert.ok(system.includes('口头禅与语气示例'));
   assert.ok(user.includes('[[0]]'));
   assert.ok(user.includes('上次这样说。'));
-  assert.ok(user.includes('刚执行了 read'));
 });
 
 test('validateRewrite accepts a faithful rewrite', () => {

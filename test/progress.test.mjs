@@ -323,6 +323,7 @@ test('real Host publishes ephemeral facts-only notices through authenticated sta
   assert.equal(state.rows.length, 0);
   assert.ok(state.progress.text);
   const call = f.calls[0];
+  assert.equal(call.reasoningEffort, 'off');
   assert.equal(call.messages.length, 1);
   assert.equal(call.tools, undefined);
   assert.equal(call.maxTokens, 512);

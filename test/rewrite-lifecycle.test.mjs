@@ -41,13 +41,14 @@ async function gateOrAbort(gate, signal) {
   finally { signal.removeEventListener('abort', onAbort); }
 }
 
-function fixture(t, { config = {}, stream, listModels, cleanup = () => {} } = {}) {
+function fixture(t, { config = {}, stream, listModels, resolveModelInfo, cleanup = () => {} } = {}) {
   const bus = new EventEmitter();
   const disposers = [];
   const routes = [];
   const calls = [];
   const llm = {
     listModels: listModels ?? (async () => [{ id: 'model' }]),
+    ...(resolveModelInfo === undefined ? {} : { resolveModelInfo }),
     stream(options) {
       calls.push(options);
       return stream?.(options, calls.length) ?? answer('A complete rewritten report.');
@@ -105,6 +106,68 @@ function fixture(t, { config = {}, stream, listModels, cleanup = () => {} } = {}
     state: () => request('state?session=main'),
   };
 }
+
+for (const [name, info, expected] of [
+  ['thinking optional', { reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }], defaultEffort: 'high' } }, 'off'],
+  ['thinking required', { reasoning: { efforts: [{ id: 'low' }, { id: 'high' }], defaultEffort: 'high' } }, 'low'],
+  ['no reasoning controls', {}, undefined],
+]) {
+  test(`real rewrite requests handle ${name} without inheriting the working model's thinking default`, async (t) => {
+    const f = fixture(t, { resolveModelInfo: async () => info });
+    f.report(); await drain();
+    assert.equal(f.calls.length, 1); assert.equal(f.calls[0].reasoningEffort, expected);
+    assert.equal((await f.state()).rows[0].status, 'ready');
+  });
+}
+
+test('an explicitly unsupported thinking parameter downgrades once inside the original rewrite request', async (t) => {
+  const f = fixture(t, { stream: (_, n) => n === 1 ? (async function* () {
+    yield { type: 'finish', reason: { kind: 'error', failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: 'unsupported' } } };
+  })() : answer('The complete rewrite after compatibility fallback.') });
+  f.report(); await drain();
+  assert.deepEqual(f.calls.map((c) => c.reasoningEffort), ['off', undefined]);
+  assert.equal(f.calls[0].signal, f.calls[1].signal);
+  assert.equal((await f.state()).rows[0].status, 'ready');
+  assert.equal((await f.request('diagnostics')).expressionModel.fallback, true);
+});
+
+test('an unsuccessful thinking fallback preserves the plain report without repeated model requests', async (t) => {
+  const f = fixture(t, { stream: () => (async function* () {
+    yield { type: 'finish', reason: { kind: 'error', failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: 'unsupported' } } };
+  })() });
+  f.report(); await drain();
+  assert.equal(f.calls.length, 2);
+  const row = (await f.state()).rows[0]; assert.equal(row.status, 'skipped'); assert.equal(row.text, '');
+});
+
+test('a thinking-only response falls back to the plain report without exposing or retrying the thoughts', async (t) => {
+  const f = fixture(t, { stream: () => (async function* () {
+    yield { type: 'reasoning-delta', index: 0, text: 'PRIVATE_THOUGHT_WITHOUT_REPORT' };
+    yield { type: 'finish', reason: { kind: 'stop' } };
+  })() });
+  f.report(); await drain();
+  const state = await f.state();
+  assert.equal(f.calls.length, 1); assert.equal(state.rows[0].status, 'skipped');
+  assert.equal(state.rows[0].text, ''); assert.equal(state.rows[0].partial, '');
+  assert.doesNotMatch(JSON.stringify(state), /PRIVATE_THOUGHT_WITHOUT_REPORT/);
+});
+
+test('thinking capability lookup shares the rewrite deadline and cannot dispatch its late model result', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const metadata = deferred();
+  const f = fixture(t, { config: { timeoutMs: 1000 }, resolveModelInfo: () => metadata.promise });
+  f.report(); await drain();
+  t.mock.timers.tick(1001); await drain();
+  assert.equal((await f.state()).rows[0].status, 'skipped'); assert.equal(f.calls.length, 0);
+  metadata.resolve({ reasoning: { efforts: [{ id: 'off' }] } }); await drain();
+  assert.equal(f.calls.length, 0);
+});
+
+test('persona-card extraction uses the same default thinking policy', async (t) => {
+  const f = fixture(t, { stream: () => answer(JSON.stringify({ name: '测试人格', identity: '简单清楚的人格' })) });
+  const result = await f.request('presets', { action: 'generate', prompt: '一个简短清楚、能够保留事实、风险与适用条件的人格设定。' });
+  assert.equal(result.ok, true); assert.equal(f.calls[0].reasoningEffort, 'off');
+});
 
 for (const finish of ['max-tokens', 'tool-calls', null]) {
   test(`ordinary rewrites reject ${finish ?? 'missing finish'} instead of saving partial text`, async (t) => {

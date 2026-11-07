@@ -328,8 +328,8 @@ test('original controls and review hints remain siblings of the continuously mou
   const report = first(tree);
   const controls = all(tree).find((element) => element.props?.['data-persona-shell'] === 'controls');
   assert.ok(controls, 'the controls wrapper is rendered');
-  assert.ok(all(controls).some((element) => Array.isArray(element.children) && element.children.includes('persona')),
-    'the persona badge is in the controls');
+  assert.ok(all(controls).some((element) => Array.isArray(element.children) && element.children.includes('历史人格')),
+    'legacy rows have an honest unknown historical identity');
   assert.ok(all(tree).indexOf(controls) < all(tree).indexOf(report), 'controls sit above the official report');
   const button = all(tree).find((element) => element.type === 'button');
   assert.equal(button.children[0], 'origin', 'the original toggle uses the established label');

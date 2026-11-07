@@ -293,8 +293,8 @@ test('the non-default shipped personas survive a restart and stay selectable', a
 
   const before = await getJson(web1, '/persona-shell/presets');
   assert.deepEqual(
-    before.value.presets.map((preset) => preset.name).slice(0, 4),
-    ['大肥鱼（默认）', '大肥龙', 'Claude小姐', '鲸鲸（实验性）'],
+    before.value.presets.filter(preset => preset.builtin).map(preset => preset.name),
+    ['大肥鱼（默认）', '大肥龙', 'Claude小姐', '小肥鱼（实验性）', 'Gemini'],
     'all shipped presets are listed first, in order',
   );
   const dragon = before.value.presets.find((preset) => preset.name === '大肥龙');
@@ -326,6 +326,38 @@ test('the non-default shipped personas survive a restart and stay selectable', a
   const restoredClaude = await getJson(web3, '/persona-shell/settings');
   assert.equal(restoredClaude.value.settings.presetName, 'Claude小姐', 'the Claude selection came back');
   assert.match(restoredClaude.value.settings.pack.identity, /Claude小姐/);
+});
+
+test('renaming the experimental builtin keeps old selections and same-name custom cards distinct', async () => {
+  const id = '鲸鲸（实验性）', name = '小肥鱼（实验性）';
+  const custom = { id: 'preset-my-fish', name, builtin: false, pack: { identity: '我自己的鱼' } };
+  for (const activePreset of [id, custom.id]) {
+    const web = makeWebServer();
+    const storage = makeStorage(new Map(), { presets: [custom], activePreset });
+    apply(makeCtx({ llm: makeLlm('好'), storage, webServer: web }), { enabled: true, allowUnauthenticatedRoutes: true });
+    await new Promise(resolve => setImmediate(resolve));
+    const { value } = await getJson(web, '/persona-shell/presets');
+    const original = value.presets.find(p => p.id === id), mine = value.presets.find(p => p.id === custom.id);
+    assert.equal(original.name, name); assert.equal(mine.builtin, false);
+    assert.notEqual(mine.name, original.name); assert.equal(mine.pack.identity, custom.pack.identity);
+    assert.equal(value.active, activePreset === id ? original.name : mine.name);
+  }
+});
+
+test('adding Gemini to a full profile preserves a custom Gemini and every existing slot', async () => {
+  const custom = Array.from({length: 26}, (_, i) => ({
+    id: 'preset-mine-' + i, name: i === 25 ? 'Gemini' : '自定义' + i, builtin: false, pack: {identity: '我的设定' + i}
+  }));
+  const storage = makeStorage(new Map(), {presets: custom, activePreset: custom.at(-1).id});
+  const web = makeWebServer();
+  apply(makeCtx({ llm: makeLlm('好'), storage, webServer: web }), { enabled: true, allowUnauthenticatedRoutes: true });
+  await new Promise(resolve => setImmediate(resolve));
+  const {value} = await getJson(web, '/persona-shell/presets');
+  assert.deepEqual(value.presets.filter(p => !p.builtin).map(p => p.id).sort(), custom.map(p => p.id).sort());
+  assert.equal(value.presets.find(p => p.id === 'Gemini').builtin, true);
+  const mine = value.presets.find(p => p.id === custom.at(-1).id);
+  assert.notEqual(mine.name, 'Gemini'); assert.equal(mine.character, undefined);
+  assert.equal(value.active, mine.name); assert.equal(mine.pack.identity, '我的设定25');
 });
 
 test('a legacy custom preset with a shipped name is superseded, not duplicated', async () => {

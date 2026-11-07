@@ -316,11 +316,14 @@ test('the per-session switch registers in the session header utilities', async (
   assert.equal(entry.options.id, 'persona-shell');
   assert.equal(entry.options.order, 10);
 
-  const element = entry.component({ sessionId: 's1', t: (key) => key });
+  const utility = entry.component({ sessionId: 's1', t: (key) => key });
+  const element = utility.children.find((child) => child?.props?.role === 'switch');
   assert.equal(element.type, 'button', 'it renders a real button');
   assert.equal(element.props.role, 'switch');
   assert.equal(element.props['aria-checked'], true, 'the default is on');
   assert.equal(element.props.disabled, false, 'enabled once the host confirms the global switch');
+  assert.ok(utility.children.some((child) => child?.props?.['aria-haspopup'] === 'dialog'),
+    'session choices are a separate accessible entry beside the switch');
 });
 
 test('the poller tracks every seq, not just the one that created it', async () => {
@@ -480,4 +483,32 @@ test('the plugin ships no markdown renderer of its own', async () => {
     assert.ok(!source.includes(`function ${name}(`), `${name} must not exist`);
   }
   assert.ok(source.includes('PLAIN_FALLBACK_STYLE'), 'the plain-text fallback is present');
+});
+
+test('role-chat bubbles delegate rich text to the shipped renderer and preserve the original message string', async () => {
+  const shipped = () => null;
+  const { module } = await applyAndSettle({ primitives: { MarkdownText: shipped } });
+  const text = '**已完成**，运行 `npm install dsh-persona-shell@0.4.10`。\n\n- 原文仍可查。';
+  const tree = module.__testing.ChatReplyBubbles({ turn: { attemptId: 'old-ready', status: 'ready', assistant: [text] }, avatar: () => null });
+  const nodes = [];
+  const visit = node => { if (!node || typeof node !== 'object') return; if (Array.isArray(node)) { node.forEach(visit); return; }
+    nodes.push(node); (node.children ?? []).forEach(visit); };
+  visit(tree);
+  const markdown = nodes.find(node => node.type === shipped);
+  assert.equal(markdown.props.text, text); assert.equal(markdown.props.streaming, false);
+  assert.equal(typeof markdown.props.labels.code.copyLabel, 'string');
+});
+
+test('a pending role reply puts an accessible typing bubble and avatar on the role side only while running', async () => {
+  const { module } = await applyAndSettle();
+  const turn = { attemptId: 'pending-first', status: 'pending', assistant: [] };
+  const avatar = () => ({ type: 'span', props: { role: 'img', 'aria-label': '鲸鲸头像' }, children: [] });
+  const tree = module.__testing.ChatReplyBubbles({ turn, avatar, running: true });
+  const rows = tree.children.filter(node => node?.props?.role === 'status');
+  assert.equal(rows.length, 1); assert.equal(rows[0].props['data-user'], 'false');
+  assert.equal(rows[0].children[0].props['aria-label'], '鲸鲸头像');
+  assert.equal(rows[0].children[1].children[0], '输入中');
+  assert.ok(JSON.stringify(rows[0]).includes('dsh-persona-chat-typing-dots'));
+  const stopped = module.__testing.ChatReplyBubbles({ turn, avatar, running: false });
+  assert.ok(!stopped.children.some(node => node?.props?.role === 'status'));
 });

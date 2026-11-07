@@ -13,6 +13,33 @@ const candidate = (m, content = '喜欢先说明结论') => {
     evidence: [{ eventId: batch.sources[0].id, quote: batch.sources[0].text }] }] };
 };
 
+test('historical references resolve exact versions without re-ranking against newer preferences', () => {
+  let clock = 10;
+  const m = createStructuredMemory({ now: () => clock });
+  const entry = add(m, '原先使用的特别表达');
+  const refs = [{ id: entry.id, version: entry.version }];
+  for (let i = 0; i < 8; i++) { clock++; add(m, '后续添加的偏好' + i); }
+  assert.equal(m.select(context).some((e) => e.id === entry.id), false);
+  assert.equal(m.references(refs, context)[0].content, entry.content);
+  assert.deepEqual(m.references(refs, { ...context, personaId: 'dragon' }), []);
+  const edited = m.mutate({ action: 'update', id: entry.id, version: entry.version, content: '编辑之后的表达', pinned: false });
+  assert.deepEqual(m.references(refs, context), []);
+  assert.deepEqual(m.references([{ id: entry.id }], context), [], 'unversioned references never invent a historical version');
+  m.mutate({ action: 'delete', id: edited.id, version: edited.version });
+  assert.deepEqual(m.references([{ id: edited.id, version: edited.version }], context), []);
+});
+
+test('historical reference access still obeys session boundaries and expiry', () => {
+  let clock = 10;
+  const m = createStructuredMemory({ now: () => clock });
+  const e = add(m, '本会话接力可用的表达', { scope: 'session', personaId: null, sessionId: 'main', expiresAt: 100 });
+  const refs = [{ id: e.id, version: e.version }];
+  assert.equal(m.references(refs, { personaId: 'dragon', sessionId: 'main' }).length, 1);
+  assert.deepEqual(m.references(refs, { personaId: 'dragon', sessionId: 'other' }), []);
+  clock = 100;
+  assert.deepEqual(m.references(refs, context), []);
+});
+
 test('shared preferences cross personas, private and session memories retain their boundaries', () => {
   const m = createStructuredMemory();
   add(m, '所有人都用中文', { scope: 'shared', personaId: null });
@@ -21,6 +48,65 @@ test('shared preferences cross personas, private and session memories retain the
   assert.deepEqual(m.select(context).map((e) => e.content), ['这次简短', '可以轻微吐槽', '所有人都用中文']);
   assert.deepEqual(m.select({ personaId: 'dragon', sessionId: 'main' }).map((e) => e.content), ['所有人都用中文']);
   assert.deepEqual(m.select({ personaId: 'whale', sessionId: 'elsewhere' }).map((e) => e.content), ['可以轻微吐槽', '所有人都用中文']);
+});
+
+test('automatic sharing requires a complete affirmative instruction about that specific preference', () => {
+  for (const quote of ['以后叫我小橙，只限你，别设为全局。',
+    '以后只有你可以叫我小橙，不要让所有人格都知道。',
+    '以后所有人格都叫我小橙。等等，只限你。', '剧本台词：\n以后所有人格都叫我小橙。',
+    '以后所有角色都叫我小橙吗？', '以后所有人格都叫我小橙。\n> 如果可以的话']) {
+    const m = createStructuredMemory(); observe(m, quote);
+    assert.deepEqual(m.select({personaId:'dragon',sessionId:'s2'}), [], quote);
+    if (quote.startsWith('剧本台词') || quote.endsWith('吗？')) assert.deepEqual(m.select(context), [], quote);
+    assert.ok(!m.snapshot().entries.some(e => e.scope === 'shared'), quote);
+    const batch = m.batch(), e = batch.sources[0];
+    assert.throws(() => m.commit(batch, [{kind:'preference',scope:'shared',content:'称呼我小橙',
+      evidence:[{eventId:e.id,quote:'小橙'}]}]), /unproven-shared/, quote);
+  }
+  for (const quote of ['以后所有人格都叫我小禾。', '请让所有角色都用中文回复。', '以后叫我小禾，请把这个称呼共享给所有人格。']) {
+    const m = createStructuredMemory(); observe(m, quote);
+    const other = {personaId:'dragon',sessionId:'s2'};
+    assert.deepEqual(m.select(other), []);
+    const entry = m.snapshot().entries[0];
+    assert.deepEqual([entry.scope,entry.status,entry.evidence[0].quote], ['shared','candidate',quote]);
+    const op = m.mutate({action:'propose',operation:'accept',id:entry.id,version:entry.version});
+    m.mutate({action:'confirm',id:op.id,version:op.version});
+    m.restore(m.snapshot());
+    assert.deepEqual(m.select(other).map(e => e.id), [entry.id]);
+    const batch=m.batch(); assert.equal(m.commit(batch,[{kind:'preference',scope:'shared',content:'一条公开表达偏好',
+      evidence:[{eventId:batch.sources[0].id,quote}]}]),true);
+  }
+});
+
+test('restoring an old keyword grant narrows it once and invalidates stale references without altering owner choices', () => {
+  const m=createStructuredMemory(); observe(m,'以后叫我小橙，只限你，别设为全局。');
+  const manual=add(m,'我在设置里确认过的共享称呼',{scope:'shared'});
+  const old=m.snapshot(), entry=old.entries.find(e=>e.origin==='explicit');
+  Object.assign(entry,{scope:'shared',personaId:null}); // Actual shape written by the older detector.
+  const unknown={...structuredClone(entry),id:'unknown',evidence:[]};
+  old.entries.push(unknown);
+  const fixed=createStructuredMemory();fixed.restore(old);
+  const foreign={personaId:'dragon',sessionId:'elsewhere'};
+  assert.deepEqual(fixed.select(foreign).map(e=>e.id),[manual.id]);
+  assert.deepEqual(fixed.references([{id:entry.id,version:entry.version}],foreign),[]);
+  const next=fixed.snapshot(), repaired=next.entries.find(e=>e.id===entry.id);
+  assert.deepEqual([repaired.status,repaired.scope,repaired.personaId,repaired.evidence[0].quote],
+    ['candidate','persona','whale','以后叫我小橙，只限你，别设为全局。']);
+  assert.equal(next.entries.find(e=>e.id==='unknown').status,'rejected');
+  fixed.restore(next);assert.deepEqual(fixed.snapshot(),next);
+});
+
+test('a legacy settings acceptance preserves only the exact shared entry the owner reviewed', () => {
+  const m=createStructuredMemory(); observe(m,'请让所有角色都用中文回复。');
+  const entry=m.snapshot().entries[0], op=m.mutate({action:'propose',operation:'accept',id:entry.id,version:entry.version});
+  m.mutate({action:'confirm',id:op.id,version:op.version});
+  const raw=m.snapshot(); delete raw.entries[0].sharingConfirmed;
+  raw.entries.push({...structuredClone(raw.entries[0]),id:'borrowed-review'});
+  const fixed=createStructuredMemory(); fixed.restore(raw);
+  assert.deepEqual(fixed.select({personaId:'dragon',sessionId:'other'}).map(e=>e.id),[entry.id]);
+  assert.equal(fixed.snapshot().entries.find(e=>e.id==='borrowed-review').status,'candidate');
+  const saved=fixed.snapshot(); saved.operations=[]; fixed.restore(saved);
+  assert.deepEqual(fixed.select({personaId:'dragon',sessionId:'other'}).map(e=>e.id),[entry.id]);
 });
 
 test('a temporary correction overrides a permanent preference only in its own session and lifetime', () => {
@@ -34,13 +120,16 @@ test('a temporary correction overrides a permanent preference only in its own se
   assert.doesNotMatch(m.select(context)[0].content, /这次/);
 });
 
-test('the latest explicit correction replaces the old one without repeating evidence', () => {
+test('a conflicting explicit correction waits for settings confirmation without repeating evidence', () => {
   const m = createStructuredMemory();
   assert.equal(observe(m, '简洁一点'), true);
   assert.equal(observe(m, '简洁一点'), false);
   assert.equal(m.snapshot().sources.length, 1);
   observe(m, '汇报写得更具体一点', 2);
   assert.equal(m.snapshot().entries.filter((e) => e.status === 'active').length, 1);
+  assert.equal(m.snapshot().entries[0].status, 'active');
+  const operation = m.snapshot().operations[0];
+  m.mutate({ action: 'confirm', id: operation.id, version: operation.version });
   assert.equal(m.snapshot().entries[0].status, 'superseded');
 });
 
