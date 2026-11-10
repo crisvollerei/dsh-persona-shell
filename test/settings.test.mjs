@@ -204,10 +204,39 @@ async function mount(t, host = makeHost()) {
     return result;
   };
   const presetButton = (id, label = '启用') => button(label, nodes(render()).find((node) => node.props.key === id));
+  const checkbox = (label) => {
+    const row = nodes(render()).find((node) => node.type === 'label' && text(node) === label);
+    const input = row && nodes(row).find((node) => node.type === 'input' && node.props.type === 'checkbox');
+    assert.ok(input, `checkbox ${label} exists`); return input;
+  };
   const prompt = () => nodes(render()).find((node) => node.props.placeholder === '粘贴人设提示词…');
   const name = () => nodes(render()).find((node) => node.props.placeholder === '给这个预设起个名字');
-  return { host, render, field, button, presetButton, prompt, name, text: () => text(render()) };
+  return { host, render, field, checkbox, button, presetButton, prompt, name, text: () => text(render()) };
 }
+
+test('colloquial report saving defaults on and preserves a newer persona draft', async (t) => {
+  const ui = await mount(t), gate = deferred();
+  assert.equal(ui.checkbox('口语化转述').props.checked, true, 'a missing old setting displays the enabled default');
+  ui.host.settingsReplies.push({ gate });
+  const saving = ui.checkbox('口语化转述').props.onChange({ target: { checked: false } }); await flush();
+  assert.deepEqual(ui.host.settingsCalls, [{ colloquialReports: false }], 'only the global expression option is written');
+  ui.field('通用语感（每行一条）').props.onChange(event('正在输入的新语感\n尚未提交'));
+  gate.resolve(); await saving;
+  assert.equal(ui.checkbox('口语化转述').props.checked, false);
+  assert.equal(ui.field('通用语感（每行一条）').props.value, '正在输入的新语感\n尚未提交', 'an older scalar save cannot replace a newer card draft');
+  assert.deepEqual(ui.host.settings.pack.voice, ['原始语感']);
+});
+
+test('colloquial report setting honors saved false and can retry a failed save', async (t) => {
+  const host = makeHost(); host.settings.colloquialReports = false;
+  const ui = await mount(t, host); assert.equal(ui.checkbox('口语化转述').props.checked, false);
+  host.settingsReplies.push({ fail: true });
+  await ui.checkbox('口语化转述').props.onChange({ target: { checked: true } });
+  assert.equal(ui.checkbox('口语化转述').props.checked, false, 'failed writes keep the confirmed setting');
+  assert.match(ui.text(), /保存失败，请重试/);
+  await ui.checkbox('口语化转述').props.onChange({ target: { checked: true } });
+  assert.equal(ui.checkbox('口语化转述').props.checked, true); assert.equal(host.settings.colloquialReports, true);
+});
 
 test('late settings responses preserve drafts in both another field and the same field', async (t) => {
   const ui = await mount(t);

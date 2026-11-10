@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPersonaChat, parseChatReply, parseChatResponse, CHAT_LIMITS } from '../lib/persona-chat.js';
 import { buildChatPrompt } from '../lib/chat-prompt.js';
+import { readChatInput } from './helpers/chat-input.mjs';
 const send = (chat, id = 'one', personaId = 'whale', revision = chat.read(personaId)?.revision ?? 0) =>
   chat.send({ personaId, name: personaId, requestId: id, content: '用户原话 ' + id, revision, epoch: chat.epoch() });
 const finish = (chat, start, extra = {}) => chat.finish({ personaId: start.room.personaId, roomId: start.room.id,
@@ -102,10 +103,11 @@ test('history stays bounded and context contains only recent chat, style and sup
   const room = chat.read('whale'); assert.equal(room.turns.length, CHAT_LIMITS.turns);
   const prompt = buildChatPrompt({ pack: { identity: '角色设定', voice: ['轻松'], samples: ['语气'], avoid: ['禁区'],
     report: ['DO_NOT_IMPORT_REPORT_RULES'], address: { user: '你' } }, history: room.turns,
-    message: '最新消息', memory: ['叫我阿晴'] });
-  assert.equal(JSON.parse(prompt.user).history.length, CHAT_LIMITS.history);
+    message: '最新消息', memory: ['叫我阿晴'], roomId: room.id,
+    generation: room.generation, scopeKey: room.turns[0].scopeKey });
+  assert.equal(readChatInput(prompt).history.length, CHAT_LIMITS.history);
   assert.doesNotMatch(prompt.system, /DO_NOT_IMPORT_REPORT_RULES/); assert.match(prompt.system, /叫我阿晴/);
-  assert.match(prompt.system, /只读会话片段/); assert.match(prompt.system, /不能执行工具/); assert.match(prompt.system, /优先于角色卡中的工作转述说明/);
+  assert.doesNotMatch(prompt.system, /goalHasAttachments|reportStatus/); assert.match(prompt.system, /没有工具执行/); assert.match(prompt.system, /人格本人聊天[^\n]*正式工作转述由另一渠道承载/);
 });
 
 test('chat capacity refuses new rooms without evicting another persona, and a clear frees capacity', async () => {
@@ -117,11 +119,24 @@ test('chat capacity refuses new rooms without evicting another persona, and a cl
   assert.equal(chat.snapshot().rooms.length, CHAT_LIMITS.rooms);
 });
 
-test('chat context budget removes whole older turns rather than clipping user statements', () => {
-  const history = Array.from({ length: 8 }, (_, n) => ({ user: String(n) + '好'.repeat(3999), assistant: ['答'.repeat(5000)], status: 'ready' }));
-  const prompt = buildChatPrompt({ pack: { identity: '角色', voice: [], samples: [], avoid: [], address: { user: '你' } }, history, message: '现在', memory: [] });
-  const retained = JSON.parse(prompt.user).history; assert.equal(retained.length, 1);
-  assert.equal(retained[0].user, history[7].user); assert.deepEqual(retained[0].assistant, history[7].assistant);
+test('chat context budget retains whole original user statements and complete bubbles with explicit omissions', () => {
+  const history = Array.from({ length: 8 }, (_, n) => ({ id: 'turn-' + n, messageId: 'message-' + n,
+    attemptId: 'attempt-' + n, roomId: 'room', scopeKey: null, recipientId: 'a', speakerName: '甲', recipients: [],
+    user: String(n) + '好'.repeat(3999), assistant: ['首'.repeat(2000), '续'.repeat(2000), '末'.repeat(1000)], status: 'ready' }));
+  const prompt = buildChatPrompt({ pack: { identity: '角色', voice: [], samples: [], avoid: [], address: { user: '你' } },
+    history, message: '现在', memory: [], roomId: 'room', scopeKey: null });
+  const value = readChatInput(prompt), retained = value.history;
+  assert.equal(retained.length, 8, 'omitted groups remain author/status pointers rather than invented or clipped text');
+  assert.equal(retained.at(-1).user, history[7].user); assert.deepEqual(retained.at(-1).assistant, history[7].assistant);
+  assert.ok(retained.some(group => group.omittedBubbles), 'the budget explicitly marks excluded full bubbles');
+  let chars = value.message.length;
+  for (const [index, group] of retained.entries()) {
+    assert.ok(group.user === '' || group.user === history[index].user, 'a user statement is never sliced');
+    assert.ok(group.assistant.every(bubble => history[index].assistant.includes(bubble)), 'assistant bubbles remain exact originals');
+    assert.deepEqual(group.recipient, { id: 'a', name: '甲' }); assert.equal(group.status, 'ready');
+    chars += group.user.length + group.assistant.reduce((count, bubble) => count + bubble.length, 0);
+  }
+  assert.ok(chars <= 18000); assert.ok(chars > 9000, 'the newer budget can retain complete bubbles from more than one group');
 });
 
 test('clearing retires old sends, clears and cancels even when a new room reuses the same revision', async () => {

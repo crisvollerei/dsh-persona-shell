@@ -73,11 +73,14 @@ test('reaction decisions cannot run before primaries settle or when none has com
   await refusedWithoutChange(f, () => append(f));
 });
 
-test('eight members can attend; no more than two primary and two unique listener slots can be created', async () => {
+test('eight members can be selected while legacy reply and listener creation retain their original guards', async () => {
   await assert.rejects(setup({count:8,selected:3}),/chat-primary-limit/);
   const f = await setup({ count: 8, selected: 2 });await settledPrimary(f);
   const before=f.chat.read(f.room.id),three=f.members.slice(0,3);
-  await assert.rejects(f.chat.update({roomId:before.id,revision:before.revision,targetPersonaIds:three.map(p=>p.id)}),/chat-primary-limit/);
+  const selected=await f.chat.update({roomId:before.id,revision:before.revision,targetPersonaIds:three.map(p=>p.id)});
+  assert.deepEqual(selected.targetPersonaIds,three.map(p=>p.id));
+  await f.chat.update({roomId:before.id,revision:selected.revision,targetPersonaIds:before.targetPersonaIds});
+  before.revision=f.chat.read(before.id).revision;before.configRevision=f.chat.read(before.id).configRevision;
   await assert.rejects(f.chat.send({roomId:before.id,revision:before.revision,recipients:three,personaId:three[0].id,name:'甲',requestId:'new',content:'test'}),/chat-primary-limit/);
   assert.deepEqual(f.chat.read(before.id),before);
   for (const candidates of [[f.members[0]], [f.members[6], f.members[6]], [{ id: 'stranger', name: '房间外的人' }],

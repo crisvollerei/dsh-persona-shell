@@ -42,22 +42,26 @@ window.fetch=async(url,options)=>{
  }
  if(route.endsWith('/feedback')){
   const b=JSON.parse(options.body);host.posts.push(b);
+  if(b.version!==host.row.version||b.personaId!==host.row.speaker?.id)return reply({error:'report-conflict'},409);
   if(host.delayed)await new Promise(resolve=>window.releaseFeedback=resolve);
   if(host.failNext){const reason=host.failNext;host.failNext=null;return reply({error:reason},422)}
   host.conversation.stateRev++;
-  if(b.scope==='once'){host.row.text='新的可读汇报。';host.row.version++;window.repaint()}
-  return reply({ok:true});
+    if(b.scope==='once'){host.row.text='新的可读汇报。';host.row.status='ready';host.row.version++;window.repaint()}
+  return reply({ok:true,version:host.row.version,personaId:host.row.speaker?.id});
  }
- if(route.endsWith('/state'))return reply({instanceId:host.conversation.instanceId,rev:host.conversation.stateRev,rows:[host.row],conversation:host.conversation,settings:{enabled:true},sessionEnabled:true,switchesReady:true});
+ if(route.endsWith('/state'))return reply({instanceId:host.conversation.instanceId,rev:host.conversation.stateRev,rows:[host.row],conversation:host.conversation,settings:{enabled:host.settingsEnabled!==false},sessionEnabled:host.sessionEnabled!==false,switchesReady:true});
  return reply({});
 };
 plugin.__testing.applyControls({instanceId:'test',controlRev:1,settings:{enabled:true},sessionSwitches:{rev:1,values:{}}},1);
 window.refreshConversation=()=>plugin.__testing.refreshState('s');
-function App(){const[open,setOpen]=React.useState(null);const[,update]=React.useState(0);window.repaint=()=>update(n=>n+1);
+const originalBlocks=[{kind:'text',text:'原始工作汇报，保留必要条件和风险。'}];
+const reportNode={key:'assistant:10',location:{kind:'step',turn:{status:'closed'}},data:{status:'settled',blocks:originalBlocks,finalNode:{seq:10,blocks:originalBlocks},step:1}};
+function OfficialReport({node}){React.useEffect(()=>{window.officialReportMounts=(window.officialReportMounts??0)+1;return()=>{window.officialReportUnmounts=(window.officialReportUnmounts??0)+1}},[]);
+ return h('p',{'data-preview-report':''},node.data.blocks.find(block=>block.kind==='text').text)}
+const officialDelegate={entry:{component:OfficialReport}};
+function App(){const[,update]=React.useState(0);window.repaint=()=>{update(n=>n+1);void plugin.__testing.refreshState('s')};
  return h(React.Fragment,null,h('header',null,h(plugin.__testing.SessionPersonaSwitch,{sessionId:'s'})),
-  h('article',null,h('h1',null,'一次汇报，一个明确的说话者'),h('p',{'data-preview-report':''},host.row.text),
-   h('button',{onClick:()=>setOpen('feedback')},'调整表达')),
-  open==='feedback'?h(plugin.__testing.ReportFeedback,{sessionId:'s',row:host.row,onClose:()=>setOpen(null)}):null)
+  h('article',null,h('h1',null,'一次汇报，一个明确的说话者'),h(plugin.__testing.PersonaStep,{delegate:officialDelegate,sessionId:'s',node:reportNode,renderFactorySlot:()=>null})))
 }
 createRoot(document.getElementById('app')).render(h(App));`;
 const bundle = buildSync({ stdin: { contents: entry, resolveDir: path.dirname(deps.resolve('react')) },
@@ -142,6 +146,12 @@ try {
   await page.keyboard.press('Escape'); assert.equal(await page.locator('dialog').count(), 0);
   assert.match(await page.evaluate(() => document.activeElement.textContent), /设置/);
   await page.getByRole('button', { name: '调整表达', exact: true }).click();
+  const beforeQuick=await page.evaluate(()=>window.conversationMock.posts.length);
+  await page.getByRole('button',{name:'短一点',exact:true}).click();
+  assert.match(await page.getByLabel('表达反馈').inputValue(),/短一点.*条件和风险/);
+  assert.equal(await page.evaluate(()=>window.conversationMock.posts.length),beforeQuick,'a shortcut only fills the request');
+  assert.equal(await page.getByLabel('表达反馈').evaluate(element=>element===document.activeElement),true);
+  assert.equal(await page.getByLabel('表达反馈').getAttribute('maxlength'),'240');
   await page.getByLabel('表达反馈').fill('少一点调侃，先给结论。');
   await close('调整这份汇报的表达'); await page.getByRole('button', { name: '调整表达', exact: true }).click();
   assert.equal(await page.getByLabel('表达反馈').inputValue(), '少一点调侃，先给结论。');
@@ -169,6 +179,38 @@ try {
   assert.equal(await page.getByRole('button', { name: '记住这条偏好', exact: true }).count(), 0);
   const focused = await page.evaluate(() => document.activeElement.closest('dialog') !== null);
   assert.equal(focused, true, 'focus stays inside modal');
+  await close('调整这份汇报的表达');
+  // The production PersonaStep must expose the action on a settled fallback, not just a ready rewrite.
+  await page.evaluate(async()=>{const h=window.conversationMock;h.row.status='failed';h.row.canRetry=true;h.row.version++;h.conversation.stateRev++;await window.refreshConversation()});
+  await visible('原始工作汇报，保留必要条件和风险。');
+  assert.equal(await page.getByRole('button',{name:'原文',exact:true}).count(),0,'plain fallback does not offer a meaningless comparison');
+  await page.getByRole('button',{name:'调整表达',exact:true}).click();await page.getByRole('button',{name:'先说结论',exact:true}).click();
+  await page.getByRole('button',{name:'重新转述',exact:true}).click();await visible('已按这次偏好重新转述。');
+  await visible('新的可读汇报。');await close('调整这份汇报的表达');
+  for(const [reason,note] of [['source-unavailable','这份旧汇报没有保存原始来源，暂时不能重新转述。'],['persona-not-found','这个人格已经被删除，请重新选择。'],['rewrite-disabled','当前转述已关闭，开启后可以重试。']]){
+    await page.evaluate(async reason=>{const h=window.conversationMock;h.row.status='skipped';h.row.version++;h.row.canRetry=false;h.row.retryUnavailableReason=reason;
+      h.sessionEnabled=reason!=='rewrite-disabled';h.conversation.stateRev++;await window.refreshConversation()},reason);
+    const beforeUnavailable=await page.evaluate(()=>window.conversationMock.posts.length);
+    await page.getByRole('button',{name:'调整表达',exact:true}).click();await visible(note);
+    await page.getByLabel('表达反馈').fill('这次短一点');assert.equal(await page.getByRole('button',{name:'重新转述',exact:true}).isDisabled(),true);
+    assert.equal(await page.evaluate(()=>window.conversationMock.posts.length),beforeUnavailable,'unavailable actions explain rather than dispatch');
+    await close('调整这份汇报的表达');
+  }
+  await page.evaluate(async()=>{const h=window.conversationMock;h.sessionEnabled=true;h.row.status='ready';h.row.canRetry=true;delete h.row.retryUnavailableReason;h.row.version++;h.conversation.stateRev++;await window.refreshConversation()});
+  for(const mutation of ['version','speaker']){
+    await page.getByRole('button',{name:'调整表达',exact:true}).click();await page.getByLabel('表达反馈').fill('目标变化时仍保留的表达草稿');
+    const beforeStale=await page.evaluate(()=>window.conversationMock.posts.length);
+    await page.evaluate(async mutation=>{const h=window.conversationMock;if(mutation==='version')h.row.version++;
+      else h.row.speaker={id:'Claude小姐',name:'Claude小姐',mode:'voice'};h.conversation.stateRev++;await window.refreshConversation()},mutation);
+    await visible('这份汇报的会话、版本或说话者已变化。输入已保留，请关闭后重新打开，核对目标再调整。');
+    assert.equal(await page.getByRole('button',{name:'重新转述',exact:true}).isDisabled(),true);
+    assert.equal(await page.getByLabel('表达反馈').inputValue(),'目标变化时仍保留的表达草稿');
+    assert.equal(await page.evaluate(()=>window.conversationMock.posts.length),beforeStale);
+    if(mutation==='speaker')await capture('feedback-stale-target-mobile',390,true);
+    await close('调整这份汇报的表达');
+  }
+  assert.equal(await page.evaluate(()=>window.officialReportMounts),1,'the delegated official body remains continuously mounted');
+  assert.equal(await page.evaluate(()=>window.officialReportUnmounts??0),0);
   assert.deepEqual(errors, []); assert.deepEqual(requests, []);
-  console.log(JSON.stringify({ ok: true, checks: ['late-opening-readiness', 'drafts', 'conflicts', 'relay-cancel', 'raw-report-preservation', 'retry', 'memory-controls-settings-only', 'late-response-draft', 'mobile', 'dark', 'focus', 'escape'], screenshots: values.output ?? null }));
+  console.log(JSON.stringify({ ok: true, checks: ['real PersonaStep action entry','settled fallback retry','shortcut fill without request','unavailable reason without dispatch','version and speaker target pinning','continuously mounted official delegate','late-opening-readiness', 'drafts', 'conflicts', 'relay-cancel', 'raw-report-preservation', 'retry', 'memory-controls-settings-only', 'late-response-draft', 'mobile', 'dark', 'focus', 'escape'], screenshots: values.output ?? null }));
 } finally { await browser.close(); }

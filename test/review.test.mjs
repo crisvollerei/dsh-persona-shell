@@ -256,8 +256,24 @@ test('client review gating binds both texts and reuses the saved score at new th
   const negatedReview = assess('可以删除备份。', negated);
   assert.ok(negatedReview.reasons.length > 0, 'the heuristic notices the negation');
   assert.equal(reviewNeeded({ status: 'ready', text: negated, review: negatedReview }, '可以删除备份。', { reviewThreshold: 1 }), false,
-    'a reason alone does not bypass the threshold');
+    'a count-only heuristic does not bypass the wording threshold');
   assert.equal(reviewNeeded({ status: 'ready', text: negated, review: negatedReview }, '可以删除备份。', { reviewThreshold: 0.01 }), true);
+});
+
+test('factual comparison hints bypass wording thresholds but still honor scope, hashes and the off switch',()=>{
+  const {reviewNeeded}=loadClient().module.__testing;
+  const original='本轮修改了2处配置，其他内容保持不变。',text=original.replace('2处','3处'),review=assess(original,text);
+  assert.ok(review.editScore<0.55);assert.ok(review.reasons.includes('quantity-change'));
+  const row={status:'ready',text,review};
+  assert.equal(reviewNeeded(row,original,{reviewThreshold:1}),true);
+  assert.equal(reviewNeeded(row,original,{reviewHints:false}),false);
+  assert.equal(reviewNeeded(row,original+'另一轮',{}),false);
+  assert.equal(reviewNeeded({...row,status:'pending'},original,{}),false);
+  assert.equal(reviewNeeded({...row,review:{...review,criticalReasons:['unknown']}},original,{}),false);
+  assert.equal(reviewNeeded({...row,review:{...review,reasons:[],criticalReasons:['negation-change']}},original,{}),false);
+  const before='尚未发布，检查通过。',after='已经发布，不过检查通过。',flipped=assess(before,after);
+  assert.ok(flipped.criticalReasons.includes('negation-change'));
+  assert.equal(reviewNeeded({status:'ready',text:after,review:flipped},before,{reviewThreshold:1}),true);
 });
 
 function interactionFixture(t) {

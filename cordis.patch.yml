@@ -13,7 +13,8 @@
         reasoningEffort: '' # 默认优先关闭思考，不支持时按模型能力兼容
         chatProvider: '' # 留空跟随转述模型
         chatModel: ''
-        chatThinking: false # 聊天室独立思考开关
+        chatThinking: true # 聊天室独立思考开关
+        chatReasoningEffort: '' # 留空使用模型默认思考强度
         maxRewriteChars: 6000
         maxRatio: 1.35
         timeoutMs: 45000

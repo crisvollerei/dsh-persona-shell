@@ -143,6 +143,59 @@ test('successful retry replaces only its row, increments version, and rejects st
   assert.equal((await feedback(f, { version: row.version })).status, 409);
   assert.equal(f.calls.length, 2);
 });
+
+test('a final report that fell back to its original can be restated once without changing memory or the source',async t=>{
+  const raw='修改尚未完成，测试仍有失败；需要用户确认之后才能继续。';
+  const f=fixture(t,{script:(_,n)=>output(n===1?'被截断且不能采用的改写':'尚未完成，测试未过；确认后才能继续。',n===1?'max-tokens':'stop')});
+  await f.ready();f.report('s',10,raw);f.event('s','turn/end',11,{reason:{kind:'completed'}});await flush();
+  const before=(await f.state()).rows[0];assert.equal(before.status,'skipped');assert.equal(before.final,true);assert.equal(before.canRetry,true);
+  const result=await feedback(f,{content:'短一点，但保留未完成、测试失败和确认条件'});
+  assert.equal(result.status,200);assert.equal(result.value.version,before.version+1);assert.equal(result.value.personaId,before.speaker.id);
+  const after=(await f.state()).rows[0];assert.equal(after.status,'ready');assert.equal(after.final,true);
+  assert.match(f.calls[1].messages[0].content[0].text,/修改尚未完成/);assert.doesNotMatch(f.calls[1].messages[0].content[0].text,/被截断且不能采用/);
+  assert.equal((await f.request('memory')).value.entries.length,0);
+  await f.dispose();assert.equal(f.tables.get('sessions').get('s')[0].original,raw);
+});
+
+test('failed restatement from a fallback retains its original status and version for another explicit retry',async t=>{
+  const f=fixture(t,{script:()=>output('未完整结束的文本','max-tokens')});await f.ready();f.report();
+  f.event('s','turn/end',11,{reason:{kind:'completed'}});await flush();const before=(await f.state()).rows[0];
+  assert.equal((await feedback(f)).status,422);const after=(await f.state()).rows[0];
+  assert.equal(after.status,before.status);assert.equal(after.text,before.text);assert.equal(after.version,before.version);
+  assert.equal(after.canRetry,true);assert.equal(after.retrying,false);assert.match(after.feedbackError,/保留/);
+});
+
+test('retry availability respects disabled rewriting and never fills missing cached sources from client input',async t=>{
+  const f=fixture(t);await f.ready();f.report();await flush();
+  await f.request('settings',{enabled:false});let row=(await f.state()).rows[0];
+  assert.equal(row.canRetry,false);assert.equal(row.retryUnavailableReason,'rewrite-disabled');
+  const count=f.calls.length;assert.equal((await feedback(f)).value.error,'rewrite-disabled');assert.equal(f.calls.length,count);
+  await f.request('settings',{enabled:true});await f.dispose();delete f.tables.get('sessions').get('s')[0].original;
+  const next=fixture(t,{tables:f.tables});await next.ready();row=(await next.state()).rows[0];
+  assert.equal(row.canRetry,false);assert.equal(row.retryUnavailableReason,'source-unavailable');
+  assert.equal((await feedback(next,{original:'伪造的客户端原文',text:'伪造的当前正文'})).value.error,'source-unavailable');
+  assert.equal(next.calls.length,0);
+});
+
+test('an unfinished initial rewrite has no retry capability and cannot dispatch another one-off request',async t=>{
+  let release;const gate=new Promise(r=>{release=r;});t.after(()=>release());
+  const f=fixture(t,{script:()=> (async function*(){await gate;yield*output();})()});await f.ready();f.report();await flush();
+  const row=(await f.state()).rows[0];assert.equal(row.status,'pending');assert.equal(row.canRetry,false);
+  assert.equal(row.retryUnavailableReason,'feedback-in-progress');assert.equal((await feedback(f)).status,409);assert.equal(f.calls.length,1);release();
+});
+
+test('a report containing only protected technical literals explains why expression adjustment is unavailable',async t=>{
+  const f=fixture(t);await f.ready();f.report('s',10,'`npm test`');f.event('s','turn/end',11,{reason:{kind:'completed'}});await flush();
+  const row=(await f.state()).rows[0];assert.equal(row.reason,'no-prose');assert.equal(row.canRetry,false);
+  assert.equal(row.retryUnavailableReason,'report-no-prose');assert.equal((await feedback(f)).value.error,'report-no-prose');assert.equal(f.calls.length,0);
+});
+
+test('successive one-off adjustments always use the same original instead of rewriting the preceding persona text',async t=>{
+  const f=fixture(t,{script:(_,n)=>output(['初稿表达。','再次表达。','调整后的表达。'][n-1])});await f.ready();f.report();await flush();
+  assert.equal((await feedback(f,{content:'短一点'})).status,200);assert.equal((await feedback(f,{content:'先说结论'})).status,200);
+  for(const call of f.calls.slice(1)){assert.match(call.messages[0].content[0].text,/保留原始事实/);assert.doesNotMatch(call.messages[0].content[0].text,/初稿表达|再次表达/);}
+  assert.equal((await f.request('memory')).value.entries.length,0);
+});
 test('historical persona feedback stays with its speaker after a session switch; session feedback is shared only in that session', async (t) => {
   const f = fixture(t); await f.ready(); f.report(); await flush();
   await choose(f, 's', 'Claude小姐');

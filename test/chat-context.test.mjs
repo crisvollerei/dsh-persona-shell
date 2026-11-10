@@ -13,6 +13,36 @@ function fixture() {
   return{context,adapter,calls,open,advance:ms=>{clock+=ms;}};
 }
 
+test('context selection exposes metadata only and an empty capture preserves its range without source reads',async()=>{
+  const f=fixture();await f.open();await f.context.attach('b');const key=f.context.key();f.calls.length=0;
+  f.context.event({id:'a'},{type:'user/message',seq:5});f.context.event({id:'b'},{type:'user/message',seq:5});
+  const catalog=f.context.selection(key);assert.deepEqual(catalog.sources.map(s=>s.id),['a','b']);
+  assert.doesNotMatch(JSON.stringify(catalog),/目标|限定条件|NEVER_COPY/);
+  await f.context.prepareCapture(key,{sourceIds:[]});assert.deepEqual(f.calls,[]);
+  assert.deepEqual(f.context.capture(key,{sourceIds:[]}),{key,primarySessionId:'a',sources:[],omitted:[]});
+  await assert.rejects(f.context.prepareCapture(key,{sourceIds:['unattached']}),/invalid-context-source/);
+  assert.throws(()=>f.context.capture(key,{sourceIds:['unattached']}),/invalid-context-source/);f.context.dispose();
+});
+
+test('selective freshness checks never spend an unrelated source budget or clear its stale cursor',async()=>{
+  const f=fixture();await f.open();await f.context.attach('b');const key=f.context.key();f.calls.length=0;
+  f.context.event({id:'a'},{type:'user/message',seq:5});f.context.event({id:'b'},{type:'user/message',seq:5});
+  f.adapter.source=async id=>{f.calls.push(id);return{cursor:5,goal:id+'_current',report:id+'_report'};};
+  await f.context.prepareCapture(key,{sourceIds:['b']});assert.deepEqual(f.calls,['b']);
+  assert.deepEqual(f.context.capture(key,{sourceIds:['b']}).sources.map(s=>s.sessionId),['b']);
+  assert.equal(f.context.capture(key).omitted.some(s=>s.name==='a'&&s.reason==='update-pending'),true);
+  f.context.detach('b');assert.throws(()=>f.context.selection(key),/chat-context-changed/);f.context.dispose();
+});
+
+test('an explicitly selected unavailable source can recover immediately without waiting for the polling interval',async()=>{
+  const f=fixture();f.adapter.source=async()=>{f.calls.push('unavailable');throw Error('offline');};
+  await f.open();const key=f.context.key();assert.equal(f.context.selection(key).sources[0].available,false);
+  f.adapter.source=async id=>{f.calls.push(id);return{cursor:6,goal:'恢复后的目标',report:'恢复后的原始汇报'};};
+  await f.context.prepareCapture(key,{sourceIds:['a']});
+  assert.deepEqual(f.calls.filter(id=>id!=='projects'),['unavailable','a']);
+  assert.equal(f.context.capture(key,{sourceIds:['a']}).sources[0].report,'恢复后的原始汇报');f.context.dispose();
+});
+
 test('no reads before opening; concurrent opens share one initialization and retain the first source',async()=>{
   const f=fixture();f.context.event({id:'a'},{type:'turn/end',seq:1});assert.deepEqual(f.calls,[]);
   f.context.presence('viewer',true,1);
@@ -67,9 +97,9 @@ test('a snapshot read before a new event cannot overwrite the send-time source, 
   const sending=f.context.prepareCapture(key); release({cursor:4,report:'旧目标的结果'}); await Promise.all([poll,sending]);
   assert.equal(reads,2);assert.equal(f.context.capture(key).sources[0].report,'新轮目标');
   f.context.event({id:'a'},{seq:11,type:'assistant/message'});
-  for(const result of [async()=>({cursor:10,report:'漏掉了最后条件'}),async()=>{throw Error('offline');}]){
+  for(const [result,reason] of [[async()=>({cursor:10,report:'漏掉了最后条件'}),'update-pending'],[async()=>{throw Error('offline');},'read-failed']]){
     f.adapter.source=result;await f.context.prepareCapture(key);const out=f.context.capture(key);
-    assert.deepEqual(out.sources,[]);assert.equal(out.omitted[0].reason,'update-pending');
+    assert.deepEqual(out.sources,[]);assert.equal(out.omitted[0].reason,reason);
     assert.doesNotMatch(JSON.stringify(out),/新轮目标|最后条件/);
   }
   f.adapter.source=async()=>({cursor:11,report:'已补齐条件'});await f.context.prepareCapture(key);
@@ -190,7 +220,7 @@ test('new work never inherits an earlier successful result, including during sta
   const interim=[...b,answer(8,8,'已开始准备 B')];
   source=await captured(interim);
   assert.deepEqual([source.report,source.reportSeq,source.reportStatus,source.turnStatus],['已开始准备 B',8,'progress','running']);
-  assert.equal(source.previousReport,undefined);
+  assert.deepEqual(source.previousReport,{turn:7,seq:3,text:'A 的检查通过'},'new progress does not erase the preceding final or claim it as this turn');
   const steering=[...interim,ask(9,'先检查 B 的回滚条件')];
   source=await captured(steering);
   assert.equal(source.goalSeq,9);assert.equal(source.report,'');assert.equal(source.reportStatus,'none');assert.doesNotMatch(JSON.stringify(source),/已开始准备 B/);
@@ -263,7 +293,7 @@ test('a previous report cannot crowd out another explicitly attached current sou
     :{name:'b',goal:'B',report:'r'.repeat(4000)};
   await f.open();await f.context.attach('b');
   const {sources}=f.context.capture(f.context.key());
-  assert.deepEqual(sources.map(s=>s.name),['a','b']);assert.equal(sources[0].previousReport,undefined);assert.equal(sources[0].previousReportOmitted,true);
+  assert.deepEqual(sources.map(s=>s.name),['a','b']);assert.equal(sources[0].previousReport.text,'');assert.equal(sources[0].previousReport.excerpt.coverage,'partial-unknown');assert.equal(sources[0].previousReportOmitted,true);
   f.context.detach('b');const capturedOne=f.context.capture(f.context.key()).sources[0];assert.equal(capturedOne.previousReport.text.length,4500);
   assert.doesNotMatch(JSON.stringify(capturedOne),/SECRET/);f.context.dispose();
 });

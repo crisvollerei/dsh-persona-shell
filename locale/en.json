@@ -18,7 +18,7 @@
     "reviewHint": "Rewrite change hint: view original",
     "reviewClose": "Close original preview",
     "reviewCloseShort": "Close",
-    "reviewNotice": "Local wording-change heuristic, not a factual verdict. A low score does not guarantee semantic equivalence.",
+    "reviewNotice": "Local wording and assertion hints, not a factual verdict. A low score does not guarantee semantic equivalence.",
     "reviewReasons": {
       "negation-change": "Negation wording changed",
       "condition-change": "Conditional wording changed",

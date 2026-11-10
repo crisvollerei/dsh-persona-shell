@@ -40,8 +40,11 @@ const seed = {
   settings: { enabled: true, includeToolSteps: true, processToolUsage: false,
     progressNotices: false, progressMinutes: 5, reviewHints: true, reviewThreshold: 0.55,
     subagentSteps: false, subagentReports: false, memory: true, memoryExtraction: false,
-    provider: '', model: '', presetName: presets[0].name, pack: presets[0].pack },
+    provider: '', model: '', chatThinking: true, chatReasoningEffort: '', presetName: presets[0].name, pack: presets[0].pack },
   presets, entries: [], settingsPosts: [], presetPosts: [], failSettings: false, failPreset: false, periods, usageReads: [],
+  userProfile:{instanceId:'settings-profile',revision:0,avatar:null,avatarMode:'account',userAddress:''},profilePosts:[],
+  settingsGetFailures:[503,403,401,'network'],settingsReads:0,
+  modelDirectoryReads:0,modelDirectoryFailure:true,modelListFailure:true,
 };
 const entry = [
   'import * as React from ' + JSON.stringify(deps.resolve('react')) + ';',
@@ -54,17 +57,19 @@ const entry = [
   'const reply=(body,ok=true)=>({ok,status:ok?200:503,json:async()=>structuredClone(body)});',
   'window.fetch=async(url,options)=>{const route=new URL(url,"https://example.invalid").pathname;',
   'if(route.endsWith("/model-usage")){const days=+new URL(url,"https://example.invalid").searchParams.get("days");host.usageReads.push(days);if(host.holdUsage===days)await new Promise(r=>host.resumeUsage=r);if(host.failUsage){host.failUsage=false;return reply({},false)}return reply(host.periods[days])}',
-  'if(route.endsWith("/settings")){if(options){const patch=JSON.parse(options.body);host.settingsPosts.push(patch);',
+  'if(route.endsWith("/settings")){if(options?.method==="POST"){const patch=JSON.parse(options.body);host.settingsPosts.push(patch);',
   'if(host.failSettings){host.failSettings=false;return reply({error:"storage-not-ready"},false)}',
   'Object.assign(host.settings,patch);if(patch.pack){let active=host.presets.find(p=>p.name===host.settings.presetName);',
   'if(active.builtin){active={id:"edited",name:active.name+" · 我的版本",builtin:false,pack:patch.pack};host.presets.push(active);host.settings.presetName=active.name}',
-  'else active.pack=patch.pack}}return reply(snapshot())}',
+  'else active.pack=patch.pack}}else{host.settingsReads++;if(host.settingsGetFailures.length){const code=host.settingsGetFailures.shift();if(code==="network")throw Error("PRIVATE_NETWORK_ERROR");return{ok:false,status:code,json:async()=>({})}}}return reply(snapshot())}',
   'if(route.endsWith("/presets")){if(options){const body=JSON.parse(options.body);host.presetPosts.push(body);',
   'if(host.failPreset){host.failPreset=false;return reply({error:"storage-not-ready"},false)}',
   'if(body.action==="generate")return reply({ok:true,preset:{name:"清风",identity:"自然、温和地转述工作进展",report:["先说结果"],samples:["这部分已经处理好了。"]}});',
   'if(body.action==="save"){host.presets.push({id:"generated",name:body.name,pack:body.pack,builtin:false});host.settings.pack=body.pack;host.settings.presetName=body.name}',
   'if(body.action==="apply"){const p=host.presets.find(p=>p.id===body.id);host.settings.pack=p.pack;host.settings.presetName=p.name}}return reply({ok:true,...snapshot()})}',
-  'if(route.endsWith("/models"))return reply({providers:[{provider:"local",name:"示例提供方"}],models:[{id:"rewrite-small",name:"示例转述模型"}]});',
+  'if(route.endsWith("/models")){const provider=new URL(url,"https://example.invalid").searchParams.get("provider");if(!provider){host.modelDirectoryReads++;if(host.modelDirectoryFailure){host.modelDirectoryFailure=false;return reply({providers:[],models:[],error:"models-unavailable"})}}else if(host.modelListFailure){host.modelListFailure=false;return reply({providers:[],models:[],error:"models-unavailable"})}return reply({providers:[{provider:"local",name:"示例提供方"}],models:[{id:"rewrite-small",name:"示例转述模型"}]})}',
+  'if(route.endsWith("/chat-model-options"))return reply({provider:host.settings.chatProvider||host.settings.provider,model:host.settings.chatModel||host.settings.model,status:"available",efforts:[{id:"off",name:"关闭"},{id:"low",name:"低"},{id:"high",name:"高"}],defaultEffort:"high"});',
+  'if(route.endsWith("/chat-profile")){if(options?.method==="POST"){const patch=JSON.parse(options.body);host.profilePosts.push(patch);if(patch.revision!==host.userProfile.revision)return{ok:false,status:409,json:async()=>({error:"profile-conflict",state:structuredClone(host.userProfile)})};Object.assign(host.userProfile,patch,{revision:host.userProfile.revision+1})}return reply(host.userProfile)}',
   'if(route.endsWith("/memory")){if(options){const b=JSON.parse(options.body);if(b.action==="add")host.entries.push({...b.entry,id:"memory1",status:"active",origin:"manual",version:1,expiresAt:null,evidence:[]})}',
   'return reply({entries:host.entries,activePersonaId:host.presets.find(p=>p.name===host.settings.presetName).id,activePresetName:host.settings.presetName,sessionId:"main",extraction:{pending:0,status:"idle"}})}',
   'return reply({})};',
@@ -94,7 +99,15 @@ try {
     + '@media(max-width:600px){body{padding:16px}}'
     + '</style></head><body><main id="app"></main></body></html>');
   await page.addScriptTag({ content: bundle });
+  for(const message of ['暂时无法读取设置，请重试。','设置未能读取。请重新连接 DSH 后重试。','设置未能读取。请重新连接 DSH 后重试。','暂时无法读取设置，请重试。']){
+    await page.getByText(message,{exact:true}).waitFor();
+    assert.deepEqual(await page.evaluate(()=>window.settingsMock.settingsPosts),[],'a read retry never resends a settings write');
+    assert.equal(await page.evaluate(()=>window.settingsMock.modelDirectoryReads),0,'provider discovery waits until authenticated settings are available');
+    await page.getByRole('button',{name:'重新读取设置',exact:true}).click();
+  }
   await page.locator('.dsh-persona-preset[data-active="true"]').waitFor();
+  assert.equal(await page.evaluate(()=>window.settingsMock.settingsReads),5);
+  assert.doesNotMatch(await page.locator('body').innerText(),/PRIVATE_NETWORK_ERROR/);
   assert.equal(await page.locator('textarea:visible').count(), 0, 'the first view does not expose editors');
   assert.equal(await page.locator('input[type="number"]:visible').count(), 0, 'quiet timing stays hidden while disabled');
   assert.equal(await page.getByRole('tabpanel').count(), 1, 'one category is visible at a time');
@@ -151,7 +164,18 @@ try {
   const fold = (id) => page.locator('[data-settings-fold="' + id + '"]');
   const tab = (label) => page.getByRole('tab', { name: label, exact: true }).click();
   await tab('转述');
+  const colloquial = page.getByRole('checkbox', { name: '口语化转述', exact: true });
+  assert.equal(await colloquial.isChecked(), true, 'missing stored values use the enabled default');
+  const colloquialHint = await colloquial.getAttribute('aria-describedby');
+  assert.equal(await page.locator('[id="' + colloquialHint + '"]').textContent(), '把书面说明讲得顺口一些，事实、条件和风险完整保留。关闭后更贴近原文句式。');
+  await colloquial.uncheck(); await page.waitForFunction(() => window.settingsMock.settings.colloquialReports === false);
+  await tab('人格'); await tab('转述'); assert.equal(await colloquial.isChecked(), false, 'the saved choice survives category changes');
+  await page.evaluate(() => { window.settingsMock.failSettings = true; }); await colloquial.click();
+  await page.locator('.dsh-persona-save-state').filter({ hasText: '保存失败' }).waitFor();
+  assert.equal(await colloquial.isChecked(), false, 'failed save does not pretend the option was enabled');
+  await colloquial.check(); await page.waitForFunction(() => window.settingsMock.settings.colloquialReports === true);
   await capture('settings-rewrite', 1100, 'light');
+  await capture('settings-rewrite-mobile', 390, 'light'); await capture('settings-rewrite-dark', 1100, 'dark');
   await page.getByRole('checkbox', { name: '静默状态播报', exact: true }).check();
   const minutes = page.getByRole('spinbutton');
   await minutes.waitFor();
@@ -197,16 +221,26 @@ try {
   await page.getByRole('tab', { name: '人格', exact: true }).focus();
   await page.keyboard.press('End');
   assert.equal(await page.getByRole('tab', { name: '高级', exact: true }).getAttribute('aria-selected'), 'true');
+  const advancedModels=page.getByRole('region',{name:'高级设置',exact:true});
+  await advancedModels.getByText('模型提供方列表暂时无法读取，已保存选择仍保留。',{exact:true}).waitFor();
+  await advancedModels.getByRole('button',{name:'重新读取模型目录',exact:true}).click();
+  await page.getByRole('combobox',{name:'改写所用模型',exact:true}).locator('option[value="local"]').waitFor({state:'attached'});
   await page.getByRole('combobox', { name: '改写所用模型', exact: true }).selectOption('local');
+  await advancedModels.getByText('模型列表暂时无法读取，已保存选择仍保留。',{exact:true}).waitFor();
+  await advancedModels.getByRole('button',{name:'重新读取模型目录',exact:true}).click();
+  await page.getByRole('combobox',{name:'模型',exact:true}).locator('option[value="rewrite-small"]').waitFor({state:'attached'});
   await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('rewrite-small');
   await page.waitForFunction(() => window.settingsMock.settings.model === 'rewrite-small');
   await tab('聊天室');
   assert.equal(await page.getByRole('combobox',{name:'聊天室模型',exact:true}).inputValue(),'');
-  assert.equal(await page.getByRole('checkbox',{name:'开启聊天室思考',exact:true}).isChecked(),false);
+  assert.equal(await page.getByRole('checkbox',{name:'开启聊天室思考',exact:true}).isChecked(),true);
+  assert.equal(await page.getByRole('combobox',{name:'聊天室思考强度',exact:true}).inputValue(),'');
   await page.getByRole('combobox',{name:'聊天室模型',exact:true}).selectOption('local');
   await page.getByRole('combobox',{name:'聊天室模型名称',exact:true}).selectOption('rewrite-small');
   await page.getByRole('checkbox',{name:'开启聊天室思考',exact:true}).check();
+  await page.getByRole('combobox',{name:'聊天室思考强度',exact:true}).selectOption('high');
   await page.waitForFunction(()=>window.settingsMock.settings.chatThinking===true&&window.settingsMock.settings.chatModel==='rewrite-small');
+  await page.waitForFunction(()=>window.settingsMock.settings.chatReasoningEffort==='high');
   assert.equal(await page.evaluate(()=>window.settingsMock.settings.provider),'local');
   await capture('settings-chat-model',1100,'light');await capture('settings-chat-model-mobile',390,'light');await capture('settings-chat-model-dark',1100,'dark');
   await tab('记忆');
@@ -219,6 +253,10 @@ try {
   await capture('settings-memory-open', 1100, 'light');
   await capture('settings-memory-mobile', 390, 'light');
   await tab('外观');
+  await page.getByRole('textbox',{name:'角色怎么称呼你',exact:true}).fill('小晴');
+  assert.equal(await page.evaluate(()=>window.settingsMock.profilePosts.length),0,'editing an optional address waits for explicit save');
+  await page.getByRole('button',{name:'保存称呼',exact:true}).click();
+  await page.waitForFunction(()=>window.settingsMock.userProfile.userAddress==='小晴');
   await capture('settings-appearance', 1100, 'light');
   assert.equal(await page.getByRole('checkbox', { name: '启用角色消息区（默认关闭）', exact: true }).count(), 0);
   assert.equal(await page.locator('.dsh-persona-preset[data-preset-id="generated"] .dsh-persona-preset-avatar').count(), 0, 'presets without a supplied avatar stay as text cards');
@@ -261,7 +299,7 @@ try {
   assert.equal(await usage.locator('.mu-bars i').count(), 30);
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
   console.log(JSON.stringify({ result: 'passed', initialHeight, defaultVisibleEditors: 0,
-    cases: ['progressive disclosure', 'failed save retains hidden draft', 'generated preset retry',
+    cases: ['initial settings 503/auth/network failures and explicit read retry', 'provider discovery waits for authenticated settings', '200 metadata error and manual catalogue/list retry', 'progressive disclosure', 'colloquial report default, autosave and retry', 'failed save retains hidden draft', 'generated preset retry',
       'conditional quiet timing', 'narration relationship', 'default report scope', 'keyboard disclosure', 'model selection', 'memory draft retention', 'no message gate', 'desktop/mobile themes',
       'lazy usage statistics', 'usage coverage and model details', 'empty, stale and failed usage queries'],
     pageErrors: errors, externalRequests: external }));

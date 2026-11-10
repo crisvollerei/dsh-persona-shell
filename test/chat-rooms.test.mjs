@@ -43,7 +43,7 @@ test('recipient changes retain one shared timeline and cannot relabel pending or
 test('room edits retain historical speakers, reject stale saves and validate the member limit',async()=>{
   const chat=createPersonaChat(),room=await create(chat),first=await send(chat,room);await finish(chat,first);
   const changed=await chat.update({roomId:room.id,revision:2,epoch:0,name:'新标题',memberIds:['dragon']});
-  assert.equal(changed.targetPersonaId,'dragon');assert.equal(changed.turns[0].recipientId,'whale');
+  assert.equal(changed.targetPersonaId,null);assert.deepEqual(changed.targetPersonaIds,[]);assert.equal(changed.turns[0].recipientId,'whale');
   await assert.rejects(chat.update({roomId:room.id,revision:2,name:'迟到的标题'}),/conflict/);
   await assert.rejects(chat.update({roomId:room.id,revision:3,memberIds:[]}),/invalid-chat-members/);
   await assert.rejects(chat.update({roomId:room.id,revision:3,targetPersonaId:'whale'}),/not-member/);
@@ -79,8 +79,9 @@ test('multi-recipient sends are atomic, idempotent and retain one immutable user
   await chat.update({roomId:room.id,configRevision:1,epoch:0,targetPersonaIds:['dragon']});
   assert.equal((await chat.send(body)).created,false,'a lost acknowledgement cannot repeat either call after the selection changes');
   await assert.rejects(chat.send({...body,recipients:[{id:'whale',name:'鲸'}]}),/id-conflict/);
-  await assert.rejects(chat.update({roomId:room.id,configRevision:2,epoch:0,targetPersonaIds:[]}),/not-member/);
-  await assert.rejects(chat.update({roomId:room.id,configRevision:2,epoch:0,targetPersonaIds:['dragon','dragon']}),/not-member/);
+  const broadcast=await chat.update({roomId:room.id,configRevision:2,epoch:0,targetPersonaIds:[]});
+  assert.equal(broadcast.targetPersonaId,null);assert.deepEqual(broadcast.targetPersonaIds,[]);
+  await assert.rejects(chat.update({roomId:room.id,configRevision:3,epoch:0,targetPersonaIds:['dragon','dragon']}),/not-member/);
 });
 
 test('retrying an earlier member refreshes its dependent tail and cancelling a batch retires pending results',async()=>{

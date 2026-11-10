@@ -1,3 +1,4 @@
+import {readChatInput} from './helpers/chat-input.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -157,7 +158,7 @@ test('a personal-only nickname never reaches another reporter, including after r
 
 test('background extraction consumes exact quoted evidence and stores only candidates', async (t) => {
   const f = fixture(t, { config: { memoryExtraction: true }, script(options) {
-    const source = JSON.parse(options.messages[0].content[0].text).sources[0];
+    const source = readChatInput(options).sources[0];
     return chunks(JSON.stringify({ entries: [{ kind: 'preference', scope: 'persona',
       content: '喜欢先看结论', evidence: [{ eventId: source.id, quote: source.text }] }] }));
   } });
@@ -178,7 +179,7 @@ test('clear cancels a blocked stream and prevents late extraction results and pe
   const gate = new Promise((resolve) => { release = resolve; });
   const began = new Promise((resolve) => { started = resolve; });
   const f = fixture(t, { config: { memoryExtraction: true }, script(options) {
-    const source = JSON.parse(options.messages[0].content[0].text).sources[0];
+    const source = readChatInput(options).sources[0];
     return (async function* () {
       started(options.signal); await gate;
       yield* chunks(JSON.stringify({ entries: [{ kind: 'preference', scope: 'persona',

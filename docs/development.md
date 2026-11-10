@@ -45,9 +45,12 @@ node scripts/build-client-sync.mjs --check
 - `official-renderer.mjs`、`review-browser.mjs`、`comparison-browser.mjs`、`progress-runtime.mjs`：官方渲染、布局和播报生命周期的独立回归；具体依赖参数见各脚本开头。
 - `memory-browser.mjs --deps <React/esbuild 依赖目录/package.json> --browser-deps <Playwright 依赖目录/package.json>`：运行真实 React 和实际记忆状态模块，检查原话核对、更正、撤销、采用、失败重试、角色隔离与键盘、深浅色及手机布局；不调用外部模型，可通过 `--executable` 指定浏览器。
 - `settings-browser.mjs`：沿用上述依赖参数检查完整设置页的默认折叠、草稿保留、生成预设重试、键盘展开、模型选择及深浅色/窄屏布局；使用本地模拟 Host，不调用模型。
-- `expression-runtime.mjs --deps <SDK 依赖目录/package.json>`：使用正式发布的 LLM SDK 与本地适配器，检查默认关闭思考、强制思考最低档、显式强度和单次参数降级；不请求真实模型。
+- `expression-runtime.mjs --deps <SDK 依赖目录/package.json>`：使用正式发布的 LLM SDK 与本地适配器，检查汇报默认关闭、聊天室的模型默认与自定义思考档、未知能力、准备后配置一致性和单次参数降级；不请求真实模型。
 - `conversations-browser.mjs`：同样使用本地模拟 Host 和真实 React，检查会话选择冲突、接力取消、逐条反馈、关闭保留草稿、迟到响应、键盘焦点及深浅色/窄屏布局。
+- `report-visualization-browser.mjs`：沿用 React/esbuild 与 Playwright 参数，检查完整原文、导览定位与临时侧标清理、重点阅读的展开与还原、顺畅阅读的主动生成与逐段原文核对、风险和相关上下文保留、原有代码样式、取消、独立缓存、双入口排列与深浅色/窄屏布局；模型使用受控替身。
+- `report-theme-browser.mjs`：沿用相同参数，检查阅读主题、原生明暗标记、本机偏好恢复、混合外观下的文字和代码可读性，以及切换时的阅读状态保留；不调用模型。
 - `chat-rooms-browser.mjs`（`persona-chat-browser.mjs` 保留为同一套检查的入口）：沿用 React/esbuild 与 Playwright 参数，连接实际插件 Host、本地存储和确定性模型替身，检查房间与发言目标、历史署名、缩略图与组合头像、房间草稿和来源隔离、生成中换人与移除、失败保存重试、候选只填入不发送及深浅色/窄屏布局；不请求外部模型。
+- `chat-opening-browser.mjs`：沿用相同依赖参数，逐帧检查聊天室载入、重开、最小化还原与阅读页切换的显示连续性，以及草稿、选区和放大尺寸保留；不请求外部模型。
 
 `/persona-shell/ping` 的 `stateSync` 只公开流的数量统计与客户端状态枚举，供存活与连接排查。官方参考：[API Gateway](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/api-gateway.zh.md) · [添加 Remote API](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-remote-api.zh.md)。
 
@@ -73,6 +76,7 @@ lib/
   expression-memory.js 各发言渠道共享的表达偏好约束
   memory-usage.js     有界的请求使用记录，仅保留引用、排除原因与发送状态
   pack.js             人格卡归一化与默认人格
+  persona-expression.js 可信内置人格的聊天/汇报运行时表达视图
   preset.js           从人设提示词提取人格卡
   memory.js           旧版统计与本地语气纠正识别
   structured-memory.js 记忆条目、来源、范围、版本、候选与接力记录
@@ -80,15 +84,31 @@ lib/
   conversations.js    会话选择、版本检查、接力消费与串行持久化
   persona-chat.js     独立角色聊天、去重、重试、取消与有界持久化
   chat-prompt.js      仅使用本窗上下文的角色聊天提示与短消息协议
+  chat-messages.js    当前人格视角的实际消息历史、原话指针与独立控制资料
+  chat-palette.js     本地头像取色、近似色区分与浅深主题共用的气泡色
+  chat-turn-plan.js   旧版计划协议与历史兼容校验
+  chat-director.js    公共时间线上的统一判断、单席回应与原话依据
+  chat-director-wire.js 绑定快照的有限选项协议与来源、原话位置解析
+  model-route.js      显式设置、会话元数据与宿主全局默认模型回退
+  chat-scheduler.js   每人格独立冷却、在途令牌与公开消息收件游标
+  chat-input-queue.js 原始分段输入的持久化运输、回执去重与显式恢复
+  chat-time.js        当前聊天轮次的时区校验、时间换算与只读提示上下文
   reply-suggestions.js 用户快捷回复候选提示与严格解析，不写入聊天
   avatar.js           本地头像格式与版本地址，和模型语气卡分开
-  chat-profile.js     用户头像的独立版本记录、并发校验与串行持久化
+  chat-profile.js     用户头像与可选称呼的独立版本记录、并发校验与串行持久化
   config.js           默认配置与 Standard Schema
   store.js            结果、预设与风格记忆的存储
   remote-contract.js  Host/Client 共享的严格 Remote 边界
   state-stream.js     Host 快照、增量与合并通知
   client-transport.js 官方流监督、订阅引用计数、兼容回退与续租
-scripts/              共享状态实现的浏览器嵌入与一致性检查
+  report-visualization.js 完整原文快照与独立阅读协议
+  report-emphasis.js  原句标注、段落分类提示与原文核对
+  report-reading.js   原文导览与保守折叠计划，Host/Client 共用
+  report-theme.js     阅读页主题色与对比度适配，浏览器副本由脚本生成
+  report-views.js     最终报告的独立快照与有界阅读缓存
+  report-readable.js  按原段落润色的独立阅读稿与可疑段落原文保留
+  report-fidelity.js  数值、显式工作者称呼与少量许可语气的本地守卫
+scripts/              共享状态与阅读规则的浏览器嵌入和一致性检查
 locale/               中文与英文插件文案
 assets/avatars/       随插件提供的内置人格头像及来源说明
 test/                 离线与可选集成测试

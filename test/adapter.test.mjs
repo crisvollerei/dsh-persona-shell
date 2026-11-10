@@ -26,6 +26,11 @@ function hooks() {
         if (!Object.is(next, cells[index])) { cells[index] = next; dirty = true; }
       }];
     },
+    useRef(initial) {
+      const index=cursor++;
+      if(!(index in cells))cells[index]={current:initial};
+      return cells[index];
+    },
     useEffect(effect, deps) {
       const index = cursor++;
       const old = cells[index];
@@ -122,7 +127,7 @@ test('a real running node without finalNode keeps its identity after settlement'
   const running = nodeOf(undefined, 'running');
   assert.equal(running.data.finalNode, undefined);
   app.render(running);
-  assert.equal(first(app.render(nodeOf())).props.node.data.blocks[0].text, '…');
+  assert.equal(first(app.render(nodeOf())).props.node.data.blocks[0].text, 'original report');
 });
 
 test('a restarted Host can replace a larger old revision, but the retired instance cannot return', async (t) => {
@@ -299,13 +304,19 @@ test('a known history row without a rewrite falls back to the official report', 
     'a known history row with no row record is not a live pending step');
 });
 
-test('a live settled step with no state row starts with a placeholder', async (t) => {
+test('a live original stays readable across settlement, pending partials and the final rewrite', async (t) => {
   const app = await mount(t, { host: { rev: 1, rows: [] } });
   app.render(nodeOf(undefined, 'running', 7));
   await app.refresh();
   const tree = app.render(nodeOf(undefined, 'settled', 7));
-  assert.equal(first(tree).props.node.data.blocks[0].text, '…',
-    'a running step remembered as live is not treated as historical');
+  assert.equal(first(tree).props.node.data.blocks[0].text, 'original report',
+    'settlement must not erase an original already shown while running');
+  app.state.rows = [{ seq:7, status:'pending', text:'', partial:'half a rewrite' }];
+  await app.refresh();
+  assert.equal(first(app.renderer.render()).props.node.data.blocks[0].text, 'original report');
+  app.state.rows = [{ seq:7, status:'ready', text:'complete rewrite', final:true }];
+  await app.refresh();
+  assert.equal(first(app.renderer.render()).props.node.data.blocks[0].text, 'complete rewrite');
 });
 
 test('storage-switch loading uses a placeholder until the switch map is ready', async (t) => {
@@ -377,6 +388,44 @@ test('comparison snapshots preserve exact text and never leak into a different o
   tree = app.renderer.render();
   assert.equal(comparisonOf(tree).props.persona, 'updated persona');
   assert.equal(comparisonOf(app.render(nodeOf(undefined, 'settled', 8))), undefined);
+});
+
+test('settled failed and skipped reports expose adjustment beside the unchanged official original', async (t) => {
+  for(const status of ['failed','skipped']){
+    const app=await mount(t,{host:{rev:1,rows:[{seq:7,version:1,status,final:true,canRetry:true,speaker:{id:'fish',name:'大肥鱼'}}]}});
+    await app.refresh();let tree=app.render(nodeOf());
+    assert.equal(first(tree).props.node.data.blocks[0].text,'original report');
+    const controls=all(tree).find(element=>element.props?.['data-persona-shell']==='controls');
+    assert.ok(controls);assert.ok(all(controls).some(element=>element.children.includes('原始汇报')));
+    const buttons=all(controls).filter(element=>element.type==='button');
+    assert.deepEqual(buttons.map(button=>button.children[0]),['调整表达','可视化']);
+    buttons[0].props.onClick();tree=app.renderer.render();
+    const feedback=all(tree).find(element=>element.type===app.module.__testing.ReportFeedback);
+    assert.equal(feedback.props.row.status,status);assert.equal(feedback.props.row.canRetry,true);
+  }
+});
+
+test('unfinished rows have no adjustment entry and disabled rewriting exposes an explanation without pretending it can retry', async (t) => {
+  const app=await mount(t,{host:{rev:1,rows:[{seq:7,version:1,status:'pending',final:true,canRetry:false,speaker:{id:'fish',name:'大肥鱼'}}]}});
+  await app.refresh();assert.equal(all(app.render(nodeOf())).some(element=>element.children?.includes('调整表达')),false);
+  Object.assign(app.state.rows[0],{status:'ready',final:false,text:'process text'});await app.refresh();
+  assert.equal(all(app.renderer.render()).some(element=>element.children?.includes('调整表达')),false);
+  Object.assign(app.state.rows[0],{status:'ready',final:true,text:'persona report',canRetry:true});app.state.settings={enabled:false};await app.refresh();
+  let tree=app.renderer.render();assert.equal(first(tree).props.node.data.blocks[0].text,'original report');
+  all(tree).find(element=>element.type==='button'&&element.children.includes('调整表达')).props.onClick();tree=app.renderer.render();
+  const feedback=all(tree).find(element=>element.type===app.module.__testing.ReportFeedback);
+  assert.equal(feedback.props.row.canRetry,false);assert.equal(feedback.props.row.retryUnavailableReason,'rewrite-disabled');
+});
+
+test('an open feedback form cannot retarget a same-version report into another session', async (t) => {
+  const app=await mount(t);const row={seq:7,version:1,status:'ready',final:true,canRetry:true,speaker:{id:'fish',name:'大肥鱼'}};
+  let tree=app.renderer.render(app.module.__testing.ReportFeedback,{sessionId:'s1',row,onClose(){}});
+  all(tree).find(element=>element.type==='textarea').props.onChange({target:{value:'这次短一点'}});
+  tree=app.renderer.render(app.module.__testing.ReportFeedback,{sessionId:'s2',row,onClose(){}});
+  const submit=all(tree).find(element=>element.type==='button'&&element.children.includes('重新转述'));
+  assert.equal(submit.props.disabled,true);assert.equal(all(tree).find(element=>element.type==='textarea').props.value,'这次短一点');
+  assert.ok(all(tree).some(element=>element.children.includes('这份汇报的会话、版本或说话者已变化。输入已保留，请关闭后重新打开，核对目标再调整。')));
+  await submit.props.onClick();assert.equal(app.requests.some(request=>request.url.endsWith('/feedback')),false);
 });
 
 test('a missing registry face or unsupported host keeps the official entry', async (t) => {

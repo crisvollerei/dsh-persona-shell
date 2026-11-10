@@ -18,7 +18,7 @@
     "reviewHint": "改写变化提示，查看原文",
     "reviewClose": "关闭原文预览",
     "reviewCloseShort": "关闭",
-    "reviewNotice": "本地措辞变化提示，不代表事实错误；低分也不保证语义一致。",
+    "reviewNotice": "本地表达对照提示，不代表事实错误；低分也不保证语义一致。",
     "reviewReasons": {
       "negation-change": "否定表达变化",
       "condition-change": "条件表达变化",

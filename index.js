@@ -34,22 +34,40 @@ import { runProcessRewrite, validateProcessNote } from './lib/process-rewrite.js
 import { createStructuredMemory } from './lib/structured-memory.js';
 import { buildMemoryPrompt, createMemoryConsolidator } from './lib/memory-consolidation.js';
 import { createConversations } from './lib/conversations.js';
-import { createExpressionLlm } from './lib/expression-llm.js';
+import { createExpressionLlm,reasoningOptions } from './lib/expression-llm.js';
 import { createModelUsage } from './lib/model-usage.js';
 import { createMemoryUsage } from './lib/memory-usage.js';
-import { CHAT_LIMITS, createPersonaChat, parseChatResponse, chatFailure } from './lib/persona-chat.js';
+import { CHAT_LIMITS, createPersonaChat, parseChatDecision, chatFailure, primaryChatTurn } from './lib/persona-chat.js';
 import { buildChatPrompt, publicChatExchange } from './lib/chat-prompt.js';
-import { buildParticipationPrompt, parseParticipation } from './lib/chat-participation.js';
+import { createChatTimeContext } from './lib/chat-time.js';
+import { createModelRouteResolver } from './lib/model-route.js';
+import { createChatInputQueue } from './lib/chat-input-queue.js';
+import { createChatScheduler, chatSchedulerEventKey } from './lib/chat-scheduler.js';
+import { contextSelectionFallback, explicitContextSelection } from './lib/chat-coordinator.js';
+import { directorEvents,possiblePeerCall } from './lib/chat-director.js';
+import { buildDirectorRequest,parseDirectorResponse } from './lib/chat-director-wire.js';
+import { normalizeChatContribution } from './lib/chat-contribution.js';
+import { buildChatSceneCatalog,selectChatScene,projectChatScene } from './lib/chat-scene.js';
 import { roomCharacterContext } from './lib/character-roster.js';
 import { buildReplySuggestions, parseReplySuggestions } from './lib/reply-suggestions.js';
 import { builtinAvatar, normalizeAvatar, restoreAvatar, avatarUrl, avatarContent, avatarVersion } from './lib/avatar.js';
 import { createChatProfile } from './lib/chat-profile.js';
 import { createChatContext } from './lib/chat-context.js';
+import { createChatReferenceUsage } from './lib/chat-reference-usage.js';
+import { quoteKey,resolveChatQuote } from './lib/chat-quote.js';
+import { discussionView, discussionContext, chatAssignment } from './lib/chat-discussion.js';
+import { prepareWorkDraft, buildWorkDraftPrompt, parseWorkDraft } from './lib/chat-work-draft.js';
 import { userInput } from './lib/user-text.js';
 import { sourceOutputUsable } from './lib/source-report.js';
 import { createChatSourceAdapter } from './lib/chat-source.js';
 import { createChatLive, partialChatReply } from './lib/chat-live.js';
 import { readFile } from 'node:fs/promises';
+import { createReportViews, reportViewIssue } from './lib/report-views.js';
+import { buildReportVisualizationPrompt, validateReportVisualization } from './lib/report-visualization.js';
+import { buildReportEmphasisPrompt, validateReportEmphasis } from './lib/report-emphasis.js';
+import { createReportReadingPlan } from './lib/report-reading.js';
+import { checkReportFidelity } from './lib/report-fidelity.js';
+import { buildReportReadablePrompt, parseReportReadable, REPORT_READABLE_LIMITS } from './lib/report-readable.js';
 
 /** Cordis plugin name. */
 export const name = 'persona-shell';
@@ -76,7 +94,10 @@ const MAX_SESSION_SWITCHES = 500;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 2026110724;
+const HOST_BUILD = 2026111016;
+const DIRECTOR_REASONS = new Set(['wire-type','wire-size','control','json','duplicate-key','shape','choice','goal','contribution','actor','event','evidence',
+  'stale-event','author','normal-ineligible','peer-ineligible','peer-call','non-stop','tool-call','too-long','scene']);
+const DIRECTOR_FINISHES = new Set(['stop','max-tokens','tool-calls','error','aborted']);
 
 /**
  * How often a streaming rewrite may publish a new partial revision.
@@ -146,7 +167,7 @@ export { Config };
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {any} config
  */
-export function apply(ctx, rawConfig) {
+export function apply(ctx, rawConfig, runtime = {}) {
   const instanceId = randomUUID();
   const cfg = resolveConfig(rawConfig);
   const warn = (message, error) => {
@@ -223,6 +244,7 @@ export function apply(ctx, rawConfig) {
     enabled: true,
     /** Whether narration from tool-calling steps is rewritten too. */
     includeToolSteps: cfg.includeToolSteps,
+    colloquialReports: cfg.colloquialReports,
     trigger: cfg.trigger,
     processToolUsage: cfg.processToolUsage,
     /** Whether accumulated reader observations reach the prompt at all. */
@@ -242,6 +264,10 @@ export function apply(ctx, rawConfig) {
     model: cfg.model ?? '',
     reasoningEffort: cfg.reasoningEffort ?? '',
     chatProvider: cfg.chatProvider ?? '', chatModel: cfg.chatModel ?? '', chatThinking: cfg.chatThinking === true,
+    chatReasoningEffort: cfg.chatReasoningEffort ?? '',
+    visualizationProvider: cfg.visualizationProvider, visualizationModel: cfg.visualizationModel,
+    visualizationThinking: cfg.visualizationThinking,
+    readableThinking: cfg.readableThinking,
   };
 
   /**
@@ -315,15 +341,32 @@ export function apply(ctx, rawConfig) {
   const activeRewritePersonas = new Map();
   const activeProcessRewrites = new Map();
   const activeExtractions = new Set();
+  const activeModelMetadata = new Set();
   const modelTasks = new Set();
+  const activeReportViews = new Map(), reportViewRequests = new Map(), cancelledReportViews = new Set();
+  const reportViews = createReportViews({ store: () => store, changed: id => touch(id),
+    warn: error => warn('report view persistence failed', error) });
   const activeChats = new Map();
   const chatJobsFor = roomId => [...activeChats.values()].filter(job=>job.roomId===roomId);
   const chatJobKey = (roomId,attemptId) => JSON.stringify([roomId,attemptId]);
   const chatLive = createChatLive();
   const chatStreamControllers = new Set();
   const activeSuggestions = new Map();
+  const activeWorkDrafts = new Map(), workDraftRequests = new Map(), cancelledWorkDrafts = new Set();
   const chatStarting = new Set();
   const chatRounds = new Map();
+  const chatDirectorFailures=new Map();
+  const chatDirectorClocks=new Map();
+  // Timing is injectable for controlled Host tests; the shipped runtime always
+  // uses five seconds. It is deliberately not a user/model configuration field.
+  const chatIntervalMs = Number.isSafeInteger(runtime?.chatIntervalMs) && runtime.chatIntervalMs >= 0 ? runtime.chatIntervalMs : 5000;
+  const chatScheduler=createChatScheduler({intervalMs:chatIntervalMs});
+  const chatInputs = createChatInputQueue({ intervalMs:0, persist:async value=>{
+    if(!store||storeClosing||!settingsRestored)throw Error('storage-not-ready');
+    await store.putChatInputQueue(value);
+  }});
+  const chatInputTimers=new Map(),chatInputDraining=new Set(),chatInputBindings=new Map();
+  let chatInputRestore=Promise.resolve(),chatInputReady=false;
   const chats = createPersonaChat({ persist: async (snapshot) => {
     if (!store || storeClosing || !settingsRestored) throw new Error('storage-not-ready');
     await store.putPersonaChats(snapshot);
@@ -338,16 +381,49 @@ export function apply(ctx, rawConfig) {
     return roomContexts.get(roomId);
   }
   const roomScopeKey = room => room ? room.id+':sources:'+(room.sourceVersion??0) : null;
-  function capturedRoomContext(roomId,key){
+  function capturedRoomContext(roomId,key,options){
     const source=contextForRoom(roomId);if(!source||!key)throw Error('context-not-open');
-    const value=source.capture(key),selection=source.snapshot(),room=chats.read(roomId);
-    if(JSON.stringify(room.sources)!==JSON.stringify(selection.sources.map(s=>s.sessionId))||room.primarySessionId!==selection.primarySessionId)throw Error('chat-context-unsaved');
-    return {...value,scopeKey:roomScopeKey(room)};
+    const value=source.capture(key,options),selection=source.selection(key),room=chats.read(roomId);
+    if(JSON.stringify(room.sources)!==JSON.stringify(selection.sources.map(s=>s.id))||room.primarySessionId!==selection.primarySessionId)throw Error('chat-context-unsaved');
+    return {...value,sourceCatalog:selection.sources,scopeKey:roomScopeKey(room)};
   }
   let chatRecordsLoaded = false, chatProfileLoaded = false;
+  let chatLocalStateKey,chatLocalKeyWrite;
+  async function ensureChatLocalStateKey(){
+    if(chatLocalStateKey||!settingsRestored||!store||storeClosing)return;
+    if(chatLocalKeyWrite)return chatLocalKeyWrite;
+    const opened=store;
+    const task=(async()=>{
+      const saved=opened.getChatLocalStateKey();
+      const valid=saved?.version===1&&typeof saved.id==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(saved.id);
+      const key=valid?saved.id:randomUUID();
+      if(!valid)await opened.putChatLocalStateKey({version:1,id:key});
+      // Unsent drafts stay in the browser. Only a durable profile identifier
+      // is exposed, so another Host/profile cannot inherit those local drafts.
+      if(!storeClosing&&store===opened)chatLocalStateKey=key;
+    })().catch(error=>warn('chat local state namespace unavailable',error)).finally(()=>{if(chatLocalKeyWrite===task)chatLocalKeyWrite=undefined;});
+    chatLocalKeyWrite=task;return task;
+  }
+  let chatReferenceTimer,chatReferenceWrites=Promise.resolve(),chatReferenceRevision=0,savedChatReferenceRevision=0,chatReferencePersistFailed=false;
+  const chatReferenceUsage=createChatReferenceUsage({changed(){chatReferenceRevision++;scheduleChatReferenceSave();}});
+  function scheduleChatReferenceSave(){
+    if(!chatRecordsLoaded||!store||storeClosing||chatReferenceTimer!==undefined)return;
+    chatReferenceTimer=setTimeout(()=>{chatReferenceTimer=undefined;void saveChatReferences(store).catch(error=>warn('chat reference persist failed',error));},1500);
+    chatReferenceTimer.unref?.();
+  }
+  function saveChatReferences(opened){
+    chatReferenceWrites=chatReferenceWrites.catch(()=>{}).then(async()=>{
+      if(!chatRecordsLoaded||!opened||savedChatReferenceRevision===chatReferenceRevision)return;
+      const revision=chatReferenceRevision;
+      try{await opened.putChatReferenceUsage(chatReferenceUsage.snapshot());savedChatReferenceRevision=revision;chatReferencePersistFailed=false;}
+      catch(error){chatReferencePersistFailed=true;throw error;}
+    });return chatReferenceWrites;
+  }
   function ensureChatRecords() {
     if (!chatRecordsLoaded && settingsRestored && store && !storeClosing) {
-      chats.restore(store.getPersonaChats()); chatRecordsLoaded = true;
+      chats.restore(store.getPersonaChats());chatReferenceUsage.restore(store.getChatReferenceUsage()); chatRecordsLoaded = true;
+      chatInputRestore=chatInputs.restore(store.getChatInputQueue()).then(()=>{chatInputReady=true;});
+      void chatInputRestore.catch(error=>warn('chat input restore failed',error));
     }
   }
   function ensureChatProfile() {
@@ -381,6 +457,8 @@ export function apply(ctx, rawConfig) {
     } });
   /** sessionId → running-turn facts harvested from the log. */
   const turnState = new Map();
+  const modelRoutes=createModelRouteResolver({getService:key=>ctx.get(key),getSettings:()=>settings,
+    getTurnRoute:id=>turnState.get(id),isClosing:()=>storeClosing});
   /** sessionId → the candidate text of the turn so far (`trigger: 'report'`). */
   const candidates = new Map();
 
@@ -514,7 +592,11 @@ export function apply(ctx, rawConfig) {
   function personaFor(sessionId, choice = conversations.read(sessionId)) {
     const selected = choice.personaId;
     const preset = presets.find((p) => p.id === selected);
-    return preset ?? { id: activePresetId(), name: settings.presetName, pack: settings.pack };
+    const inherited = presets.find((p) => p.name === settings.presetName);
+    // Keep the actual configured card, including standalone custom configuration.
+    // Its builtin provenance still needs a complete card match in the channel view.
+    return preset ?? { id: activePresetId(), name: settings.presetName, pack: settings.pack,
+      ...(inherited ? { builtin: inherited.builtin === true } : {}) };
   }
   function triggerFor(sessionId, choice = conversations.read(sessionId)) {
     const own = choice.trigger;
@@ -588,12 +670,111 @@ export function apply(ctx, rawConfig) {
     if (!settingsRestored) pendingSettings.set(key, value);
   }
 
-  function expressionLlm(purpose, onDispatch, chatOptions) {
+  function expressionLlm(purpose, onDispatch, chatOptions, onDecision) {
     const llm = getLlm();
-    return llm === undefined ? undefined : createExpressionLlm(llm, { reasoningEffort: chatOptions ? '' : settings.reasoningEffort,
+    return llm === undefined ? undefined : createExpressionLlm(llm, { reasoningEffort: chatOptions ? chatOptions.reasoningEffort??'' : settings.reasoningEffort,
       thinking: chatOptions?.thinking, onDispatch,
       onAttempt: route => modelUsage.begin({ purpose, ...route }),
-      onDecision: (decision) => { if (!storeClosing) diagnostics.expressionModel = { purpose, ...decision }; } });
+      onDecision: (decision) => { if (!storeClosing) diagnostics.expressionModel = { purpose, ...decision }; onDecision?.(decision); } });
+  }
+
+  const reportViewKey = (id, seq) => JSON.stringify([id, seq]);
+  const reportViewRequestKey = (id, seq, requestId, presentation = 'summary') => JSON.stringify([id, seq, requestId, presentation]);
+  function pruneReportViewRequests() {
+    for (const [id, receipt] of reportViewRequests) if (reportViewRequests.size > 128
+      && ![...activeReportViews.values()].some(pending => pending.requestKey === receipt.key)) reportViewRequests.delete(id);
+  }
+  function reportViewState(id, seq, presentation = 'summary') {
+    const current = reportViews.read(id, seq, presentation), version = presentation === 'readable' ? 3 : presentation === 'emphasis' ? 2 : 1;
+    const matches = current.result?.schemaVersion === version;
+    return { ...current, result: matches ? current.result : undefined, cached: matches,
+      warnings: matches ? current.warnings : undefined, unreferenced: matches ? current.unreferenced : undefined,
+      model: matches ? current.model : undefined, generatedAt: matches ? current.generatedAt : undefined,
+      readingPlan: presentation === 'emphasis' && current.source
+        ? createReportReadingPlan(current.source, matches ? current.result : undefined) : undefined,
+      presentation, running: activeReportViews.has(reportViewKey(id, seq)) };
+  }
+  async function generateReportView(body) {
+    const { sessionId, seq, sourceHash, requestId } = body;
+    const presentation = body.presentation ?? 'summary';
+    const requestKey = reportViewRequestKey(sessionId, seq, requestId, presentation), key = reportViewKey(sessionId, seq);
+    const previous = reportViewRequests.get(requestId);
+    if (previous) {
+      if (previous.key !== requestKey || previous.hash !== sourceHash || previous.regenerate !== (body.regenerate === true)) throw Error('report-request-conflict');
+      return previous.task;
+    }
+    if (cancelledReportViews.has(requestKey)) throw Error('report-cancelled');
+    const current = reportViewState(sessionId, seq, presentation);
+    if (!current.available) throw Error(current.reason);
+    if (current.source.hash !== sourceHash) throw Error('report-source-changed');
+    if (current.cached && body.regenerate !== true) {
+      reportViewRequests.set(requestId, { key: requestKey, hash: sourceHash, regenerate: false, task: Promise.resolve(current) });
+      pruneReportViewRequests();
+      return current;
+    }
+    if (activeReportViews.has(key)) throw Error('report-busy');
+    if (activeReportViews.size >= 3) throw Error('report-capacity');
+    const abort = new AbortController(), job = { abort, key, requestKey };
+    const source = current.source;
+    const options = { provider: settings.visualizationProvider, model: settings.visualizationModel,
+      thinking: presentation === 'readable' ? settings.readableThinking !== false : settings.visualizationThinking === true };
+    activeReportViews.set(key, job);
+    const timer = setTimeout(() => abort.abort(Error('report-timeout')), cfg.timeoutMs); timer.unref?.();
+    const valid = () => {
+      abort.signal.throwIfAborted();
+      if (storeClosing || cancelledReportViews.has(requestKey)) throw Error('report-cancelled');
+      const latest = reportViews.read(sessionId, seq);
+      if (!latest.available || latest.source.hash !== sourceHash) throw Error('report-source-changed');
+    };
+    const task = (async () => {
+      try {
+        let route = options.provider ? { provider: options.provider, model: options.model }
+          : resolveRoute(sessionId) ?? reportViews.route(sessionId, seq);
+        if (route && !route.model) {
+          const listed = await waitWithSignal(getLlm()?.listModels?.(route.provider), abort.signal);
+          const first = Array.isArray(listed) ? listed[0] : undefined;
+          route = typeof first?.id === 'string' && first.id ? { provider: route.provider, model: first.id } : undefined;
+        }
+        valid();
+        const llm = expressionLlm('report-visualization', valid, options);
+        if (!route || !llm) throw Error('report-model-unavailable');
+        const prompt = presentation === 'readable' ? buildReportReadablePrompt(source)
+          : presentation === 'emphasis' ? buildReportEmphasisPrompt(source) : buildReportVisualizationPrompt(source);
+        let text = '', finish;
+        for await (const chunk of streamWithSignal(llm, { ...route, system: prompt.system, messages: prompt.messages,
+          temperature: 0.15, maxTokens: presentation === 'readable' ? (options.thinking ? 24576 : 16384)
+            : options.thinking ? 12288 : 8192, signal: abort.signal })) {
+          valid();
+          if (chunk.type === 'text-delta') {
+            text += chunk.text;
+            if (text.length > (presentation === 'readable' ? REPORT_READABLE_LIMITS.wireChars : 48000))
+              throw Object.assign(Error('report-invalid-output'), { issue: { code: 'wire-too-long', path: '$' } });
+          } else if (chunk.type === 'finish') finish = chunk.reason?.kind;
+          else if (chunk.type === 'error' || chunk.type === 'tool-call') throw Error('report-generation-failed');
+        }
+        valid();
+        if (finish !== 'stop') throw Error('report-incomplete');
+        const parsed = presentation === 'readable' ? parseReportReadable(text, source)
+          : presentation === 'emphasis' ? validateReportEmphasis(text, source) : validateReportVisualization(text, source);
+        if (!parsed.ok) throw Object.assign(Error('report-invalid-output'), { issue: reportViewIssue(parsed.issue) });
+        try { await reportViews.cache(sessionId, seq, sourceHash, parsed.value, route, parsed); }
+        catch (error) { throw Error(error.message === 'report-source-changed' ? error.message : 'report-save-failed'); }
+        valid();
+        return { ...reportViewState(sessionId, seq, presentation), running: false };
+      } catch (error) {
+        const reason = abort.signal.aborted ? abort.signal.reason?.message : error?.message;
+        throw Object.assign(Error(/^report-/.test(reason ?? '') ? reason : 'report-generation-failed'),
+          { issue: reason === 'report-invalid-output' ? reportViewIssue(error?.issue) : undefined });
+      } finally {
+        clearTimeout(timer); abort.abort();
+        if (activeReportViews.get(key) === job) activeReportViews.delete(key);
+      }
+    })();
+    const tracked = trackModelTask(task);
+    reportViewRequests.set(requestId, { key: requestKey, hash: sourceHash, regenerate: body.regenerate === true, task: tracked });
+    // Retain bounded idempotency receipts, including failures, while never evicting a live request.
+    pruneReportViewRequests();
+    return tracked;
   }
 
   function scheduleModelUsageSave() {
@@ -708,9 +889,19 @@ export function apply(ctx, rawConfig) {
   function publicChatProfile() {
     ensureChatProfile();
     const value = chatProfile.read();
-    return { instanceId, revision: value.revision, avatarMode: value.avatarMode,
+    return { instanceId, revision: value.revision, avatarMode: value.avatarMode, userAddress:value.userAddress,
       avatar: value.avatar ? ROUTE + '/chat-profile/avatar?v=' + avatarVersion(value.avatar) : null };
   }
+  function reportRetryUnavailable(row,sessionId){
+    if(!row||typeof row.original!=='string'||!row.original.trim()||row.original.length>cfg.maxRewriteChars)return 'source-unavailable';
+    if(row.reason==='no-prose')return 'report-no-prose';
+    if(!row.speaker||!presets.some(p=>p.id===row.speaker.id))return 'persona-not-found';
+    if(row.retrying||inFlight.has(`${sessionId}:${row.seq}`))return 'feedback-in-progress';
+    if(!['ready','skipped','failed'].includes(row.status))return 'report-incomplete';
+    if(!rewriteAllowedFor(sessionId))return 'rewrite-disabled';
+    return null;
+  }
+
   function chatState(key) {
     ensureChatRecords();
     const room = chats.read(key);
@@ -718,7 +909,7 @@ export function apply(ctx, rawConfig) {
     const preparing=!!room && chatStarting.has(room.id);
     const current=room?chatRounds.get(room.id):undefined;
     const round=!preparing && current && !current.abort.signal.aborted ? current : undefined;
-    const running = !!room && (preparing||!!round||chatJobsFor(room.id).some(job=>!job.abort.signal.aborted));
+    const running = !!room && (preparing||!!round||chatInputDraining.has(room.id)||chatInputs.list(room.id).some(b=>b.status==='pending'||b.status==='sending')||chatJobsFor(room.id).some(job=>!job.abort.signal.aborted));
     if (room && !running) for (const turn of room.turns) if (turn.status === 'pending') turn.status = 'interrupted';
     const contacts = presets.map((p) => ({ id: p.id, name: p.name, archived: false, avatar: avatarUrl(p) }));
     for (const old of chats.contacts()) if (!contacts.some((p) => p.id === old.personaId)) {
@@ -726,54 +917,294 @@ export function apply(ctx, rawConfig) {
     }
     for(const id of room?.memberIds??[])if(!contacts.some(p=>p.id===id))contacts.push({id,name:'已移除的人格',archived:true,avatar:null});
     const context=room?roomContexts.get(room.id):undefined;
-    return { instanceId,chatSchema:3,discussionVersion:2,roundId:round?.id,roundMessageId:round?.messageId,roundPhase:preparing?'preparing':round?.stage,activeAttemptIds:room?chatJobsFor(room.id).filter(job=>job.started&&!job.abort.signal.aborted).map(job=>job.attemptId):[], personaId, room, scopeKey:roomScopeKey(room), rooms:chats.list(), activeRoomId:chats.active(), running:!!running, contacts, epoch: chats.epoch(), userProfile: publicChatProfile(), defaultPersonaId: activePresetId(),
-      ready: settingsRestored && !!store && !storeClosing, modelReady: !!chatRoute(context?.snapshot().primarySessionId??currentSessionHint()) };
+    const canYield=!!round&&!room.turns.some(t=>t.messageId===round.messageId&&t.phase!=='anchor'&&t.status==='pending');
+    const rooms=chats.list().map(item=>({...item,running:chatStarting.has(item.id)||chatInputDraining.has(item.id)||chatInputs.list(item.id).some(b=>b.status==='pending'||b.status==='sending')||!!(chatRounds.get(item.id)&&!chatRounds.get(item.id).abort.signal.aborted)||chatJobsFor(item.id).some(job=>!job.abort.signal.aborted)}));
+    return { instanceId,chatSchema:3,discussionVersion:2,localStateKey:chatLocalStateKey,roundId:round?.id,roundMessageId:round?.messageId,roundPhase:preparing?'preparing':round?.stage,
+      directorFailure:room?chatDirectorFailures.get(room.id)??null:null,queuedInputs:room?chatInputs.list(room.id):[],inputRevision:chatInputs.snapshot().revision,canQueue:chatInputReady,
+      roundElapsedMs:round?Math.max(0,Date.now()-round.startedAt):undefined,roundModel:round?.model,canYield,activeAttemptIds:room?chatJobsFor(room.id).filter(job=>job.started&&!job.abort.signal.aborted).map(job=>job.attemptId):[], personaId, room, scopeKey:roomScopeKey(room), rooms, activeRoomId:chats.active(), running:!!running, contacts, epoch: chats.epoch(), userProfile: publicChatProfile(), defaultPersonaId: activePresetId(),
+      ready: settingsRestored && !!store && !storeClosing, modelReady: modelRoutes.canResolve(context?.snapshot().primarySessionId??currentSessionHint(),{provider:settings.chatProvider,model:settings.chatModel}) };
+  }
+
+  function roomPublicChoices(room,scope){
+    const discussionChoices=[];
+    for(const turn of room.turns){
+      for(const part of turn.userParts??[{id:turn.messageId}]){
+        const user={roomId:room.id,generation:room.generation??0,kind:'user',messageId:part.id};
+        if(!discussionChoices.some(q=>quoteKey(q.ref)===quoteKey(user))){const quote=resolveChatQuote(room,user,scope);if(quote)discussionChoices.push(quote);}
+      }
+      if(turn.status==='ready')for(let index=0;index<turn.assistant.length;index++){
+        const quote=resolveChatQuote(room,{roomId:room.id,generation:room.generation??0,kind:'assistant',turnId:turn.id,attemptId:turn.attemptId,index},scope);
+        if(quote)discussionChoices.push(quote);
+      }
+    }
+    return discussionChoices.slice(-120).reverse();
+  }
+
+  function roomReferenceState(requestedRoom){
+    if(!chatRecordsLoaded)return{initialized:false,rooms:[],room:null,records:[],excluded:[]};
+    const rooms=chats.list(),room=chats.read(requestedRoom??chats.active());
+    if(requestedRoom&&!room)throw Error('chat-room-not-found');
+    if(!room)return{initialized:true,rooms,room:null,records:[],excluded:[]};
+    const scope=roomScopeKey(room),context=roomContexts.get(room.id),cache=context?.snapshot();
+    const discussion=discussionView(room,scope);
+    const paused=new Set((room.excludedReferences??[]).map(quoteKey));
+    const showQuote=ref=>{const quoted=resolveChatQuote(room,ref,scope);return{ref,...(quoted?{author:quoted.author,text:quoted.text}:{}),available:!!quoted,excluded:paused.has(quoteKey(ref))};};
+    const records=chatReferenceUsage.read(room.id).map(record=>{
+      const inScope=record.scopeKey===scope;
+      // Recover the originating question from this exact attempt, never from a
+      // reused message id or a similarly named room. The ledger keeps no text.
+      const turn=inScope?room.turns.find(t=>t.attemptId===record.attemptId&&t.messageId===record.messageId
+        &&t.recipientId===record.personaId&&(t.scopeKey??t.contextKey??null)===scope):undefined;
+      const primary=turn?room.turns.filter(t=>t.messageId===turn.messageId&&primaryChatTurn(t)):[];
+      const allowed=presets.some(p=>p.id===record.personaId)?memories.references(record.memory,{personaId:record.personaId,sessionId:room.id}):[];
+      return{...record,inScope,personaName:room.turns.find(t=>t.attemptId===record.attemptId)?.speakerName??presets.find(p=>p.id===record.personaId)?.name??'已移除的人格',
+        discussion:record.discussion.map(ref=>{const item=inScope?discussion.entries.find(e=>e.id===ref.id&&e.version===ref.version&&e.available):null;
+          return{...ref,available:!!item,...(item?{title:item.title,status:item.status}:{})};}),
+        request:turn?{available:true,text:turn.user,recipients:turn.recipients.map(({id,name})=>({id,name})),
+          ...(turn.directedPlanId?{responseKind:turn.responsePlan?.kind,replyTo:turn.responsePlan?.to}:{}),
+          phase:turn.phase??'primary',...(primaryChatTurn(turn)?{order:primary.findIndex(t=>t.id===turn.id)+1}: {})}:{available:false},
+        notes:record.notes.map(ref=>inScope?showQuote(ref):{ref,available:false}),
+        quote:record.quote?(inScope?showQuote(record.quote):{ref:record.quote,available:false}):null,
+        memory:record.memory.map(ref=>{const entry=inScope?allowed.find(e=>e.id===ref.id&&e.version===ref.version):undefined;
+          return{...ref,available:!!entry,...(entry?{content:entry.content,scope:entry.scope}: {})};}),
+        work:record.work.map(ref=>{const source=inScope?context?.resolveReference(ref):null;
+          return{...ref,available:!!source,...(source?{goal:source.goal,report:source.report,
+            ...(source.previousReport?{previousReport:{...ref.previousReport,...source.previousReport}}:{})}: {})};})};
+    });
+    return{initialized:true,rooms,room:{id:room.id,name:room.name},scopeKey:scope,epoch:chats.epoch(),referenceRevision:room.referenceRevision??0,
+      currentSources:(room.sources??[]).map(id=>{const cached=cache?.sources.find(s=>s.sessionId===id);return{sessionId:id,name:cached?.name??'工作会话',readAt:cached?.checkedAt??null,primary:id===room.primarySessionId};}),
+      discussion,discussionChoices:roomPublicChoices(room,scope),records,excluded:(room.excludedReferences??[]).map(showQuote),persistence:chatReferencePersistFailed?'failed':'local'};
+  }
+
+  function preparedWorkDraft(body){
+    if(storeClosing||!settingsRestored||!store)throw Error('storage-not-ready');
+    if(!chatRecordsLoaded)throw Error('context-not-open');
+    const room=chats.read(body.roomId);
+    if(!room)throw Error('chat-room-not-found');
+    if(!chats.acceptsEpoch(room.id,body.epoch))throw Error('chat-draft-context-changed');
+    return prepareWorkDraft(room,body,roomScopeKey(room));
+  }
+
+  function generateWorkDraft(body){
+    if(body.thinking!==undefined&&typeof body.thinking!=='boolean')throw Error('invalid-chat-draft');
+    const prepared=preparedWorkDraft(body),sourceFingerprint=JSON.stringify(prepared);
+    const thinking=body.thinking??(settings.chatThinking===true);
+    const options={provider:settings.chatProvider,model:settings.chatModel,thinking,reasoningEffort:settings.chatReasoningEffort};
+    const fingerprint=JSON.stringify({source:prepared,thinking,reasoningEffort:thinking?options.reasoningEffort:''}),key=JSON.stringify([body.roomId,body.requestId]);
+    if(typeof body.requestId!=='string'||!body.requestId.trim()||body.requestId.length>160)throw Error('invalid-chat-draft');
+    if(cancelledWorkDrafts.has(key))throw Error('chat-draft-cancelled');
+    const existing=workDraftRequests.get(key);
+    if(existing){if(existing.fingerprint!==fingerprint)throw Error('chat-draft-conflict');return existing.promise;}
+    activeWorkDrafts.get(body.roomId)?.abort.abort(Error('chat-draft-superseded'));
+    const abort=new AbortController(),entry={roomId:body.roomId,requestId:body.requestId,fingerprint,abort,done:false};
+    const timer=setTimeout(()=>abort.abort(Error('chat-draft-timeout')),Math.min(cfg.timeoutMs,thinking?60000:20000));
+    const valid=()=>{
+      if(storeClosing||abort.signal.aborted||activeWorkDrafts.get(body.roomId)!==entry)return false;
+      try{return JSON.stringify(preparedWorkDraft(body))===sourceFingerprint;}catch{return false;}
+    };
+    entry.valid=valid;
+    activeWorkDrafts.set(body.roomId,entry);workDraftRequests.set(key,entry);
+    entry.promise=trackModelTask((async()=>{
+      try{
+        const room=chats.read(body.roomId);
+        const route=await waitWithSignal(resolveChatRouteAsync(room?.primarySessionId??currentSessionHint(),options,abort.signal),abort.signal);
+        if(!valid())throw Error('chat-draft-context-changed');
+        if(!route)throw Error('chat-draft-unavailable');
+        let thinkingDecision;
+        const llm=expressionLlm('chat-draft',()=>{if(!valid())throw Error('chat-draft-context-changed');},options,
+          ({mode,reason,effective})=>{thinkingDecision={mode,reason,effective};});
+        if(!llm)throw Error('chat-draft-unavailable');
+        const {system,user}=buildWorkDraftPrompt(prepared);let wire='',finish;
+        for await(const chunk of streamWithSignal(llm,{provider:route.provider,model:route.model,system,
+          messages:[{role:'user',content:[{type:'text',text:user}]}],maxTokens:thinking?8192:2500,signal:abort.signal})){
+          if(!valid())throw Error('chat-draft-context-changed');
+          if(chunk.type==='error')throw Error('chat-draft-unavailable');
+          if(chunk.type.startsWith('tool-call')||(chunk.type==='block-start'&&chunk.blockType==='tool-call')
+            ||(chunk.type==='block-end'&&chunk.block?.type==='tool-call'))throw Error('chat-draft-format');
+          if(chunk.type==='text-delta')wire+=chunk.text;if(wire.length>24000)throw Error('chat-draft-too-large');
+          if(chunk.type==='finish')finish=chunk.reason?.kind;
+        }
+        abort.signal.throwIfAborted();
+        if(!valid())throw Error('chat-draft-context-changed');
+        if(finish!=='stop')throw Error('chat-draft-incomplete');
+        const draft=parseWorkDraft(wire);if(!draft)throw Error('chat-draft-format');
+        const thinkingStatus=!thinking?'off':thinkingDecision?.mode==='thinking'?'enabled'
+          :thinkingDecision?.reason==='thinking-unavailable'?'unavailable':'unknown';
+        return{requestId:body.requestId,basis:prepared.basis,draft,thinking,thinkingStatus};
+      }finally{
+        clearTimeout(timer);entry.done=true;
+        if(activeWorkDrafts.get(body.roomId)===entry)activeWorkDrafts.delete(body.roomId);
+        while(workDraftRequests.size>64){const oldest=[...workDraftRequests].find(([,value])=>value.done);
+          if(!oldest)break;workDraftRequests.delete(oldest[0]);}
+      }
+    })());
+    return entry.promise;
+  }
+
+  function retireOldRoomReferences(roomId){
+    const revision=chats.read(roomId)?.referenceRevision??0,round=chatRounds.get(roomId);
+    if(round&&(round.referenceRevision??0)!==revision)round.abort.abort(Error('chat-context-changed'));
+    for(const pending of chatJobsFor(roomId))if((pending.referenceRevision??0)!==revision)pending.abort.abort(Error('chat-context-changed'));
+    retireInvalidWorkDrafts(roomId);
+  }
+
+  function retireInvalidWorkDrafts(roomId,drop=false){
+    const pending=activeWorkDrafts.get(roomId);
+    if(pending&&!pending.valid())pending.abort.abort(Error('chat-draft-context-changed'));
+    if(drop)for(const [key,value] of workDraftRequests)if(value.roomId===roomId)workDraftRequests.delete(key);
+  }
+
+  const schedulerScope=(room,scopeKey)=>JSON.stringify([scopeKey??null,room.referenceRevision??0]);
+  function retainChatEvents(roomId){
+    const room=chats.read(roomId);if(!room)return;
+    const ids=[];
+    for(const turn of room.turns){
+      for(const part of turn.userParts??[{id:turn.messageId}])ids.push(chatSchedulerEventKey({roomId,generation:room.generation??0,
+        sourceScope:schedulerScope(room,turn.scopeKey??turn.contextKey??null),turnId:part.id,attemptId:'user'}));
+      if(turn.status==='ready')ids.push(chatSchedulerEventKey({roomId,generation:room.generation??0,
+        sourceScope:schedulerScope(room,turn.scopeKey??turn.contextKey??null),turnId:turn.id,attemptId:turn.attemptId}));
+    }
+    for(const batch of chatInputs.list(roomId))for(const part of batch.parts)ids.push(chatSchedulerEventKey({roomId,generation:room.generation??0,
+      sourceScope:schedulerScope(room,batch.scopeKey),turnId:part.id,attemptId:'user'}));
+    chatScheduler.retain(roomId,ids.filter(Boolean));
+  }
+  function publishChatUser(room,batch) {
+    chatScheduler.register(room.id,room.memberIds,{generation:room.generation??0,sourceScope:schedulerScope(room,batch.scopeKey)});
+    for(const part of batch.parts)chatScheduler.publish(room.id,{authorId:'user',userTurnId:batch.id,messageCount:1,id:chatSchedulerEventKey({
+      roomId:room.id,generation:room.generation??0,sourceScope:schedulerScope(room,batch.scopeKey),turnId:part.id,attemptId:'user'})});
+    retainChatEvents(room.id);
+  }
+
+  function armChatInput(roomId) {
+    const old=chatInputTimers.get(roomId);if(old!==undefined){clearTimeout(old);chatInputTimers.delete(roomId);}
+    if(storeClosing||!chatInputReady||chatInputDraining.has(roomId)||chatRounds.has(roomId)||!chatInputs.peek(roomId))return;
+    const timer=setTimeout(()=>{chatInputTimers.delete(roomId);void drainChatInput(roomId);},0);
+    chatInputTimers.set(roomId,timer);
+  }
+  function retireChatInputRuntime(roomId){
+    const timer=chatInputTimers.get(roomId);if(timer!==undefined)clearTimeout(timer);chatInputTimers.delete(roomId);
+    for(const key of chatInputBindings.keys())if(JSON.parse(key)[0]===roomId)chatInputBindings.delete(key);
+  }
+
+  async function drainChatInput(roomId) {
+    if(storeClosing||chatInputDraining.has(roomId)||chatRounds.has(roomId))return;
+    chatInputDraining.add(roomId);let batch;
+    try{
+      await chatInputRestore;
+      const first=chatInputs.peek(roomId);if(!first)return;
+      batch=await chatInputs.claim(roomId,first.id);if(!batch||storeClosing)return;
+      const room=chats.read(roomId);
+      if(!room||roomScopeKey(room)!==batch.scopeKey||(room.referenceRevision??0)!==batch.referenceRevision)throw Error('source-changed');
+      if(batch.recipients.some(p=>!room.memberIds.includes(p.id)||!presets.some(v=>v.id===p.id)))throw Error('persona-changed');
+      const source=contextForRoom(roomId),binding=chatInputBindings.get(JSON.stringify([roomId,batch.id]));
+      let workContext=binding;
+      if(source?.active())workContext=capturedRoomContext(roomId,source.key(),{sourceIds:[]});
+      if(!workContext||workContext.scopeKey!==batch.scopeKey)throw Error('source-changed');
+      const result=await chats.send({roomId,personaId:batch.recipients[0]?.id,name:batch.recipients[0]?.name,
+        recipients:batch.recipients,requestId:batch.id,content:batch.message,userParts:batch.parts,
+        quote:batch.quote?.ref,revision:room.revision,epoch:chats.epoch(),contextKey:workContext.key,scopeKey:batch.scopeKey,
+        frozenRecipients:true,frozenMemberIds:batch.memberIds,allowOrphan:true,directed:true});
+      await chatInputs.complete(roomId,batch.id);chatInputBindings.delete(JSON.stringify([roomId,batch.id]));
+      const recoverable=!result.created&&!chatRounds.has(roomId)&&!chatJobsFor(roomId).length
+        &&result.room.turns.at(-1)?.messageId===batch.id&&(result.turns.some(t=>t.status==='pending')||result.turn.phase==='anchor'&&result.turns.length===1);
+      if(!storeClosing&&(result.created||recoverable))launchChatRound(result,workContext,batch.clientTime);
+    }catch(error){
+      if(batch&&!storeClosing)try{await chatInputs.fail(roomId,batch.id,['source-changed','persona-changed'].includes(error.message)?error.message:'save');}catch{/* Keep durable original words for explicit retry. */}
+    }finally{chatInputDraining.delete(roomId);armChatInput(roomId);}
+  }
+
+  function chatInbox(roomId,events,scopeKey) {
+    const room=chats.read(roomId);if(!room)return[];const result=[];
+    for(const event of events){let ref;try{ref=JSON.parse(event.id);}catch{continue;}
+      if(ref.roomId!==roomId||ref.sourceScope!==schedulerScope(room,scopeKey)||ref.generation!==(room.generation??0))continue;
+      if(event.authorId==='user'){
+        const committed=room.turns.find(t=>(t.scopeKey??t.contextKey??null)===scopeKey&&(t.messageId===ref.turnId||t.userParts?.some(p=>p.id===ref.turnId)));
+        const part=committed?.userParts?.find(p=>p.id===ref.turnId);
+        const queued=chatInputs.list(roomId).filter(b=>b.scopeKey===scopeKey).flatMap(b=>b.parts).find(p=>p.id===ref.turnId);
+        const text=part?.text??committed?.user??queued?.text;
+        if(text)result.push({author:{role:'user',name:'我'},text,eventId:event.id,
+          refs:[{roomId,generation:room.generation??0,kind:'user',messageId:part?.id??committed?.messageId??ref.turnId}]});
+      }else{
+        const turn=room.turns.find(t=>t.id===ref.turnId&&t.attemptId===ref.attemptId&&t.recipientId===event.authorId
+          &&t.status==='ready'&&(t.scopeKey??t.contextKey??null)===scopeKey);
+        if(turn)result.push({author:{role:'assistant',id:turn.recipientId,name:turn.speakerName},messages:turn.assistant,eventId:event.id,
+          refs:turn.assistant.map((_,index)=>({roomId,generation:room.generation??0,kind:'assistant',turnId:turn.id,attemptId:turn.attemptId,index}))});
+      }
+    }
+    // Whole statements only; old items remain available in the room history.
+    let chars=0;return result.reverse().filter(item=>{const size=item.text?.length??item.messages.reduce((n,v)=>n+v.length,0);if(chars+size>6000)return false;chars+=size;return true;}).slice(0,12).reverse();
+  }
+
+  async function waitChatActor(roomId,personaId,attemptId,signal,kind='normal') {
+    while(!signal.aborted){
+      retainChatEvents(roomId);
+      const slot=chatScheduler.claim(roomId,personaId,attemptId,kind);if(slot)return slot;
+      const due=chatScheduler.readyAt(roomId,personaId,kind);if(due===null&&!chatScheduler.read(roomId,personaId))throw Error('chat-member-removed');
+      await new Promise((resolve,reject)=>{
+        const stop=()=>{clearTimeout(timer);signal.removeEventListener('abort',stop);reject(signal.reason);};
+        const timer=setTimeout(()=>{signal.removeEventListener('abort',stop);resolve();},due===null?25:Math.max(1,due-Date.now()));
+        signal.addEventListener('abort',stop,{once:true});if(signal.aborted)stop();
+      });
+    }
+    throw signal.reason;
   }
 
   function launchChat(persona, room, turn, workContext,waitFor,round) {
     if (storeClosing || turn.status !== 'pending') return;
     const key=chatJobKey(room.id,turn.attemptId);
+    const peerGrantAtStart=turn.responsePlan?.kind==='peer'?chatScheduler.read(room.id,persona.id)?.peerGrant:null;
     const previous = chatJobsFor(room.id).find(job=>job.turnId===turn.id);
     if (previous?.attemptId === turn.attemptId && !previous.abort.signal.aborted) return;
     previous?.abort.abort(new Error('chat-superseded'));
     const abort = new AbortController();
     const aborted=()=>abort.abort(round.abort.signal.reason);round.abort.signal.addEventListener('abort',aborted,{once:true});if(round.abort.signal.aborted)aborted();
     if(!chats.hasMember(room.id,persona.id))abort.abort(Error('chat-member-removed'));
-    const chatOptions={provider:settings.chatProvider,model:settings.chatModel,thinking:settings.chatThinking};
+    const chatOptions={provider:settings.chatProvider,model:settings.chatModel,thinking:settings.chatThinking,reasoningEffort:settings.chatReasoningEffort};
     let liveRevision=0,lastLiveAt=0,progressTimer;
-    const pending = { personaId: persona.id, roomId: room.id,turnId:turn.id,messageId:turn.messageId,started:!waitFor, pack: persona.pack, abort, attemptId: turn.attemptId, contextKey: workContext?.key };
+    const pending = { personaId: persona.id, roomId: room.id,turnId:turn.id,messageId:turn.messageId,referenceRevision:round.referenceRevision,started:!waitFor, pack: persona.pack, abort, attemptId: turn.attemptId, contextKey: workContext?.key };
     activeChats.set(key, pending);
     const publish=(status,messages=[])=>{
       if(activeChats.get(key)!==pending)return;
-      chatLive.publish(key,{instanceId,personaId:persona.id,roomId:room.id,turnId:turn.id,
-        attemptId:turn.attemptId,revision:++liveRevision,status,messages});
+      const frame={instanceId,personaId:persona.id,roomId:room.id,turnId:turn.id,
+        attemptId:turn.attemptId,revision:++liveRevision,status,messages};
+      chatLive.publish(key,frame);
+      if(status==='silent')round.silentFrames.set(persona.id,frame);
       const members=chats.liveGroup(room.id,turn.messageId);
-      if(!members?.some(t=>t.id===turn.id&&t.attemptId===turn.attemptId))return;
+      if(!members||status!=='silent'&&!members.some(t=>t.id===turn.id&&t.attemptId===turn.attemptId))return;
       const frames=members.map(t=>chatLive.read(chatJobKey(room.id,t.attemptId))).filter(Boolean);
-      chatLive.publish(room.id,{instanceId,roomId:room.id,frames,
+      chatLive.publish(room.id,{instanceId,roomId:room.id,frames:[...frames,...round.silentFrames.values()],
         status:frames.length===members.length&&frames.every(f=>!['streaming','queued'].includes(f.status))?'settled':'streaming'});
     };
     publish(waitFor?'queued':'streaming');
     const sourceContext=roomContexts.get(room.id)??chatContext;
     return trackModelTask((async () => {
-      let memoryContext;
+      let memoryContext,referenceUse,actorSlot;
       let outcome = 'failed';
       let timer;
       const valid = () => !storeClosing && presets.find((p) => p.id === persona.id)?.pack === persona.pack
         && chats.hasMember(room.id,persona.id)
+        &&(chats.read(room.id)?.referenceRevision??0)===(round.referenceRevision??0)
         && (!workContext || sourceContext.key() === workContext.key);
       try {
         if(waitFor)await waitWithSignal(waitFor,abort.signal);
         abort.signal.throwIfAborted();
         if(!valid())throw Error('persona-changed');
+        actorSlot=await waitChatActor(room.id,persona.id,turn.attemptId,abort.signal,turn.responsePlan?.kind==='peer'?'peer':'normal');
         const current=chats.read(room.id),position=current?.turns.findIndex(t=>t.id===turn.id&&t.attemptId===turn.attemptId);
         if(position===undefined||position<0||current.turns[position].status!=='pending')throw Error('chat-cancelled');
-        const preceding=current.turns.slice(0,position).filter(t=>t.messageId===turn.messageId&&t.status==='ready'
+        const scene=roomDirectorEvents(current,turn.messageId,turn.scopeKey??turn.contextKey??null,Infinity),
+          throughEvent=scene.findLast(event=>event.author.role==='user'||event.author.id!==persona.id);
+        if(!throughEvent)throw Error('chat-cancelled');
+        const throughRef=JSON.parse(throughEvent.id),through={turnId:throughRef.turnId,attemptId:throughRef.attemptId};
+        const preceding=current.turns.filter(t=>t.messageId===turn.messageId&&t.status==='ready'
           &&(t.scopeKey??t.contextKey??null)===(turn.scopeKey??turn.contextKey??null));
+        // Canonical seats preserve their owners; visual order follows actual starts.
+        if(!await chats.startReply({roomId:room.id,id:turn.id,attemptId:turn.attemptId,valid:()=>valid()&&!abort.signal.aborted}))throw Error('chat-cancelled');
         pending.started=true;publish('streaming');
         timer=setTimeout(()=>abort.abort(new Error('chat-timeout')),cfg.timeoutMs);
-        const route = await waitWithSignal(resolveChatRouteAsync(workContext?.primarySessionId??currentSessionHint(),chatOptions), abort.signal);
+        const route = await waitWithSignal(resolveChatRouteAsync(workContext?.primarySessionId??currentSessionHint(),chatOptions,abort.signal), abort.signal);
         if (!valid() || !route) throw new Error('chat-unavailable');
+        round.model={provider:route.provider,model:route.model};
         memoryContext = expressionMemory(persona.id, room.id, turn.user, 'chat');
         const refs = entries => JSON.stringify(entries.map(({ id, version }) => [id, version]));
         const used = refs(memoryContext.entries);
@@ -782,19 +1213,58 @@ export function apply(ctx, rawConfig) {
         const llm = expressionLlm('chat', () => {
           if (!valid()) throw new Error('persona-changed');
           memoryContext.usage?.sent();
+          referenceUse?.sent();
         },chatOptions);
         if (!llm) throw new Error('chat-unavailable');
-        const history = room.turns.filter(t => t.messageId!==turn.messageId&&(t.scopeKey??t.contextKey??null) === (turn.scopeKey??turn.contextKey??null));
+        const history = current.turns.filter(t => t.messageId!==turn.messageId&&(t.scopeKey??t.contextKey??null) === (turn.scopeKey??turn.contextKey??null));
         const currentMemberIds=chats.read(room.id)?.memberIds??[];
         const castMembers=currentMemberIds.map(id=>presets.find(p=>p.id===id)).filter(Boolean);
-        const { system, user } = buildChatPrompt({ pack: persona.pack, history, message: turn.user,
-          exchange:preceding,phase:turn.phase,
+        const shortReply=turn.responsePlan?.kind==='peer'||turn.phase==='followup';
+        const replyBudget=shortReply?{bubbles:2,chars:600}:undefined;
+        let responsePlan=turn.responsePlan;
+        if(responsePlan?.kind==='peer'&&!preceding.some(t=>t.recipientId===responsePlan.to&&t.assistant.some(text=>text.includes(responsePlan.evidence)))) {
+          abort.abort(Error('chat-cancelled'));throw abort.signal.reason;
+        }
+        if(responsePlan?.kind==='contribute'&&responsePlan.to!=='user'&&!preceding.some(t=>t.recipientId===responsePlan.to))responsePlan={...responsePlan,to:'user'};
+        ensureChatProfile();
+        const { system, messages:requestMessages, control:supplied } = buildChatPrompt({ pack: persona.pack, history, message: turn.user,
+          persona:{id:persona.id,builtin:persona.builtin===true},
+          userAddress:chatProfile.read().userAddress,
+          currentTurn:current.turns.find(t=>t.messageId===turn.messageId&&t.phase==='anchor')??turn,
+          scopeKey:turn.scopeKey??turn.contextKey??null,
+          scene:projectChatScene(chats.read(room.id),{messageId:turn.messageId,scopeKey:turn.scopeKey??turn.contextKey??null,referenceRevision:round.referenceRevision??0}),
+          responsePlan,
+          directorAssignment:round.directive?.id===persona.id?round.directive:undefined,
+          replyTarget:round.replyTarget,
+          opportunity:{kind:actorSlot.kind,normalRemainingAfterThis:actorSlot.normalRemainingAfterThis,peerRemainingAfterThis:actorSlot.peerRemainingAfterThis},
+          inbox:chatInbox(room.id,actorSlot.events,turn.scopeKey??turn.contextKey??null),
+          assignment:chatAssignment(turn,publicChatExchange(preceding)),discussionState:discussionContext(current,turn.scopeKey??turn.contextKey??null),
+          exchange:preceding,phase:turn.phase,replyBudget,roomId:room.id,generation:current.generation??0,excluded:current.excludedReferences??[],
+          quotedMessage:current.turns.find(t=>t.messageId===turn.messageId&&t.quote)?.quote,
           cast:roomCharacterContext(persona,castMembers),
-          memory: memoryContext.entries.map((e) => e.content), workContext,
+          memory: memoryContext.entries.map((e) => e.content), workContext,coordination:round.coordination,timeContext:round.timeContext,
           speaker:{id:persona.id,name:persona.name},recipients:turn.recipients,participants:castMembers.map(({id,name})=>({id,name})) });
+        // A removed/excluded target is not permission to answer a different
+        // message. Exact directed plans must reach the actor with that pointer.
+        if(responsePlan?.sourceRef&&!supplied.replyTarget)throw Error('chat-invalid');
+        referenceUse=chatReferenceUsage.begin({roomId:room.id,personaId:persona.id,messageId:turn.messageId,attemptId:turn.attemptId,
+          scopeKey:turn.scopeKey??turn.contextKey??null,work:workContext?.sources??[],omitted:workContext?.omitted??[],
+          notes:supplied.roomNotes.map(n=>n.ref),quote:supplied.quotedMessage?.ref,memory:memoryContext.entries,
+          memoryEnabled:settings.memory===true,historyCount:supplied.historyCount,assignment:supplied.assignment,
+          coordination:round.coordination?{work:round.coordination.work,request:round.coordination.request,basis:round.coordination.basis,selectedSourceIds:round.coordination.sourceIds}:null,
+          discussion:(supplied.discussionState??[]).map(({id,version})=>({id,version}))});
         let wire = '', finish;
+        const preview=()=>{
+          const messages=partialChatReply(wire);if(!replyBudget)return messages;
+          const allowed=[];let chars=0;
+          for(const message of messages){
+            if(allowed.length>=replyBudget.bubbles||chars+message.text.length>replyBudget.chars)break;
+            allowed.push(message);chars+=message.text.length;
+          }
+          return allowed;
+        };
         for await (const chunk of streamWithSignal(llm, { provider: route.provider, model: route.model, system,
-          messages: [{ role: 'user', content: [{ type: 'text', text: user }] }], maxTokens: 2048, signal: abort.signal })) {
+          messages: requestMessages, maxTokens: chatOptions.thinking?(shortReply?4096:8192):(shortReply?768:2048), signal: abort.signal })) {
           if (!valid()) throw new Error('persona-changed');
           if (chunk.type === 'error') throw chunk.error ?? chunk.failure ?? new Error('chat-model-error');
           if (chunk.type.startsWith('tool-call')
@@ -803,8 +1273,8 @@ export function apply(ctx, rawConfig) {
           if (chunk.type === 'text-delta') {wire += chunk.text;
             if(wire.length>24000)throw Error('chat-too-long');
             if(!progressTimer){const delay=Math.max(0,40-(Date.now()-lastLiveAt));
-              if(!delay){publish('streaming',partialChatReply(wire));lastLiveAt=Date.now();}
-              else progressTimer=setTimeout(()=>{progressTimer=undefined;if(valid()&&!abort.signal.aborted){publish('streaming',partialChatReply(wire));lastLiveAt=Date.now();}},delay);
+              if(!delay){publish('streaming',preview());lastLiveAt=Date.now();}
+              else progressTimer=setTimeout(()=>{progressTimer=undefined;if(valid()&&!abort.signal.aborted){publish('streaming',preview());lastLiveAt=Date.now();}},delay);
             }}
           if (wire.length > 24000) throw new Error('chat-too-long');
           if (chunk.type === 'finish') {
@@ -815,90 +1285,314 @@ export function apply(ctx, rawConfig) {
         clearTimeout(progressTimer);progressTimer=undefined;
         abort.signal.throwIfAborted();
         if (!valid() || finish !== 'stop') throw new Error(finish === 'max-tokens' ? 'chat-length' : 'chat-incomplete');
-        const messages = parseChatResponse(wire);
-        if (!messages) { outcome = 'rejected'; throw new Error('chat-format'); }
+        const decision = parseChatDecision(wire);
+        if (!decision) { outcome = 'rejected'; throw new Error('chat-format'); }
+        if(decision.kind==='silent'){
+          let applied;
+          try{applied=await chats.declineReply({roomId:room.id,id:turn.id,attemptId:turn.attemptId,epoch:round.epoch,
+              scopeKey:turn.scopeKey??turn.contextKey??null,referenceRevision:round.referenceRevision??0,through,
+              valid:()=>valid()&&!abort.signal.aborted});}
+          catch{
+            if(!valid()&&!abort.signal.aborted)abort.abort(Error('chat-cancelled'));
+            abort.signal.throwIfAborted();throw Error('chat-save-failed');
+          }
+          if(!valid()&&!abort.signal.aborted)abort.abort(Error('chat-cancelled'));
+          abort.signal.throwIfAborted();
+          if(!applied)throw Error('chat-save-failed');
+          outcome='silent';retainChatEvents(room.id);publish('silent');return{outcome};
+        }
+        const messages=decision.messages;
+        if(replyBudget&&(messages.length>replyBudget.bubbles||messages.join('').length>replyBudget.chars)){
+          outcome='rejected';throw Error('chat-too-long');
+        }
         const applied = await chats.finish({ personaId: persona.id, roomId: room.id, id: turn.id,
           attemptId: turn.attemptId, status: 'ready', messages, valid: () => valid() && !abort.signal.aborted });
         outcome = applied ? 'generated' : 'cancelled';
+        if(applied){const committed=chats.read(room.id),event=roomDirectorEvents(committed,turn.messageId,turn.scopeKey??turn.contextKey??null,Infinity)
+          .find(value=>value.id===chatSchedulerEventKey({roomId:room.id,generation:committed.generation??0,
+            sourceScope:schedulerScope(committed,turn.scopeKey??turn.contextKey??null),turnId:turn.id,attemptId:turn.attemptId}));
+          if(event)publishDirectorEvent(room.id,event,turn.messageId);}
+        if(applied)retainChatEvents(room.id);
         publish(applied?'ready':'cancelled',applied?messages.map(text=>({text,complete:true})):[]);
       } catch (error) {
         const failure = chatFailure(error, abort.signal);
         if (abort.signal.aborted && failure !== 'timeout') outcome = 'cancelled';
         if (!storeClosing) try {
           await chats.finish({ personaId: persona.id, roomId: room.id, id: turn.id, attemptId: turn.attemptId,
-            status: outcome === 'cancelled' ? 'cancelled' : 'failed', failure });
+            status: outcome === 'cancelled' ? 'cancelled' : 'failed', failure,
+            valid:()=>chats.acceptsEpoch(room.id,round.epoch) });
         } catch (error) { warn('chat result persist failed', error); }
         publish(outcome==='cancelled'?'cancelled':'failed');
       } finally {
+        if(actorSlot){
+          if(outcome==='silent')chatScheduler.abstain(room.id,persona.id,actorSlot.token);
+          else chatScheduler.finish(room.id,persona.id,actorSlot.token,{success:outcome==='generated',responseId:turn.attemptId,completedAt:chats.read(room.id)?.turns.find(t=>t.id===turn.id&&t.attemptId===turn.attemptId)?.completedAt??Date.now()});
+        }else if(peerGrantAtStart)chatScheduler.revokePeer(room.id,persona.id,peerGrantAtStart);
         memoryContext?.usage?.finish(outcome);
+        referenceUse?.finish(outcome);
         clearTimeout(progressTimer);
         clearTimeout(timer); abort.abort();
         round.abort.signal.removeEventListener('abort',aborted);
         if (activeChats.get(key) === pending) activeChats.delete(key);
       }
+      return{outcome};
     })());
   }
 
-  function launchChatRound(result,workContext) {
-    const room=result.room,turns=result.turns??[result.turn],messageId=turns[0].messageId;
-    const original=room.turns.find(t=>t.messageId===messageId);
-    const abort=new AbortController(),round={id:randomUUID(),roomId:room.id,messageId,abort,stage:'speaking',epoch:chats.epoch(),
-      contextKey:workContext?.key,attempts:new Set(turns.map(t=>t.attemptId)),
-      members:presets.filter(p=>original.memberIdsAtSend.includes(p.id)&&room.memberIds.includes(p.id)),
-      selected:original.recipients.map(p=>p.id)};
-    chatRounds.get(room.id)?.abort.abort(Error('chat-superseded'));chatRounds.set(room.id,round);
+  function roomDirectorEvents(room,messageId,scopeKey,limit=14000){
+    const all=room.turns.filter(t=>t.messageId===messageId),group=all.filter(t=>(t.scopeKey??t.contextKey??null)===scopeKey),head=all.find(t=>t.phase==='anchor')??all[0];
+    if(!head)return[];
+    const key=t=>chatSchedulerEventKey({roomId:room.id,generation:room.generation??0,sourceScope:schedulerScope(room,scopeKey),turnId:t.id,attemptId:t.phase==='anchor'?'user':t.attemptId});
+    const rows=[{id:key(head),author:{role:'user',name:'我'},messages:head.userParts?.map(p=>p.text)??[head.user],recipients:head.recipients}];
+    for(const turn of group.filter(t=>t.phase!=='anchor'&&t.status==='ready'&&t.assistant.length).sort((a,b)=>(a.emittedOrder??0)-(b.emittedOrder??0))){
+      const source=directedSource(room,rows,turn.responsePlan,scopeKey);
+      rows.push({id:key(turn),author:{role:'assistant',id:turn.recipientId,name:turn.speakerName},messages:turn.assistant,
+        ...(source?{replyTo:{to:turn.responsePlan.to,eventId:source.event.id,index:source.index}}:{})});
+    }
+    return directorEvents(rows,limit);
+  }
+
+  function publishDirectorEvent(roomId,event,userTurnId){
+    chatScheduler.publish(roomId,{id:event.id,authorId:event.author.role==='user'?'user':event.author.id,
+      userTurnId,messageCount:event.messages.length,...(event.replyTo?{replyTo:event.replyTo}:{})});
+  }
+
+  function directorContributions(room,events,scopeKey){
+    const result=[];
+    for(const event of events){
+      if(event.author.role!=='assistant')continue;
+      const key=JSON.parse(event.id),turn=room.turns.find(value=>value.id===key.turnId&&value.attemptId===key.attemptId);
+      if(!turn||turn.status!=='ready'||!turn.assistant.length||(turn.scopeKey??turn.contextKey??null)!==scopeKey)continue;
+      const contribution=normalizeChatContribution(turn.responsePlan?.contribution);
+      if(contribution)result.push({eventId:event.id,contribution});
+    }
+    return result;
+  }
+
+  function directorQuote(room,event,index,scopeKey){
+    const key=JSON.parse(event.id),turn=room.turns.find(value=>value.id===key.turnId&&
+      (value.phase==='anchor'?key.attemptId==='user':value.attemptId===key.attemptId));
+    if(!turn)return undefined;
+    // A confirmed single-seat retry may change its work-reference scope. Its
+    // original user anchor stays the same public instruction; old peer replies
+    // remain subject to their own scope and are never brought across with it.
+    const proof=event.author.role==='user'&&(turn.scopeKey??turn.contextKey??null)!==scopeKey
+      ?{...room,turns:room.turns.map(value=>value===turn?{...turn,scopeKey}:value)}:room;
+    return resolveChatQuote(proof,event.author.role==='user'?{roomId:room.id,generation:room.generation??0,kind:'user',
+      messageId:turn.userParts?.[index]?.id??turn.messageId}:{roomId:room.id,generation:room.generation??0,kind:'assistant',
+      turnId:turn.id,attemptId:turn.attemptId,index},scopeKey);
+  }
+
+  function directedSource(room,events,plan,scopeKey){
+    if(typeof plan?.evidence!=='string'||!plan.evidence.trim())return undefined;
+    const expected=plan.sourceRef===undefined?undefined:quoteKey(plan.sourceRef);
+    if(expected===null)return undefined;
+    const matches=[];
+    for(const event of events){
+      if(!(plan.to==='user'?event.author.role==='user':event.author.id===plan.to))continue;
+      for(let index=0;index<event.messages.length;index++){
+        if(!event.messages[index].includes(plan.evidence))continue;
+        const quote=directorQuote(room,event,index,scopeKey);
+        if(quote&&(expected===undefined||quoteKey(quote.ref)===expected))matches.push({event,index,quote});
+      }
+    }
+    // An old literal-only plan is usable only when its original location is
+    // unique. Identical text from a later turn must never silently rebind it.
+    return matches.length===1?matches[0]:undefined;
+  }
+
+  function launchChatRound(result,workContext,clientTime) {
+    const room=result.room,messageId=result.turn.messageId,original=room.turns.find(t=>t.messageId===messageId);
+    const scopeKey=result.turn.scopeKey??result.turn.contextKey??null,startedAt=Date.now(),abort=new AbortController();
+    const round={id:randomUUID(),roomId:room.id,messageId,abort,stage:'preparing',startedAt,epoch:chats.epoch(),
+      referenceRevision:room.referenceRevision??0,contextKey:workContext?.key,timeContext:createChatTimeContext(clientTime,startedAt),
+      attempts:new Set(),silentFrames:new Map(),members:presets.filter(p=>original.memberIdsAtSend.includes(p.id)&&room.memberIds.includes(p.id)),
+      selected:original.recipients.map(p=>p.id),disabled:new Set(room.turns.filter(t=>t.messageId===messageId&&['failed','cancelled'].includes(t.status)).map(t=>t.recipientId))};
+    chatRounds.get(room.id)?.abort.abort(Error('chat-superseded'));chatRounds.set(room.id,round);chatDirectorFailures.delete(room.id);
     const source=roomContexts.get(room.id)??chatContext;
     const valid=()=>!storeClosing&&!abort.signal.aborted&&chatRounds.get(room.id)===round&&chats.acceptsEpoch(room.id,round.epoch)
-      &&chats.read(room.id)?.turns.at(-1)?.messageId===messageId&&(!workContext||source.key()===workContext.key);
-    const totalTimer=setTimeout(()=>abort.abort(Error('chat-timeout')),Math.min(120000,cfg.timeoutMs*8));
-    const queue=(batch,currentRoom)=>{let chain;for(const turn of batch){const person=round.members.find(p=>p.id===turn.recipientId);
-      const task=person?launchChat(person,currentRoom,turn,workContext,chain,round)
-        :(chain??Promise.resolve()).then(()=>chats.finish({roomId:room.id,id:turn.id,attemptId:turn.attemptId,status:'cancelled',failure:'persona-changed'}));
-      chain=Promise.allSettled([chain,task]);
-    }return chain??Promise.resolve();};
-    const main=queue(turns,room);
+      &&chats.read(room.id)?.turns.at(-1)?.messageId===messageId&&(chats.read(room.id)?.referenceRevision??0)===round.referenceRevision&&(!workContext||source.key()===workContext.key);
+    chatScheduler.register(room.id,original.memberIdsAtSend,{generation:room.generation??0,sourceScope:schedulerScope(room,scopeKey)});
+    if(result.created&&result.turn.phase==='anchor')chatScheduler.reset(room.id,messageId,round.selected);
+    else if(chatScheduler.read(room.id,original.memberIdsAtSend[0])?.userTurnId!==messageId)chatScheduler.restoreCycle(room.id,{
+      userTurnId:messageId,recipients:round.selected,at:original.at,
+      responses:room.turns.filter(t=>t.messageId===messageId&&t.phase!=='anchor'&&t.status==='ready').map(t=>({
+        id:t.attemptId,personaId:t.recipientId,kind:t.responsePlan?.kind==='peer'?'peer':'normal',completedAt:t.completedAt??t.at}))});
+    for(const id of original.memberIdsAtSend)if(!room.memberIds.includes(id))chatScheduler.removeMember(room.id,id);
+    const present=()=>round.members.filter(p=>chats.hasMember(room.id,p.id)&&presets.find(v=>v.id===p.id)?.pack===p.pack);
+    const history=()=>chats.read(room.id).turns.filter(t=>t.messageId!==messageId&&(t.scopeKey??t.contextKey??null)===scopeKey);
+    const refresh=()=>{
+      const current=chats.read(room.id),events=roomDirectorEvents(current,messageId,scopeKey);
+      for(const event of events)publishDirectorEvent(room.id,event,messageId);
+      retainChatEvents(room.id);return events;
+    };
+    const wait=ms=>new Promise(resolve=>{
+      const wake=()=>{clearTimeout(timer);abort.signal.removeEventListener('abort',wake);if(round.wake===wake)delete round.wake;resolve();};
+      const timer=setTimeout(wake,Math.max(0,ms));round.wake=wake;abort.signal.addEventListener('abort',wake,{once:true});if(abort.signal.aborted)wake();
+    });
+    const timer=setTimeout(()=>abort.abort(Error('chat-timeout')),Math.max(120000,Math.min(600000,cfg.timeoutMs*32)));
     void trackModelTask((async()=>{
+      let lastDecision=chatDirectorClocks.get(room.id)??-Infinity,decisions=0;const checked=new Set();
       try{
-        await main;if(!valid()||turns.every(t=>t.phase==='reaction'))return;
-        const current=chats.read(room.id),primary=current.turns.filter(t=>t.messageId===messageId&&t.phase!=='reaction');
-        const candidates=round.members.filter(p=>!round.selected.includes(p.id)&&chats.hasMember(room.id,p.id)&&presets.find(v=>v.id===p.id)?.pack===p.pack);
-        const limit=Math.min(CHAT_LIMITS.reactions,candidates.length),scopeKey=workContext?.scopeKey??workContext?.key??null;
-        if(!limit||!candidates.length||!primary.some(t=>t.status==='ready')||primary.some(t=>(t.scopeKey??t.contextKey??null)!==scopeKey))return;
-        round.stage='listening';const controller=new AbortController(),stop=()=>controller.abort(abort.signal.reason);
-        abort.signal.addEventListener('abort',stop,{once:true});if(abort.signal.aborted)stop();
-        const timer=setTimeout(()=>controller.abort(Error('chat-timeout')),Math.min(8000,cfg.timeoutMs));let picked=[];
-        try{
-          const options={provider:settings.chatProvider,model:settings.chatModel,thinking:false};
-          const route=await waitWithSignal(resolveChatRouteAsync(workContext?.primarySessionId??currentSessionHint(),options),controller.signal);
-          const llm=expressionLlm('chat-participation',()=>{if(!valid())throw Error('chat-cancelled');},options);
-          if(route&&llm&&valid()){
-            const castMembers=round.members.filter(p=>chats.hasMember(room.id,p.id)&&presets.find(v=>v.id===p.id)?.pack===p.pack);
-            const presentCandidates=candidates.filter(p=>castMembers.includes(p));
-            if(!presentCandidates.length)return;
-            const {system,user}=buildParticipationPrompt({message:primary[0].user,recipients:primary[0].recipients,exchange:publicChatExchange(primary,4000),candidates:presentCandidates,limit:Math.min(limit,presentCandidates.length),
-              cast:roomCharacterContext(null,castMembers,{allRelationships:true})});
-            let wire='',finish;
-            for await(const chunk of streamWithSignal(llm,{provider:route.provider,model:route.model,system,messages:[{role:'user',content:[{type:'text',text:user}]}],maxTokens:256,signal:controller.signal})){
-              if(chunk.type==='error'||chunk.type.startsWith('tool-call')||(chunk.type==='block-start'&&chunk.blockType==='tool-call')||(chunk.type==='block-end'&&chunk.block?.type==='tool-call'))throw Error('invalid-participation');
-              if(chunk.type==='text-delta')wire+=chunk.text;if(wire.length>4096)throw Error('invalid-participation');
+        // Explicit retries consume the existing cycle; they never reset its locks.
+        if(result.turn.phase!=='anchor'&&result.turn.status==='pending'){
+          const turn=result.turn,person=present().find(p=>p.id===turn.recipientId);round.disabled.delete(turn.recipientId);
+          if(person){
+            refresh();
+            const retryTimeline=roomDirectorEvents(chats.read(room.id),messageId,scopeKey,Infinity);
+            // Retry authority uses the exact durable source, even when the
+            // director's smaller reading window omitted its older long bubble.
+            for(const event of retryTimeline)publishDirectorEvent(room.id,event,messageId);
+            const retrySource=directedSource(chats.read(room.id),retryTimeline,turn.responsePlan,scopeKey);
+            if(turn.responsePlan?.to!=='user'&&!retrySource)throw Error('chat-peer-evidence');
+            if(turn.responsePlan?.kind==='peer'){
+              const event=retrySource?.event;
+              if(!event||!possiblePeerCall(person,event,present()))throw Error('chat-peer-evidence');
+              const grant=chatScheduler.read(room.id,person.id)?.peerGrant;
+              if(grant ? grant.sourceEventId!==event.id||grant.fromId!==event.author.id
+                : !chatScheduler.grantPeer(room.id,person.id,{sourceEventId:event.id,fromId:event.author.id,evidence:turn.responsePlan.evidence}))throw Error('chat-peer-evidence');
+            }
+            const contribution=normalizeChatContribution(turn.responsePlan?.contribution);
+            round.directive={id:person.id,kind:turn.responsePlan?.kind==='peer'?'peer':'normal',to:turn.responsePlan?.to??'user',
+              goal:contribution?.point??'完成这次未成功的回应，保持原话与回应对象，不重复已完成的其他发言。',...(contribution?{contribution}:{})};
+            round.replyTarget=retrySource?.quote;
+            round.attempts.add(turn.attemptId);round.stage='speaking';
+            const reply=await launchChat(person,chats.read(room.id),turn,workContext,undefined,round);
+            if(reply?.outcome!=='silent'&&chats.read(room.id)?.turns.find(t=>t.id===turn.id)?.status!=='ready')round.disabled.add(person.id);
+          }
+          // Confirmation authorizes this failed seat against the new reference
+          // scope, not a fresh continuation of the old scope's user cycle.
+          if((original.scopeKey??original.contextKey??null)!==scopeKey)return;
+        }
+        while(valid()&&decisions<1+CHAT_LIMITS.members+2*CHAT_LIMITS.roundReplies){
+          if(chatInputs.peek(room.id))break;
+          const current=chats.read(room.id),group=current.turns.filter(t=>t.messageId===messageId&&t.phase!=='anchor');
+          if(group.length>=CHAT_LIMITS.roundReplies)break;
+          const events=refresh(),timeline=roomDirectorEvents(current,messageId,scopeKey,Infinity),visibleIds=new Set(events.map(e=>e.id)),
+            members=present(),states=members.map(person=>{
+            const state=chatScheduler.read(room.id,person.id),normalAt=chatScheduler.readyAt(room.id,person.id,'normal');
+            // A completed response consumes the timeline it saw. Grade changes,
+            // cooldowns and restarts cannot turn that same original line into a
+            // fresh invitation. A genuinely new peer statement can still reopen
+            // a natural return, using the actor's remaining independent budget.
+            const lastOwn=timeline.findLastIndex(e=>e.author.role==='assistant'&&e.author.id===person.id);
+            const silence=current.silences?.find(value=>value.personaId===person.id&&value.messageId===messageId
+              &&value.scopeKey===scopeKey&&value.referenceRevision===(current.referenceRevision??0));
+            const silenceKey=silence?chatSchedulerEventKey({roomId:room.id,generation:current.generation??0,sourceScope:schedulerScope(current,scopeKey),...silence.through}):null;
+            const lastSeen=silenceKey?timeline.findIndex(e=>e.id===silenceKey):-1,
+              unread=timeline.slice(Math.max(lastOwn,lastSeen)+1).filter(e=>visibleIds.has(e.id)&&(e.author.role==='user'||e.author.id!==person.id)),
+              pendingEventIds=unread.map(e=>e.id),normalPendingEventIds=(state?.normalPendingEventIds??[]).filter(id=>pendingEventIds.includes(id));
+            const possible=state?.peerRemaining===1&&unread.some(e=>possiblePeerCall(person,e,members));
+            return{id:person.id,level:state?.level??3,normalRemaining:state?.normalRemaining??0,peerRemaining:state?.peerRemaining??0,
+              spokenCount:timeline.filter(e=>e.author.role==='assistant'&&e.author.id===person.id).length,
+              pendingEventIds,normalPendingEventIds,normalReady:!round.disabled.has(person.id)&&normalPendingEventIds.length>0&&normalAt!==null&&normalAt<=Date.now(),
+              peerReady:!round.disabled.has(person.id)&&possible&&!state.inFlight&&state.nextEligibleAt<=Date.now()};
+          });
+          const signature=JSON.stringify([events.map(e=>e.id),states]);
+          const eligible=states.some(s=>s.normalReady||s.peerReady);
+          if(!eligible||checked.has(signature)){
+            const due=members.filter(p=>!round.disabled.has(p.id)).flatMap(person=>{
+              const state=chatScheduler.read(room.id,person.id),normalAt=chatScheduler.readyAt(room.id,person.id,'normal');
+              const unread=events.filter(e=>states.find(s=>s.id===person.id)?.pendingEventIds.includes(e.id));
+              return[states.find(s=>s.id===person.id)?.normalPendingEventIds.length?normalAt:null,state?.peerRemaining===1&&unread.some(e=>possiblePeerCall(person,e,members))?state.nextEligibleAt:null];
+            }).filter(at=>at!==null&&at>Date.now());
+            if(!due.length)break;
+            round.stage='listening';await wait(Math.max(Math.min(...due),lastDecision+chatIntervalMs)-Date.now());continue;
+          }
+          const delay=lastDecision+chatIntervalMs-Date.now();if(delay>0){round.stage='listening';await wait(delay);continue;}
+          checked.add(signature);lastDecision=Date.now();chatDirectorClocks.set(room.id,lastDecision);decisions++;
+          const sources=workContext?.key&&source.active()?source.selection(workContext.key).sources:[];
+          const directorOptions={message:original.user,recipients:original.recipients,members,states,events,
+            contributions:directorContributions(current,events,scopeKey),
+            sources,sourceIds:sources.map(s=>s.id),history:history(),quotedMessage:original.quote,referenceSelection:round.coordination,
+            sceneCatalog:buildChatSceneCatalog(current,{messageId,scopeKey,referenceRevision:round.referenceRevision??0})};
+          const {system,user}=buildDirectorRequest(directorOptions);
+          round.stage=group.length?'listening':'preparing';
+          const controller=new AbortController(),stop=()=>controller.abort(abort.signal.reason);
+          abort.signal.addEventListener('abort',stop,{once:true});if(abort.signal.aborted)stop();
+          const deadline=setTimeout(()=>controller.abort(Error('chat-director-timeout')),cfg.timeoutMs);
+          let decision,finish,failureReason;
+          try{
+            const options={provider:settings.chatProvider,model:settings.chatModel,thinking:false};
+            const route=await waitWithSignal(resolveChatRouteAsync(workContext?.primarySessionId??currentSessionHint(),options,controller.signal),controller.signal);
+            if(!route||!valid())throw Error('chat-unavailable');round.model=route;
+            const llm=expressionLlm('chat-participation',()=>{if(!valid()||controller.signal.aborted)throw Error('chat-cancelled');},options);
+            if(!llm)throw Error('chat-unavailable');let wire='';
+            lastDecision=Date.now();chatDirectorClocks.set(room.id,lastDecision);
+            for await(const chunk of streamWithSignal(llm,{...route,system,messages:[{role:'user',content:[{type:'text',text:user}]}],maxTokens:2048,signal:controller.signal})){
+              if(chunk.type==='error')throw Error('chat-director-model-error');
+              if(chunk.type.startsWith('tool-call')||(chunk.type==='block-start'&&chunk.blockType==='tool-call')||(chunk.type==='block-end'&&chunk.block?.type==='tool-call')){
+                failureReason='tool-call';throw Error('chat-director-invalid');
+              }
+              if(chunk.type==='text-delta')wire+=chunk.text;
+              if(wire.length>20000){failureReason='too-long';throw Error('chat-director-invalid');}
               if(chunk.type==='finish')finish=chunk.reason?.kind;
             }
-            if(finish==='stop'&&!controller.signal.aborted)picked=parseParticipation(wire,presentCandidates.map(p=>p.id),limit);
+            controller.signal.throwIfAborted();if(!valid())return;
+            decision=finish==='stop'?parseDirectorResponse(wire,directorOptions):{basis:'invalid',reason:'non-stop'};
+            if(decision.basis!=='model'){
+              failureReason=DIRECTOR_REASONS.has(decision.reason)?decision.reason:'shape';throw Error('chat-director-invalid');
+            }
+            if(decision.sceneKey!==undefined){
+              const scene=selectChatScene(chats.read(room.id),{messageId,scopeKey,referenceRevision:round.referenceRevision??0,key:decision.sceneKey});
+              if(!scene){failureReason='scene';throw Error('chat-director-invalid');}
+              const applied=await waitWithSignal(chats.setScene({roomId:room.id,messageId,scene,scopeKey,referenceRevision:round.referenceRevision??0,
+                epoch:round.epoch,valid:()=>valid()&&!controller.signal.aborted}),controller.signal);
+              if(!valid())return;
+              if(!applied)throw Error('chat-scene-save-failed');
+            }
+            diagnostics.chatDirector={at:Date.now(),roomId:room.id,messageId,status:'accepted',finish:'stop'};
+          }catch(error){if(valid()){
+            const code=controller.signal.reason?.message==='chat-director-timeout'?'timeout':error.message==='chat-director-invalid'?'invalid':'unavailable';
+            const issue={messageId,code,...(code==='invalid'&&DIRECTOR_REASONS.has(failureReason)?{reason:failureReason}:{}),
+              finish:finish===undefined?'missing':DIRECTOR_FINISHES.has(finish)?finish:'other'};
+            chatDirectorFailures.set(room.id,issue);
+            // Keep stable categories only. Provider output and conversation text
+            // never enter diagnostics, memory or the usage ledger.
+            diagnostics.chatDirector={at:Date.now(),roomId:room.id,status:'failed',...issue};
+          }return;}
+          finally{clearTimeout(deadline);abort.signal.removeEventListener('abort',stop);controller.abort();}
+          if(!valid()||chatInputs.peek(room.id))break;
+          const explicit=explicitContextSelection(original.user);
+          round.coordination=explicit??(decision.context.basis==='omitted'&&round.coordination?round.coordination:decision.context);
+          if(!decision.next){if(decision.waitForUser===true)break;continue;}
+          const action=decision.next,person=members.find(p=>p.id===action.id);
+          const targetEvent=events.find(event=>event.id===action.evidence.eventId);
+          round.replyTarget=directorQuote(chats.read(room.id),targetEvent,action.evidence.index,scopeKey);
+          let preparationGrant;
+          if(action.kind==='peer'){
+            const grant=chatScheduler.read(room.id,person.id)?.peerGrant;
+            if(!grant&&!chatScheduler.grantPeer(room.id,person.id,{sourceEventId:action.evidence.eventId,fromId:action.to,evidence:action.evidence.text}))continue;
+            if(grant&&(grant.sourceEventId!==action.evidence.eventId||grant.fromId!==action.to))continue;
+            preparationGrant=chatScheduler.read(room.id,person.id)?.peerGrant;
           }
-        }catch{/* Silence is the safe, ordinary fallback for a listener decision. */}
-        finally{clearTimeout(timer);abort.signal.removeEventListener('abort',stop);controller.abort();}
-        if(!valid())return;
-        const recipients=picked.map(id=>candidates.find(p=>p.id===id)).filter(p=>chats.hasMember(room.id,p.id)&&presets.find(v=>v.id===p.id)?.pack===p.pack).map(p=>({id:p.id,name:p.name}));
-        const added=await chats.appendReactions({roomId:room.id,messageId,planId:round.id,primaryAttempts:primary.map(t=>({id:t.id,attemptId:t.attemptId})),recipients,
-          epoch:round.epoch,contextKey:workContext?.key??null,scopeKey,valid});
-        if(valid()&&added.created&&added.turns.length){for(const t of added.turns)round.attempts.add(t.attemptId);round.stage='speaking';await queue(added.turns,added.room);}
-      }catch{/* A failed listener append does not discard successful primary replies. */}
+          try{
+          if(workContext?.key){
+            const ids=round.coordination.work==='required'?round.coordination.sourceIds:[];
+            if(source.active()){
+              if(ids.length)await waitWithSignal(source.prepareCapture(workContext.key,{sourceIds:ids}),abort.signal);
+              if(!valid())return;workContext={...source.capture(workContext.key,{sourceIds:ids}),sourceCatalog:source.selection(workContext.key).sources,scopeKey};
+            }else{workContext={...workContext,sources:[],omitted:ids.length?[{name:'已接入的工作参考',reason:'inactive'}]:[]};if(ids.length)round.coordination={...contextSelectionFallback('unavailable'),request:round.coordination.request};}
+          }
+          const state=chats.read(room.id),added=await chats.appendDirectedReply({roomId:room.id,messageId,planId:round.id+':'+decisions,
+            actor:{id:person.id,name:person.name},responsePlan:{kind:action.kind,to:action.to,evidence:action.evidence.text,
+              ...(action.contribution?{contribution:action.contribution}:{}),
+              ...(round.replyTarget?.ref?{sourceRef:round.replyTarget.ref}:{})},
+            attempts:state.turns.filter(t=>t.messageId===messageId).map(t=>({id:t.id,attemptId:t.attemptId})),members,
+            epoch:round.epoch,contextKey:workContext?.key??null,scopeKey,valid});
+          if(!valid()||!added.created)continue;
+          round.directive=action;round.attempts.add(added.turn.attemptId);round.stage='speaking';
+          const reply=await launchChat(person,added.room,added.turn,workContext,undefined,round);
+          if(reply?.outcome!=='silent'&&chats.read(room.id)?.turns.find(t=>t.id===added.turn.id)?.status!=='ready')round.disabled.add(person.id);
+          }finally{if(preparationGrant)chatScheduler.revokePeer(room.id,person.id,preparationGrant);}
+        }
+      }catch(error){if(valid())chatDirectorFailures.set(room.id,{messageId,code:'unavailable'});}
       finally{
-        clearTimeout(totalTimer);
+        clearTimeout(timer);
         if(abort.signal.aborted&&!storeClosing){const pending=chats.read(room.id)?.turns.filter(t=>t.messageId===messageId&&t.status==='pending'&&round.attempts.has(t.attemptId))??[];
           if(pending.length)try{await chats.cancel({roomId:room.id,id:pending[0].id,attemptId:pending[0].attemptId,messageId,
-            attempts:pending.map(t=>({id:t.id,attemptId:t.attemptId})),epoch:round.epoch});}catch{/* Clear/delete may already have retired this generation. */}}
-        if(chatRounds.get(room.id)===round)chatRounds.delete(room.id);
+            attempts:pending.map(t=>({id:t.id,attemptId:t.attemptId})),epoch:round.epoch});}catch{/* Retired generation. */}}
+        if(chatRounds.get(room.id)===round)chatRounds.delete(room.id);armChatInput(room.id);
       }
     })());
   }
@@ -958,6 +1652,7 @@ export function apply(ctx, rawConfig) {
     store.putSettings({
       enabled: settings.enabled,
       includeToolSteps: settings.includeToolSteps,
+      colloquialReports: settings.colloquialReports,
       trigger: settings.trigger,
       processToolUsage: settings.processToolUsage,
       memory: settings.memory,
@@ -972,6 +1667,10 @@ export function apply(ctx, rawConfig) {
       model: settings.model,
       reasoningEffort: settings.reasoningEffort,
       chatProvider:settings.chatProvider,chatModel:settings.chatModel,chatThinking:settings.chatThinking,
+      chatReasoningEffort:settings.chatReasoningEffort,
+      visualizationProvider:settings.visualizationProvider,visualizationModel:settings.visualizationModel,
+      visualizationThinking:settings.visualizationThinking,
+      readableThinking:settings.readableThinking,
     }).catch((error) => warn('settings persist failed', error));
   }
 
@@ -1043,7 +1742,7 @@ export function apply(ctx, rawConfig) {
     let collected = '';
     try {
       if (storeClosing) throw new Error('disposed');
-      const route = await waitWithSignal(resolveRouteAsync(sessionId), abort.signal);
+      const route = await waitWithSignal(resolveRouteAsync(sessionId,abort.signal), abort.signal);
       abort.signal.throwIfAborted();
       if (storeClosing) throw new Error('disposed');
       if (route === undefined) return { ok: false, reason: 'no-route' };
@@ -1085,7 +1784,7 @@ export function apply(ctx, rawConfig) {
       if (storeClosing) throw new Error('disposed');
       const llm = expressionLlm('memory');
       if (!llm) throw new Error('no-llm');
-      const route = await waitWithSignal(resolveRouteAsync(batch.sources[0].sessionId), abort.signal);
+      const route = await waitWithSignal(resolveRouteAsync(batch.sources[0].sessionId,abort.signal), abort.signal);
       abort.signal.throwIfAborted();
       if (!route || storeClosing) throw new Error('no-route');
       const prompt = buildMemoryPrompt(batch);
@@ -1242,7 +1941,7 @@ export function apply(ctx, rawConfig) {
       speaker: row.speaker,
       memoryRefs: row.memoryRefs,
       sourceIsSubagent: row.sourceIsSubagent === true,
-      final: row.final === true,
+      final: row.final === true && row.finalInferred !== true,
       time: row.time,
     }))).catch((error) => warn(`persist failed for ${sessionId}`, error));
   }
@@ -1275,7 +1974,9 @@ export function apply(ctx, rawConfig) {
     }
     hydrated.add(sessionId);
     try {
+      let legacyFinalUnknown = false;
       for (const saved of savedRows) {
+        if (saved?.final === undefined) legacyFinalUnknown = true;
         const key = `${sessionId}:${saved.seq}`;
         if (rows.has(key)) continue;
         rows.set(key, {
@@ -1304,7 +2005,7 @@ export function apply(ctx, rawConfig) {
         });
       }
       trim(sessionId);
-      markRestoredTail(sessionId);
+      if (legacyFinalUnknown) markRestoredTail(sessionId);
       touch(sessionId);
     } catch (error) {
       warn(`hydrate failed for ${sessionId}`, error);
@@ -1332,7 +2033,7 @@ export function apply(ctx, rawConfig) {
       if (row.status !== 'ready') continue;
       if (newest === undefined || row.seq > newest.seq) newest = row;
     }
-    if (newest !== undefined) newest.final = true;
+    if (newest !== undefined) { newest.final = true; newest.finalInferred = true; }
   }
 
   /** Keep results bounded, including failed preparations that never reach rewrite(). */
@@ -1364,57 +2065,11 @@ export function apply(ctx, rawConfig) {
     return best;
   }
 
-  function resolveRoute(sessionId) {
-    // A provider without a model means "this provider's default", not "ignore the
-    // setting". The old test required both to be non-empty, so choosing
-    // 「该提供方的默认模型」 silently fell through to the session's route — the
-    // page showed a provider the rewrite was not using, and the user could not
-    // tell where their requests were going.
-    if (settings.provider !== '') {
-      return { provider: settings.provider, model: settings.model };
-    }
-    const state = turnState.get(sessionId);
-    if (state?.provider !== undefined && state?.model !== undefined) {
-      return { provider: state.provider, model: state.model };
-    }
-    return undefined;
-  }
-
-  /**
-   * Resolve the model route, filling in a provider's default model when the user
-   * chose a provider but no model.
-   *
-   * The synchronous `resolveRoute` cannot ask the provider for its default, and
-   * passing an empty model through would either fail or pick something
-   * unexpected. Asking here keeps the promise the settings page makes: choosing
-   * 「该提供方的默认模型」 uses that provider.
-   * @param {string | undefined} sessionId
-   */
-  async function resolveRouteAsync(sessionId) {
-    const route = resolveRoute(sessionId);
-    if (route === undefined) return undefined;
-    if (route.model !== '') return route;
-
-    const llm = getLlm();
-    if (llm === undefined || typeof llm.listModels !== 'function') return undefined;
-    try {
-      const listed = await llm.listModels(route.provider);
-      const first = Array.isArray(listed) ? listed[0] : undefined;
-      if (first === undefined || typeof first.id !== 'string' || first.id === '') return undefined;
-      return { provider: route.provider, model: first.id };
-    } catch {
-      return undefined;
-    }
-  }
-
-  function chatRoute(sessionId,options={provider:settings.chatProvider,model:settings.chatModel}) {
-    return options.provider?{provider:options.provider,model:options.model}:resolveRoute(sessionId);
-  }
-  async function resolveChatRouteAsync(sessionId,options) {
-    const route=chatRoute(sessionId,options);if(!route||route.model)return route;
-    try{const models=await getLlm()?.listModels?.(route.provider);const first=Array.isArray(models)?models[0]:undefined;
-      return typeof first?.id==='string'&&first.id?{provider:route.provider,model:first.id}:undefined;}catch{return undefined;}
-  }
+  const routePair=route=>route?{provider:route.provider,model:route.model}:undefined;
+  function resolveRoute(sessionId) {return routePair(modelRoutes.peek(sessionId));}
+  async function resolveRouteAsync(sessionId,signal) {return routePair(await modelRoutes.resolve(sessionId,undefined,{signal}));}
+  function chatRoute(sessionId,options={provider:settings.chatProvider,model:settings.chatModel}) {return routePair(modelRoutes.peek(sessionId,options));}
+  async function resolveChatRouteAsync(sessionId,options,signal) {return routePair(await modelRoutes.resolve(sessionId,options,{signal}));}
 
   /**
    * Rewrite one text. Never throws: any failure settles the row without text,
@@ -1464,7 +2119,7 @@ export function apply(ctx, rawConfig) {
         row.memoryRefs = (memoryContext?.entries ?? []).map((e) => ({ id: e.id, version: e.version }));
       });
       if (llm === undefined) { settle('skipped', 'no-llm'); return; }
-      const route = await waitWithSignal(resolveRouteAsync(sessionId), abort.signal);
+      const route = await waitWithSignal(resolveRouteAsync(sessionId,abort.signal), abort.signal);
       abort.signal.throwIfAborted();
       if (!rewriteAllowedFor(sessionId)) { settle('skipped', rewriteBlockReason(sessionId)); return; }
       if (revision !== revisionFor(sessionId)) { settle('skipped', 'persona-changed'); return; }
@@ -1474,13 +2129,17 @@ export function apply(ctx, rawConfig) {
       const prose = masked.replace(/\[\[\d+\]\]/g, '').trim();
       if (prose.length < 2) { settle('skipped', 'no-prose'); return; }
       memoryContext = expressionMemory(persona.id, sessionId, text, feedback ? 'retry' : processMode ? 'process' : 'report');
+      const maxRatio = feedback ? Math.max(cfg.maxRatio, 1.7) : cfg.maxRatio;
       const { system, user } = buildRewritePrompt({
         pack: persona.pack,
+        persona:{id:persona.id,builtin:persona.builtin===true},
         masked,
         literalCount: literals.length,
         history: feedback ? [] : samples.get(sessionId) ?? [],
         memory: memoryContext.entries.map((e) => e.content),
         processTools: processMode,
+        colloquialReports: settings.colloquialReports,
+        maxRatio,
         feedback,
         sourceLabel: row.sourceIsSubagent ? persona.pack.address.subagent : undefined,
       });
@@ -1504,7 +2163,7 @@ export function apply(ctx, rawConfig) {
       };
       if (processMode) {
         const result = await runProcessRewrite({ llm, options, usage, allowed: processAllowed,
-          maxChars: Math.ceil(Math.max(masked.length * cfg.maxRatio, masked.length + 200) * 6 + 1024),
+          maxChars: Math.ceil(Math.max(masked.length * maxRatio, masked.length + 200) * 6 + 1024),
           onPartial(value) { collected = value; flush(false); } });
         collected = result.text;
         processNote = result.note;
@@ -1530,11 +2189,15 @@ export function apply(ctx, rawConfig) {
         candidate: collected,
         original: masked,
         literalCount: literals.length,
-        maxRatio: cfg.maxRatio,
+        maxRatio,
       });
       if (!verdict.ok) { rejected = true; settle('skipped', verdict.reason); return; }
 
-      row.text = unmask(collected.trim(), literals);
+      const candidate = unmask(collected.trim(), literals);
+      const fidelity = checkReportFidelity({ original: text, candidate, relay: persona.pack.narration?.mode === 'relay',
+        workerLabel: row.sourceIsSubagent ? persona.pack.address.subagent : persona.pack.narration?.assistant });
+      if (!fidelity.ok) { rejected = true; settle('skipped', 'source-' + fidelity.reasons[0]); return; }
+      row.text = candidate;
       row.model = `${route.provider}/${route.model}`;
       row.status = 'ready';
       row.reason = '';
@@ -1713,10 +2376,11 @@ export function apply(ctx, rawConfig) {
         const memoryContext = expressionMemory(persona.id, sessionId, facts, 'progress');
         let outcome = 'failed';
         try {
-          const route = await waitWithSignal(resolveRouteAsync(sessionId), signal);
+          const route = await waitWithSignal(resolveRouteAsync(sessionId,signal), signal);
           const llm = expressionLlm('progress', () => memoryContext.usage?.sent());
           if (signal.aborted || !route || !llm) throw new Error('progress-unavailable');
-          const { system, user } = buildProgressPrompt(normalizePack(persona.pack), facts, memoryContext.entries.map((e) => e.content));
+          const { system, user } = buildProgressPrompt(normalizePack(persona.pack), facts, memoryContext.entries.map((e) => e.content),
+            {id:persona.id,builtin:persona.builtin===true});
           let text = '';
           let finished = false;
           for await (const chunk of streamWithSignal(llm, { provider: route.provider, model: route.model, system,
@@ -1738,6 +2402,7 @@ export function apply(ctx, rawConfig) {
 
   function onSessionEvent(session, event) {
     if (storeClosing) return;
+    reportViews.event(session, event);
     chatContext.event(session, event);
     for (const context of roomContexts.values()) context.event(session,event);
     if (typeof session?.id === 'string' && Number.isSafeInteger(event.seq)) {
@@ -1848,6 +2513,7 @@ export function apply(ctx, rawConfig) {
         const row = rows.get(`${sessionId}:${closing}`);
         if (row !== undefined) {
           row.final = true;
+          row.finalInferred = false;
           row.processNote = undefined;
           row.processUsage = undefined;
           touch(sessionId);
@@ -1866,6 +2532,7 @@ export function apply(ctx, rawConfig) {
           const created = rows.get(`${sessionId}:${candidate.seq}`);
           if (created !== undefined) {
             created.final = true;
+            created.finalInferred = false;
             touch(sessionId);
           }
         }
@@ -2055,7 +2722,7 @@ export function apply(ctx, rawConfig) {
       const savedSettings = opened.getSettings();
       if (savedSettings !== null && typeof savedSettings === 'object') {
         if (['step', 'report'].includes(savedSettings.trigger)) settings.trigger = savedSettings.trigger;
-        for (const key of ['enabled', 'includeToolSteps', 'memory', 'memoryExtraction', 'reviewHints', 'subagentSteps', 'subagentReports']) {
+        for (const key of ['enabled', 'includeToolSteps', 'colloquialReports', 'memory', 'memoryExtraction', 'reviewHints', 'subagentSteps', 'subagentReports']) {
           if (typeof savedSettings[key] === 'boolean') settings[key] = savedSettings[key];
         }
         if (typeof savedSettings.processToolUsage === 'boolean') settings.processToolUsage = savedSettings.processToolUsage;
@@ -2067,10 +2734,13 @@ export function apply(ctx, rawConfig) {
         if (Number.isInteger(savedSettings.progressMinutes) && savedSettings.progressMinutes >= 1 && savedSettings.progressMinutes <= 60) {
           settings.progressMinutes = savedSettings.progressMinutes;
         }
-        for (const key of ['provider', 'model', 'reasoningEffort','chatProvider','chatModel']) {
+        for (const key of ['provider', 'model', 'reasoningEffort','chatProvider','chatModel','visualizationProvider','visualizationModel']) {
           if (typeof savedSettings[key] === 'string') settings[key] = savedSettings[key];
         }
         if(typeof savedSettings.chatThinking==='boolean')settings.chatThinking=savedSettings.chatThinking;
+        if(typeof savedSettings.chatReasoningEffort==='string'&&savedSettings.chatReasoningEffort.trim().length<=128)settings.chatReasoningEffort=savedSettings.chatReasoningEffort.trim();
+        if(typeof savedSettings.visualizationThinking==='boolean')settings.visualizationThinking=savedSettings.visualizationThinking;
+        if(typeof savedSettings.readableThinking==='boolean')settings.readableThinking=savedSettings.readableThinking;
       }
       for (const [key, value] of pendingSettings) settings[key] = value;
       if (!settings.memory || !settings.memoryExtraction) memories.discardQueue();
@@ -2192,6 +2862,7 @@ export function apply(ctx, rawConfig) {
       // misreport the global switch as on. The full map arrives in /settings.
       sessionEnabled: settings.enabled === true && enabledRestored && sessionEnabledFor(sessionId),
       switchesReady: enabledRestored,
+      reports: reportViews.list(sessionId),
       rows: own.map((row) => ({
         seq: row.seq,
         status: row.status,
@@ -2205,7 +2876,8 @@ export function apply(ctx, rawConfig) {
         speaker: row.speaker,
         retrying: row.retrying === true,
         feedbackError: row.feedbackError,
-        canRetry: typeof row.original === 'string' && !!row.speaker && presets.some((p) => p.id === row.speaker.id),
+        canRetry: reportRetryUnavailable(row,sessionId)===null,
+        retryUnavailableReason: reportRetryUnavailable(row,sessionId),
         memories: settings.memory === true && row.speaker ? memories.references(row.memoryRefs,
           { personaId: row.speaker.id, sessionId }).map((e) =>
             ({ id: e.id, version: e.version, content: e.content, scope: e.scope })) : [],
@@ -2314,6 +2986,36 @@ export function apply(ctx, rawConfig) {
       finally{abort.abort();chatStreamControllers.delete(abort);res.off?.('close',closed);req.off?.('aborted',closed);if(!res.writableEnded&&!res.destroyed)res.end();}
       return;
     }
+    if(path===ROUTE+'/chat-references'&&(req.method==='GET'||req.method==='POST')){
+      if(!settingsRestored||!store||storeClosing){sendJson(res,503,{error:'storage-not-ready'});return;}
+      try{
+        if(req.method==='GET'){sendJson(res,200,roomReferenceState(url.searchParams.get('room')||undefined));return;}
+        if(!chatRecordsLoaded)throw Error('context-not-open');
+        let raw='';for await(const part of req){raw+=part;if(raw.length>4096)throw Error('invalid-chat-reference');}
+        const body=JSON.parse(raw);
+        const changed=await chats.referencePolicy({...body,scopeKey:roomScopeKey(chats.read(body?.roomId))});
+        if(changed)retireOldRoomReferences(body.roomId);
+        sendJson(res,200,roomReferenceState(body.roomId));
+      }catch(error){const known=/^(chat-|invalid-chat-|context-)/.test(error?.message??'');
+        sendJson(res,error.message==='chat-room-not-found'?404:/conflict/.test(error.message)?409:error instanceof SyntaxError||known?400:503,
+          {error:error instanceof SyntaxError?'invalid-chat-reference':known?error.message:'chat-reference-unavailable'});}
+      return;
+    }
+    if(path===ROUTE+'/chat-discussion'&&req.method==='POST'){
+      if(!settingsRestored||!store||storeClosing){sendJson(res,503,{error:'storage-not-ready'});return;}
+      try{
+        if(!chatRecordsLoaded)throw Error('context-not-open');
+        let raw='';for await(const part of req){raw+=part;if(raw.length>8192)throw Error('invalid-chat-discussion');}
+        const body=JSON.parse(raw);
+        if(!body||typeof body!=='object'||Array.isArray(body))throw Error('invalid-chat-discussion');
+        await chats.discussionChange(body,roomScopeKey);
+        retireOldRoomReferences(body.roomId);
+        sendJson(res,200,roomReferenceState(body.roomId));
+      }catch(error){const known=/^(chat-|invalid-chat-|context-)/.test(error?.message??'');
+        sendJson(res,error.message==='chat-room-not-found'?404:/conflict/.test(error.message)?409:error instanceof SyntaxError||known?400:503,
+          {error:error instanceof SyntaxError?'invalid-chat-discussion':known?error.message:'chat-discussion-save-failed'});}
+      return;
+    }
     if (path === ROUTE + '/chat-context' && (req.method === 'POST' || req.method === 'GET')) {
       if (!settingsRestored || !store || storeClosing) { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
       let body, source=chatContext, roomId;
@@ -2358,6 +3060,7 @@ export function apply(ctx, rawConfig) {
           const value=source.snapshot(),sessionIds=value.sources.map(s=>s.sessionId),room=chats.read(roomId);
           if(JSON.stringify(room?.sources)!==JSON.stringify(sessionIds)||room?.primarySessionId!==value.primarySessionId)
             await chats.sources({roomId,sessionIds,primarySessionId:value.primarySessionId});
+          retireInvalidWorkDrafts(roomId);
         }
         sendJson(res,200,chatContextState(source,roomId));
       } catch (error) {
@@ -2520,24 +3223,79 @@ export function apply(ctx, rawConfig) {
       return;
     }
 
+    // Explicit settings inspection only: resolve the same room route without
+    // opening sessions, reading message bodies or dispatching a model stream.
+    if (path === `${ROUTE}/chat-model-options`) {
+      if(req.method!=='GET'){sendJson(res,405,{error:'method-not-allowed'});return;}
+      const roomId=url.searchParams.get('room');
+      const room=roomId&&chatRecordsLoaded?chats.read(roomId):undefined;
+      if(roomId&&!room){sendJson(res,chatRecordsLoaded?404:409,{error:chatRecordsLoaded?'chat-room-not-found':'context-not-open'});return;}
+      const abort=new AbortController(),closed=()=>abort.abort(Error('metadata-cancelled'));
+      activeModelMetadata.add(abort);res.once?.('close',closed);
+      const timer=setTimeout(()=>abort.abort(Error('metadata-timeout')),Math.min(cfg.timeoutMs,8000));
+      const inspect=async()=>{
+        let route;
+        try{
+          route=await modelRoutes.resolve(room?.primarySessionId??currentSessionHint(),{provider:settings.chatProvider,model:settings.chatModel},{signal:abort.signal});
+          abort.signal.throwIfAborted();
+          if(!route)return{provider:null,model:null,source:null,...reasoningOptions(),error:'no-route'};
+          const llm=getLlm();let info;
+          if(typeof llm?.resolveModelInfo==='function')info=await waitWithSignal(llm.resolveModelInfo(route.provider,route.model,abort.signal),abort.signal);
+          else if(typeof llm?.listModels==='function'){
+            const listed=await waitWithSignal(llm.listModels(route.provider),abort.signal);
+            info=Array.isArray(listed)?listed.find(model=>model?.id===route.model):undefined;
+          }
+          abort.signal.throwIfAborted();
+          return{...route,...reasoningOptions(info)};
+        }catch{
+          return{provider:route?.provider??null,model:route?.model??null,source:route?.source??null,...reasoningOptions(),error:'metadata-unavailable'};
+        }
+      };
+      try{
+        const result=await trackModelTask(inspect());
+        if(!res.destroyed&&!res.writableEnded)sendJson(res,storeClosing?503:200,storeClosing?
+          {provider:null,model:null,source:null,...reasoningOptions(),error:'metadata-unavailable'}:result);
+      }finally{
+        clearTimeout(timer);activeModelMetadata.delete(abort);res.off?.('close',closed);
+      }
+      return;
+    }
+
     // Options for the settings page. Providers are cheap to list; models cost
     // one adapter interrogation, so they are only fetched when asked for.
     if (path === `${ROUTE}/models`) {
+      if(req.method!=='GET'){sendJson(res,405,{error:'method-not-allowed'});return;}
       const llm = getLlm();
       if (llm === undefined) { sendJson(res, 200, { providers: [], models: [] }); return; }
-      try {
-        const provider = url.searchParams.get('provider') ?? '';
-        const providers = typeof llm.listProviders === 'function'
-          ? llm.listProviders().map((entry) => ({ provider: entry.id, name: entry.name }))
-          : [];
-        let models = [];
-        if (provider !== '' && typeof llm.listModels === 'function') {
-          const listed = await llm.listModels(provider);
-          models = (Array.isArray(listed) ? listed : []).map((entry) => ({ id: entry.id, name: entry.name ?? entry.id }));
-        }
-        sendJson(res, 200, { providers, models });
-      } catch (error) {
-        sendJson(res, 200, { providers: [], models: [], error: String(error?.message ?? error) });
+      const provider=url.searchParams.get('provider')??'';
+      if(provider.length>512||provider.trim()!==provider){sendJson(res,400,{error:'invalid-provider'});return;}
+      const abort=new AbortController();let disconnected=false;
+      const closed=()=>{disconnected=true;abort.abort(Error('metadata-cancelled'));};
+      activeModelMetadata.add(abort);res.once?.('close',closed);
+      const timer=setTimeout(()=>abort.abort(Error('metadata-timeout')),Math.min(cfg.timeoutMs,8000));
+      const inspect=async()=>{
+        const validId=value=>typeof value==='string'&&value.length>0&&value.length<=512&&value.trim()===value;
+        const name=entry=>typeof entry.name==='string'&&entry.name.trim()&&entry.name.length<=160?entry.name:entry.id;
+        try{
+          abort.signal.throwIfAborted();
+          const listedProviders=typeof llm.listProviders==='function'?llm.listProviders():[];
+          const providers=(Array.isArray(listedProviders)?listedProviders:[]).filter(entry=>validId(entry?.id)).slice(0,1000)
+            .map(entry=>({provider:entry.id,name:name(entry)}));
+          let models=[];
+          if(provider&&typeof llm.listModels==='function'){
+            const listed=await waitWithSignal(llm.listModels(provider),abort.signal);
+            models=(Array.isArray(listed)?listed:[]).filter(entry=>validId(entry?.id)).slice(0,4000)
+              .map(entry=>({id:entry.id,name:name(entry)}));
+          }
+          abort.signal.throwIfAborted();return{providers,models};
+        }catch{return{providers:[],models:[],error:'models-unavailable'};}
+      };
+      try{
+        const result=await trackModelTask(inspect());
+        if(!disconnected&&!res.destroyed&&!res.writableEnded)sendJson(res,storeClosing?503:200,
+          storeClosing?{providers:[],models:[],error:'models-unavailable'}:result);
+      }finally{
+        clearTimeout(timer);activeModelMetadata.delete(abort);res.off?.('close',closed);
       }
       return;
     }
@@ -2615,10 +3373,15 @@ export function apply(ctx, rawConfig) {
           if(body.targetPersonaId!==undefined&&!presets.some(p=>p.id===body.targetPersonaId))throw Error('persona-not-found');
           if(body.targetPersonaIds!==undefined&&(!Array.isArray(body.targetPersonaIds)||body.targetPersonaIds.some(id=>!presets.some(p=>p.id===id))))throw Error('persona-not-found');
           const room=await chats.update(body);
+          for(const id of before.memberIds)if(!room.memberIds.includes(id))chatScheduler.removeMember(room.id,id);
           for(const pending of chatJobsFor(room.id))if(!room.memberIds.includes(pending.personaId))pending.abort.abort(Error('chat-member-removed'));
           activeSuggestions.get(room.id)?.abort.abort(Error('suggestions-context-changed'));
         }else if(body.action==='delete'){
-          await chats.remove(body);chatRounds.get(body.roomId)?.abort.abort(Error('chat-cleared'));for(const pending of chatJobsFor(body.roomId))pending.abort.abort(Error('chat-cleared'));
+          await chats.remove(body);await chatInputs.clear(body.roomId,{forgetReceipts:true});chatScheduler.clearRoom(body.roomId);
+          chatDirectorClocks.delete(body.roomId);chatDirectorFailures.delete(body.roomId);
+          retireChatInputRuntime(body.roomId);
+          chatReferenceUsage.clear(body.roomId);chatRounds.get(body.roomId)?.abort.abort(Error('chat-cleared'));for(const pending of chatJobsFor(body.roomId))pending.abort.abort(Error('chat-cleared'));
+          retireInvalidWorkDrafts(body.roomId,true);
           activeSuggestions.get(body.roomId)?.abort.abort(Error('chat-cleared'));
           roomContexts.get(body.roomId)?.dispose();roomContexts.delete(body.roomId);chatLive.clearRoom(body.roomId);selected=chats.active();
         }else throw Error('invalid-chat-room-action');
@@ -2637,7 +3400,41 @@ export function apply(ctx, rawConfig) {
       const id = explicitRoom || legacyPersona || chats.active() || reportPersonaId;
       if (explicitRoom&&!chats.read(id)) {sendJson(res,404,{error:'chat-room-not-found'});return;}
       if (legacyPersona&&!presets.some((p) => p.id === id) && !chats.read(id)) { sendJson(res, 404, { error: 'persona-not-found' }); return; }
+      await ensureChatLocalStateKey();
       sendJson(res, 200, { ...chatState(id), reportPersonaId }); return;
+    }
+    if(path===ROUTE+'/chat-work-draft'&&(req.method==='GET'||req.method==='POST')){
+      if(!settingsRestored||!store||storeClosing){sendJson(res,503,{error:'storage-not-ready'});return;}
+      try{
+        if(req.method==='GET'){
+          if(!chatRecordsLoaded){sendJson(res,200,{initialized:false,room:null,choices:[],thinking:settings.chatThinking===true});return;}
+          const requested=url.searchParams.get('room'),room=chats.read(requested??chats.active());
+          if(requested&&!room)throw Error('chat-room-not-found');
+          sendJson(res,200,{initialized:true,room:room?{id:room.id,name:room.name}:null,epoch:chats.epoch(),scopeKey:roomScopeKey(room),
+            discussionRevision:room?.discussion?.revision??0,thinking:settings.chatThinking===true,choices:room?roomPublicChoices(room,roomScopeKey(room)):[]});return;
+        }
+        let raw='';for await(const part of req){raw+=part;if(raw.length>18000)throw Error('invalid-chat-draft');}
+        const body=JSON.parse(raw);
+        if(!body||typeof body!=='object'||Array.isArray(body))throw Error('invalid-chat-draft');
+        if(body.action==='cancel'){
+          if(typeof body.roomId!=='string'||!body.roomId.trim()||body.roomId.length>160
+            ||typeof body.requestId!=='string'||!body.requestId.trim()||body.requestId.length>160)throw Error('invalid-chat-draft');
+          const key=JSON.stringify([body.roomId,body.requestId]);cancelledWorkDrafts.add(key);
+          while(cancelledWorkDrafts.size>64)cancelledWorkDrafts.delete(cancelledWorkDrafts.values().next().value);
+          const pending=activeWorkDrafts.get(body.roomId),cancelled=pending?.requestId===body.requestId&&!pending.abort.signal.aborted;
+          if(cancelled)pending.abort.abort(Error('chat-draft-cancelled'));
+          sendJson(res,200,{cancelled:!!cancelled});return;
+        }
+        if(body.action==='validate'){sendJson(res,200,{valid:true,basis:preparedWorkDraft(body).basis});return;}
+        if(body.action!=='generate')throw Error('invalid-chat-draft');
+        const result=await generateWorkDraft(body);
+        if(storeClosing)throw Error('chat-draft-unavailable');
+        // A completed cached response is still checked against the present sources.
+        preparedWorkDraft(body);sendJson(res,200,result);
+      }catch(error){const reason=error instanceof SyntaxError?'invalid-chat-draft':error?.message??'',known=/^(invalid-chat-draft|chat-draft-|chat-room-not-found|context-not-open)/.test(reason);
+        sendJson(res,reason==='chat-room-not-found'?404:/conflict|context-changed|superseded|cancelled/.test(reason)?409:/invalid-chat-draft|too-large/.test(reason)?400:503,
+          {error:known?reason:'chat-draft-unavailable'});}
+      return;
     }
     if (path === ROUTE + '/chat/suggestions' && req.method === 'POST') {
       if (!settingsRestored || !store || storeClosing) { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
@@ -2668,18 +3465,18 @@ export function apply(ctx, rawConfig) {
       const suggestionKey=room?.id??persona.id;
       activeSuggestions.get(suggestionKey)?.abort.abort(new Error('superseded'));
       const abort = new AbortController();
-      const chatOptions={provider:settings.chatProvider,model:settings.chatModel,thinking:settings.chatThinking};
+      const chatOptions={provider:settings.chatProvider,model:settings.chatModel,thinking:settings.chatThinking,reasoningEffort:settings.chatReasoningEffort};
       const pending = { personaId: persona.id,roomId:room?.id, pack: persona.pack, abort, contextKey };
       activeSuggestions.set(suggestionKey, pending);
       const closed = () => { if (!res.writableEnded) abort.abort(new Error('disconnected')); };
       res.once?.('close', closed);
-      const timer = setTimeout(() => abort.abort(new Error('suggestions-timeout')), Math.min(cfg.timeoutMs, 20000));
+      const timer = setTimeout(() => abort.abort(new Error('suggestions-timeout')), Math.min(cfg.timeoutMs, chatOptions.thinking?60000:20000));
       const current = () => !storeClosing && chats.acceptsEpoch(room?.id, epoch) && presets.find((p) => p.id === persona.id)?.pack === persona.pack
         && (!contextKey || sourceContext.key()===contextKey)
         && (chats.read(body.roomId??persona.id)?.id ?? null) === body.roomId && (chats.read(body.roomId??persona.id)?.revision ?? 0) === body.revision;
       try {
         const suggestions = await trackModelTask((async () => {
-          const route = await waitWithSignal(resolveChatRouteAsync(contextKey?sourceContext.snapshot().primarySessionId:currentSessionHint(),chatOptions), abort.signal);
+          const route = await waitWithSignal(resolveChatRouteAsync(contextKey?sourceContext.snapshot().primarySessionId:currentSessionHint(),chatOptions,abort.signal), abort.signal);
           const llm = expressionLlm('reply-suggestions', () => {
             if (!current()) throw new Error('suggestions-context-changed');
           },chatOptions);
@@ -2687,7 +3484,7 @@ export function apply(ctx, rawConfig) {
           const { system, user } = buildReplySuggestions({ name:room?.targetPersonaIds.map(id=>presets.find(p=>p.id===id)?.name??id).join('、')??persona.name, history: suggestionHistory, instruction });
           let wire = '', finish;
           for await (const chunk of streamWithSignal(llm, { provider: route.provider, model: route.model, system,
-            messages: [{ role: 'user', content: [{ type: 'text', text: user }] }], maxTokens: 768, signal: abort.signal })) {
+            messages: [{ role: 'user', content: [{ type: 'text', text: user }] }], maxTokens: chatOptions.thinking?4096:768, signal: abort.signal })) {
             if (chunk.type === 'error' || chunk.type.startsWith('tool-call')
               || (chunk.type === 'block-start' && chunk.blockType === 'tool-call')
               || (chunk.type === 'block-end' && chunk.block?.type === 'tool-call')) throw new Error('suggestions-invalid');
@@ -2732,23 +3529,74 @@ export function apply(ctx, rawConfig) {
           const previousRound=chatRounds.get(roomKey);
           if(body.action==='retry'&&previousRound&&!previousRound.abort.signal.aborted&&previousRound.stage==='listening')throw Error('chat-busy');
           // launchChatRound supersedes the old judgement only after the new message is durable.
-          const allowOrphan = !chatJobsFor(roomKey).some(job=>!job.abort.signal.aborted);
+          const allowOrphan = !chatJobsFor(roomKey).some(job=>!job.abort.signal.aborted)
+            && (!previousRound || previousRound.abort.signal.aborted);
           chatStarting.add(roomKey);
           let result;
           try {
             const sourceContext=body.roomId?contextForRoom(body.roomId):chatContext;
             if(body.roomId&&(!sourceContext||!body.contextKey))throw Error('context-not-open');
-            if(body.contextKey)await sourceContext.prepareCapture(body.contextKey);
-            const workContext=body.roomId?capturedRoomContext(body.roomId,body.contextKey):body.contextKey ? sourceContext.capture(body.contextKey) : undefined;
+            // Preserve the room's range/version before saving the message. Work bodies
+            // are refreshed and captured only after this round selects relevant sources.
+            const workContext=body.roomId?capturedRoomContext(body.roomId,body.contextKey,{sourceIds:[]}):body.contextKey ? sourceContext.capture(body.contextKey,{sourceIds:[]}) : undefined;
             const contextKey=workContext?.key??null;
             const scopeKey=workContext?.scopeKey??contextKey;
             const targetIds=body.recipientIds??selectedRoom?.targetPersonaIds??[persona.id];
             if(body.action==='send'&&(!Array.isArray(targetIds)||targetIds.some(target=>!presets.some(p=>p.id===target))))throw Error('invalid-chat-message');
-            result = body.action === 'send' ? await chats.send({ ...body,personaId:persona.id,recipients:targetIds.map(id=>({id,name:presets.find(p=>p.id===id).name})), contextKey,scopeKey, name: persona.name, allowOrphan })
-              : await chats.retry({ ...body,personaId:persona.id, contextKey,scopeKey, name: persona.name, allowOrphan });
+            if(body.action==='send'&&body.roomId){
+              await chatInputRestore;
+              const current=chats.read(body.roomId);
+              if(!chats.acceptsEpoch(current.id,body.epoch))throw Error('chat-conflict');
+              const prior=current.turns.find(t=>t.messageId===body.requestId||t.userParts?.some(p=>p.id===body.requestId));
+              if(prior){
+                const text=prior.userParts?.find(p=>p.id===body.requestId)?.text??prior.user;
+                if(text!==body.content||(prior.scopeKey??prior.contextKey??null)!==scopeKey||(prior.recipients.length>0&&prior.recipients[0].id!==persona.id)
+                  ||(body.recipientIds&&JSON.stringify(body.recipientIds)!==JSON.stringify(prior.recipients.map(p=>p.id)))
+                  ||quoteKey(body.quote)!==quoteKey(prior.quote?.ref))throw Error('chat-id-conflict');
+                // A committed request remains an acknowledgment even if next-send
+                // roster controls changed. It must never create a new round.
+              }else{
+              if(JSON.stringify(targetIds)!==JSON.stringify(current.targetPersonaIds))throw Error('chat-conflict');
+              const quote=body.quote==null?null:resolveChatQuote(current,body.quote,scopeKey);
+              if(body.quote!=null&&!quote)throw Error('chat-quote-unavailable');
+              const queued=await chatInputs.enqueue({roomId:current.id,requestId:body.requestId,content:body.content,
+                recipients:targetIds.map(id=>({id,name:presets.find(p=>p.id===id).name})),memberIds:current.memberIds,
+                referenceRevision:current.referenceRevision??0,contextKey,scopeKey,quote,clientTime:body.clientTime});
+              if(queued.batch){chatInputBindings.set(JSON.stringify([current.id,queued.batch.id]),workContext);publishChatUser(current,queued.batch);}
+              const round=chatRounds.get(current.id);
+              if(round&&queued.created&&!chatJobsFor(current.id).some(job=>job.started&&!job.abort.signal.aborted))round.abort.abort(Error('chat-user-input'));
+              round?.wake?.();
+              armChatInput(current.id);
+              }
+            }else{
+              result = body.action === 'send' ? await chats.send({ ...body,personaId:persona.id,recipients:targetIds.map(id=>({id,name:presets.find(p=>p.id===id).name})), contextKey,scopeKey, name: persona.name, allowOrphan,frozenRecipients:false,frozenMemberIds:undefined,directed:true })
+                : await chats.retry({ ...body,personaId:persona.id, contextKey,scopeKey, name: persona.name, allowOrphan,members:presets });
+            }
+            retireInvalidWorkDrafts(roomKey);
             if (workContext?.primarySessionId) sourceContext.touch(workContext.primarySessionId,'message');
-            if (!storeClosing && result.created)launchChatRound(result,workContext);
+            if (!storeClosing && result?.created)launchChatRound(result,workContext,body.clientTime);
           } finally { chatStarting.delete(roomKey); }
+        } else if(body.action==='retry-director'){
+          if(!selectedRoom||!chats.acceptsEpoch(selectedRoom.id,body.epoch)||chatRounds.has(selectedRoom.id)||chatJobsFor(selectedRoom.id).some(job=>!job.abort.signal.aborted))throw Error('chat-busy');
+          const anchor=selectedRoom.turns.find(t=>t.messageId===body.messageId&&t.phase==='anchor');
+          if(!anchor||selectedRoom.turns.at(-1)?.messageId!==anchor.messageId)throw Error('chat-retry-unavailable');
+          const work=capturedRoomContext(selectedRoom.id,body.contextKey,{sourceIds:[]});
+          if((anchor.scopeKey??anchor.contextKey??null)!==work.scopeKey)throw Error('chat-context-changed');
+          launchChatRound({room:selectedRoom,turn:anchor,turns:[anchor],created:false},work,body.clientTime);
+        } else if (body.action==='retry-input'||body.action==='cancel-input') {
+          await chatInputRestore;
+          if(!selectedRoom||!chats.acceptsEpoch(selectedRoom.id,body.epoch))throw Error('chat-conflict');
+          if(body.action==='cancel-input'){
+            await chatInputs.cancel(selectedRoom.id,body.requestId);chatInputBindings.delete(JSON.stringify([selectedRoom.id,body.requestId]));
+          }
+          else{
+            const batch=chatInputs.list(selectedRoom.id).find(b=>b.id===body.requestId);
+            if(!batch)throw Error('chat-input-not-found');
+            if(batch.scopeKey!==roomScopeKey(selectedRoom)||(selectedRoom.referenceRevision??0)!==batch.referenceRevision)throw Error('chat-context-changed');
+            const binding=capturedRoomContext(selectedRoom.id,body.contextKey,{sourceIds:[]});
+            chatInputBindings.set(JSON.stringify([selectedRoom.id,batch.id]),binding);
+            await chatInputs.retry(selectedRoom.id,batch.id);armChatInput(selectedRoom.id);
+          }
         } else if (body.action === 'cancel') {
           const round=chatRounds.get(roomKey);
           if(body.roundId&&round?.id===body.roundId&&round.messageId===body.messageId&&chats.acceptsEpoch(roomKey,body.epoch))round.abort.abort(Error('chat-cancelled'));
@@ -2760,19 +3608,58 @@ export function apply(ctx, rawConfig) {
         } else if (body.action === 'clear') {
           const pending = chatJobsFor(roomKey);
           const suggestions = activeSuggestions.get(roomKey);
-          if (await chats.clear(body)) { chatRounds.get(roomKey)?.abort.abort(Error('chat-cleared'));for(const job of pending)job.abort.abort(new Error('chat-cleared')); suggestions?.abort.abort(new Error('chat-cleared'));chatLive.clearRoom(roomKey); }
+          if (await chats.clear(body)) { await chatInputs.clear(roomKey,{forgetReceipts:true});retireChatInputRuntime(roomKey);chatDirectorFailures.delete(roomKey);chatScheduler.clearRoom(roomKey);retireInvalidWorkDrafts(roomKey,true);chatReferenceUsage.clear(roomKey);chatRounds.get(roomKey)?.abort.abort(Error('chat-cleared'));for(const job of pending)job.abort.abort(new Error('chat-cleared')); suggestions?.abort.abort(new Error('chat-cleared'));chatLive.clearRoom(roomKey); }
         } else { sendJson(res, 400, { error: 'invalid-chat-action' }); return; }
         if (storeClosing) { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
         sendJson(res, 200, chatState(body.roomId??id));
       } catch (error) {
         const reason = error?.message ?? 'chat-save-failed';
         const known = /^(invalid-chat|chat-|context-not-open)/.test(reason);
-        sendJson(res, /conflict|busy|context-changed|context-unsaved|context-not-open/.test(reason) ? 409 : known ? 400 : 503,
+        sendJson(res, /save-failed|persist/.test(reason) ? 503 : /conflict|busy|context-changed|context-unsaved|context-not-open/.test(reason) ? 409 : known ? 400 : 503,
           { error: known ? reason : 'chat-save-failed', state: chatState(body.roomId??id) });
       }
       return;
     }
 
+    if (path === ROUTE + '/report-visualization' && (req.method === 'GET' || req.method === 'POST')) {
+      let body;
+      try {
+        if (req.method === 'GET') body = { sessionId: url.searchParams.get('session'), seq: Number(url.searchParams.get('seq') ?? NaN),
+          presentation: url.searchParams.get('presentation') ?? undefined };
+        else {
+          let raw = ''; for await (const part of req) { raw += part; if (raw.length > 4096) throw Error('invalid-report-request'); }
+          body = JSON.parse(raw);
+        }
+        const id = body?.sessionId, seq = body?.seq;
+        if (typeof id !== 'string' || !id.trim() || id.length > 200 || !Number.isSafeInteger(seq) || seq < 0) throw Error('invalid-report-request');
+        if (body.presentation !== undefined && !['summary', 'emphasis', 'readable'].includes(body.presentation)) throw Error('invalid-report-request');
+        const presentation = body.presentation ?? 'summary';
+        if (req.method === 'GET') { sendJson(res, 200, reportViewState(id, seq, presentation)); return; }
+        if (!['generate', 'cancel'].includes(body.action) || typeof body.requestId !== 'string'
+          || !body.requestId.trim() || body.requestId.length > 200) throw Error('invalid-report-request');
+        const requestKey = reportViewRequestKey(id, seq, body.requestId, presentation);
+        if (body.action === 'cancel') {
+          cancelledReportViews.add(requestKey);
+          while (cancelledReportViews.size > 128) cancelledReportViews.delete(cancelledReportViews.values().next().value);
+          const job = activeReportViews.get(reportViewKey(id, seq));
+          if (job?.requestKey === requestKey) job.abort.abort(Error('report-cancelled'));
+          sendJson(res, 200, { ok: true }); return;
+        }
+        if (storeClosing) throw Error('report-cancelled');
+        if (storeState === 'opening') { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
+        if (typeof body.sourceHash !== 'string' || !/^[0-9a-f]{64}$/.test(body.sourceHash)
+          || (body.regenerate !== undefined && typeof body.regenerate !== 'boolean')) throw Error('invalid-report-request');
+        sendJson(res, 200, await generateReportView(body));
+      } catch (error) {
+        const known = /^(report-|invalid-report-)/.test(error?.message ?? ''), code = known ? error.message : 'report-unavailable';
+        const status = code === 'invalid-report-request' ? 400
+          : ['report-source-changed', 'report-request-conflict', 'report-busy', 'report-cancelled'].includes(code) ? 409
+            : ['report-too-long', 'report-invalid-output', 'report-incomplete'].includes(code) ? 422 : 503;
+        sendJson(res, status, { error: code, ...(code === 'report-invalid-output' && reportViewIssue(error?.issue)
+          ? { issue: reportViewIssue(error.issue) } : {}) });
+      }
+      return;
+    }
     if (path === ROUTE + '/conversation' && req.method === 'GET') {
       const id = url.searchParams.get('session');
       if (!id || id.length > 200) { sendJson(res, 400, { error: 'invalid-session' }); return; }
@@ -2808,7 +3695,8 @@ export function apply(ctx, rawConfig) {
       hydrate(sessionId);
       const row = rows.get(`${sessionId}:${body.seq}`);
       const content = typeof body.content === 'string' ? body.content.trim() : '';
-      if (!row || row.status !== 'ready' || row.version !== body.version || row.speaker?.id !== body.personaId) {
+      if (!row || row.version !== body.version || row.speaker?.id !== body.personaId
+        || (body.scope!=='once'&&row.status!=='ready')) {
         sendJson(res, 409, { error: 'report-conflict' }); return;
       }
       if (!content || content.length > 240 || !['once', 'persona', 'session', 'shared'].includes(body.scope)) {
@@ -2832,9 +3720,8 @@ export function apply(ctx, rawConfig) {
         memoryConsolidator.notify(); touch(sessionId);
         sendJson(res, 200, { ok: true, entry }); return;
       }
-      if (!rewriteAllowedFor(sessionId)) { sendJson(res, 400, { error: 'rewrite-disabled' }); return; }
-      if (!row.original) { sendJson(res, 400, { error: 'source-unavailable' }); return; }
-      if (row.retrying || inFlight.has(`${sessionId}:${body.seq}`)) { sendJson(res, 409, { error: 'feedback-in-progress' }); return; }
+      const unavailable=reportRetryUnavailable(row,sessionId);
+      if(unavailable){sendJson(res,['feedback-in-progress','report-incomplete'].includes(unavailable)?409:400,{error:unavailable});return;}
       row.retrying = true; row.feedbackError = undefined; touch(sessionId);
       const draft = { ...row, status: 'pending', partial: '', processNote: undefined, processUsage: undefined };
       const retryRevision = revisionFor(sessionId);
@@ -2851,7 +3738,7 @@ export function apply(ctx, rawConfig) {
       }
       Object.assign(row, draft, { final: row.final, version: row.version + 1, retrying: false, feedbackError: undefined });
       samples.delete(sessionId); touch(sessionId);
-      sendJson(res, 200, { ok: true }); return;
+      sendJson(res, 200, { ok: true,version:row.version,personaId:row.speaker.id }); return;
     }
     if (path === ROUTE + '/memory/handoffs' && req.method === 'GET') {
       const sessionId = url.searchParams.get('session');
@@ -3126,12 +4013,18 @@ export function apply(ctx, rawConfig) {
           // card, and the next restart silently restored it — which reads as
           // "my edits do not save".
         }
+        if(['provider','model','chatProvider','chatModel'].some(key=>typeof patch[key]==='string'))modelRoutes.invalidate();
         if (typeof patch.provider === 'string') setSetting('provider', patch.provider.trim());
         if (typeof patch.model === 'string') setSetting('model', patch.model.trim());
         if (typeof patch.reasoningEffort === 'string') setSetting('reasoningEffort', patch.reasoningEffort.trim());
         if(typeof patch.chatProvider==='string')setSetting('chatProvider',patch.chatProvider.trim());
         if(typeof patch.chatModel==='string')setSetting('chatModel',patch.chatModel.trim());
         if(typeof patch.chatThinking==='boolean')setSetting('chatThinking',patch.chatThinking);
+        if(typeof patch.chatReasoningEffort==='string'&&patch.chatReasoningEffort.trim().length<=128)setSetting('chatReasoningEffort',patch.chatReasoningEffort.trim());
+        if(typeof patch.visualizationProvider==='string')setSetting('visualizationProvider',patch.visualizationProvider.trim());
+        if(typeof patch.visualizationModel==='string')setSetting('visualizationModel',patch.visualizationModel.trim());
+        if(typeof patch.visualizationThinking==='boolean')setSetting('visualizationThinking',patch.visualizationThinking);
+        if(typeof patch.readableThinking==='boolean')setSetting('readableThinking',patch.readableThinking);
         if (typeof patch.enabled === 'boolean') setSetting('enabled', patch.enabled);
         if (patch.enabled === false) {
           // Stop any rewrite already spending tokens under the old switch.
@@ -3143,6 +4036,12 @@ export function apply(ctx, rawConfig) {
           toolUsage.clear();
         }
         if (typeof patch.includeToolSteps === 'boolean') setSetting('includeToolSteps', patch.includeToolSteps);
+        if (typeof patch.colloquialReports === 'boolean' && patch.colloquialReports !== settings.colloquialReports) {
+          setSetting('colloquialReports', patch.colloquialReports);
+          // Old tone samples must not pull a newly selected expression style back.
+          samples.clear();
+          for (const controller of activeRewrites.values()) controller.abort(new Error('expression-changed'));
+        }
         if (['step', 'report'].includes(patch.trigger) && patch.trigger !== settings.trigger) {
           setSetting('trigger', patch.trigger);
           invalidatePersona('scope-changed', (id) => conversations.read(id).trigger === 'inherit');
@@ -3275,6 +4174,10 @@ export function apply(ctx, rawConfig) {
 
   ctx.effect(() => () => {
     storeClosing = true;
+    modelRoutes.dispose();
+    for(const timer of chatInputTimers.values())clearTimeout(timer);chatInputTimers.clear();
+    chatInputBindings.clear();
+    chatDirectorClocks.clear();chatDirectorFailures.clear();
     for(const controller of chatStreamControllers)controller.abort();chatStreamControllers.clear();
     chatLive.close();
     chatContext.dispose();
@@ -3287,9 +4190,15 @@ export function apply(ctx, rawConfig) {
     // stream must not keep spending tokens after the plugin is gone.
     for (const controller of activeRewrites.values()) controller.abort(new Error('disposed'));
     for (const controller of activeExtractions) controller.abort(new Error('disposed'));
+    for (const controller of activeModelMetadata) controller.abort(new Error('disposed'));
+    for (const job of activeReportViews.values()) job.abort.abort(new Error('disposed'));
+    reportViewRequests.clear(); cancelledReportViews.clear();
     for (const pending of activeChats.values()) pending.abort.abort(new Error('disposed'));
     for(const round of chatRounds.values())round.abort.abort(Error('disposed'));
     for (const pending of activeSuggestions.values()) pending.abort.abort(new Error('disposed'));
+    for(const pending of activeWorkDrafts.values())pending.abort.abort(Error('disposed'));
+    workDraftRequests.clear();
+    cancelledWorkDrafts.clear();
     // Release every held long-poll request before tearing down: a response left
     // waiting on a dead plugin would hang until its timeout.
     for (const waiters of [...stateWaiters.values()]) {
@@ -3309,9 +4218,10 @@ export function apply(ctx, rawConfig) {
     }
     if (usageTimer !== undefined) { clearTimeout(usageTimer); usageTimer = undefined; }
     if (modelUsageTimer !== undefined) { clearTimeout(modelUsageTimer); modelUsageTimer = undefined; }
+    if (chatReferenceTimer !== undefined) { clearTimeout(chatReferenceTimer); chatReferenceTimer = undefined; }
     // Collect the writes to await. `putProfile` is awaited below so the final
     // state reaches the backend before the domain is torn down.
-    const pending = [conversations.drain(), chats.drain()];
+    const pending = [conversations.drain(), chats.drain(),chatInputs.drain(),chatInputRestore,chatScheduler.drain(),chatLocalKeyWrite,reportViews.drain(store)];
     if (store !== undefined) {
       pending.push(store.putProfile(profile).catch((error) => warn('profile flush failed', error)));
       pending.push(saveMemory().catch((error) => warn('memory flush failed', error)));
@@ -3353,6 +4263,8 @@ export function apply(ctx, rawConfig) {
           catch (error) { warn('memory usage flush failed', error); }
           try { await saveModelUsage(closing); }
           catch (error) { warn('model usage flush failed', error); }
+          try { await saveChatReferences(closing); }
+          catch (error) { warn('chat reference flush failed', error); }
           await closing.close();
         })
         .catch((error) => warn('store close failed', error));

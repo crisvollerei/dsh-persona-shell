@@ -7,6 +7,14 @@ import { mask, unmask, markersIntact } from '../lib/mask.js';
 import { normalizePack, CLAUDE_PACK, BUILTIN_PRESETS } from '../lib/pack.js';
 import { buildRewritePrompt, rewriteDistance, validateRewrite } from '../lib/prompt.js';
 
+test('one-off expression instructions can reorder prose while retaining technical markers and all factual conditions',()=>{
+  const input={pack:normalizePack(CLAUDE_PACK),masked:'先解释限制，再给出结论 [[0]]。',literalCount:1,history:[]};
+  const once=buildRewritePrompt({...input,feedback:'短一点，先说结论'}),normal=buildRewritePrompt(input);
+  assert.match(once.system,/可按本次表达要求调整段落先后/);assert.match(once.system,/不删事实、验证结果、风险、条件或下一步/);
+  assert.match(once.system,/标记必须原样各保留一次/);assert.match(normal.system,/保留操作步骤的顺序、列表符号和标题层级/);
+  assert.doesNotMatch(normal.system,/用户对这一次表达的调整|可按本次表达要求调整段落先后/);
+});
+
 test('mask shields fenced code, inline code, paths, versions and urls', () => {
   const input = [
     '改好了 `npm run build` 这条命令。',
@@ -177,7 +185,8 @@ test('prompt carries the marker count and forbids invention', () => {
   // Both halves of the card reach the prompt.
   assert.ok(system.includes('你是谁'));
   assert.ok(system.includes('这份汇报里怎么说话'));
-  assert.ok(system.includes('口头禅与语气示例'));
+  assert.ok(system.includes('汇报表达样例（只参考语感，不是本轮事实）'));
+  for (const sample of pack.samples) assert.ok(system.includes(sample));
   assert.ok(user.includes('[[0]]'));
   assert.ok(user.includes('上次这样说。'));
 });
