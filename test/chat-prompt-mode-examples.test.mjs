@@ -30,12 +30,15 @@ test('daily and work exchanges are fixed character material selected without bec
   assert.ok(!casual.system.includes(workSample));
 });
 
-test('custom literal examples stay intact and the final format contract has one messages key',()=>{
+test('custom literal examples stay intact while natural text and complete messages JSON retain separate output rules',()=>{
   const custom={identity:'用户自己的角色',voice:[],samples:['CUSTOM_LITERAL_EXAMPLE'],avoid:[],address:{user:'你'}};
   const result=buildChatPrompt({pack:custom,persona:{id:preset.id,builtin:false},message:'看看这份报告',
     workContext:{sources:[{sessionId:'source',report:'SOURCE_ORIGINAL'}]}});
   assert.ok(result.system.includes(custom.samples[0]));assert.doesNotMatch(result.system,/虚构多轮示例/);
-  const last=result.system.split('\n').at(-1);assert.match(last,/唯一输出/);assert.match(last,/只允许 messages 这一个键/);
+  assert.match(result.system,/可以直接输出自然正文，空行分气泡；也可以输出 messages JSON/);
+  const last=result.system.split('\n').at(-1);assert.match(last,/JSON方式唯一输出/);assert.match(last,/只允许 messages 这一个键/);
+  assert.match(last,/JSON须完整/);assert.match(last,/空输出不代表沉默/);
+  assert.match(result.system,/用 messages JSON 包住原文/);
   assert.doesNotMatch(JSON.stringify(result.messages),/CUSTOM_LITERAL_EXAMPLE/);
 });
 

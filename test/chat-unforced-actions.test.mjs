@@ -15,13 +15,12 @@ const build=(preset,extra={})=>buildChatPrompt({pack:preset.pack,persona:{id:pre
 test('all chat speakers and phases get optional own-view action guidance without a forced gesture',()=>{
   for(const preset of BUILTIN_PRESETS)for(const phase of ['primary','reaction','followup']){
     const prompt=build(preset,{phase});
-    assert.match(prompt.system,/括号动作可选.*使用时从本人视角写，通常省略主语/);
+    assert.match(prompt.system,/括号动作可选.*从本人视角写，通常省略主语/);
     assert.match(prompt.system,/需要主语时沿用本人自称/);
     assert.match(resolvePersonaExpression(preset.pack,{channel:'chat',persona:{id:preset.id,builtin:true}}).identity,/女性/);
     assert.doesNotMatch(resolvePersonaExpression(preset.pack,{channel:'chat',persona:{id:preset.id,builtin:true}}).identity,/第三人称用/);
     assert.match(prompt.system,/角色卡或用户明确要第三人称叙事时按要求表达/);
-    assert.match(prompt.system,/只演自己，不替他人写反应/);
-    assert.match(prompt.system,/不为每条气泡配动作/);
+    assert.match(prompt.system,/只写本人动作与念头，不替他人表演/);
     assert.equal(prompt.control.speaker.id,preset.id);
     assert.equal(prompt.control.currentMessage.messageId,current.messageId);
   }
@@ -33,10 +32,12 @@ test('personal reactions may stand alone while requested explanations and source
   const prompt=build(BUILTIN_PRESETS[2],{workContext:{scopeKey,sources:[source]},memory:['ONLY_THIS_OWNER_STYLE'],
     coordination:{work:'required',sourceIds:['work'],request:'answer',evidence:current.user,basis:'model'},
     participants:[{id:'peer',name:'同伴',privateMemory:'PEER_PRIVATE_STYLE'}]});
-  assert.match(prompt.system,/个人反应、玩笑和亲近的动作可以直接发生，说到就好/);
-  assert.match(prompt.system,/不必接着说明自己为什么这样说/);
-  assert.match(prompt.system,/需要澄清误解、回应用户追问或让工作判断有依据时，把必要理由说清/);
-  assert.match(prompt.system,/事实的重要条件仍一起保留/);
+  assert.match(prompt.system,/个人邀请、应声、赞同也有价值/);
+  assert.match(prompt.system,/说完不用再解释自己为何这样说/);
+  assert.match(prompt.system,/需要理由时自然讲清，不为缩短而省掉依据/);
+  assert.match(prompt.system,/工作判断所需的重要条件、风险、未知与来源一起保留/);
+  assert.match(prompt.system,/用户已明确邀请抱抱时可以直接应邀/);
+  assert.match(prompt.system,/把用户的后续反应留给用户；不必逐动作索要确认/);
   assert.match(prompt.system,/按原文保留重要条件、风险、不确定性与建议的性质/);
   assert.match(prompt.system,/报告中的检查和结论归原作者/);
   assert.deepEqual(prompt.control.workContext.sources,[source]);
@@ -76,6 +77,6 @@ test('the subjectless fictional action stays in the prompt example rather than a
   assert.ok(prompt.system.includes(action.text));assert.equal(actual.includes(action.text),false);
   const report=resolvePersonaExpression(preset.pack,{channel:'report',persona});
   assert.equal(JSON.stringify(report).includes(action.text),false);
-  assert.match(prompt.system,/不返回.*模型内部推理/);
+  assert.match(prompt.system,/不返回.*内部推理/);
   assert.match(prompt.system,/没有必要再说时返回 \{"messages":\[\]\}/);
 });

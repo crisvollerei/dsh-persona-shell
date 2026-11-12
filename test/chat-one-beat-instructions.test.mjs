@@ -14,10 +14,9 @@ const allowance=(normal,independent=1)=>({kind:'normal',normalRemainingAfterThis
 test('a speaking opportunity is one conversational beat rather than a compulsory complete mini-report',()=>{
   const current=anchor('now','这一句是本轮真实原话。'),before=structuredClone(current),opportunity=allowance(2),prompt=build(current,{opportunity});
   assert.match(prompt.system,/这一拍先接一个眼下的话头/);
-  assert.match(prompt.system,/一个想法也可以用两三句话慢慢说/);
-  assert.match(prompt.system,/不必句句给新观点或收成漂亮结论/);
-  assert.match(prompt.system,/一句已经自然时也不用拉长/);
-  assert.match(prompt.system,/不为凑长度堆形容词、动作或无关细节/);
+  assert.match(prompt.system,/长短随内容/);
+  assert.match(prompt.system,/不必硬找新事实、不同风险或漂亮结论/);
+  assert.match(prompt.system,/需要理由时自然讲清，不为缩短而省掉依据/);
   assert.match(prompt.system,/允许话题暂不收束/);
   assert.match(prompt.system,/不把每次发言都组织成背景、理由、建议、追问和结尾/);
   assert.doesNotMatch(prompt.system,/一个完整意思一个气泡/);
@@ -29,9 +28,9 @@ test('a speaking opportunity is one conversational beat rather than a compulsory
 test('actual remaining opportunities permit taking time without promising more turns or requiring a closing summary',()=>{
   for(const [normal,independent] of [[3,1],[2,0],[0,1],[0,0]]){
     const prompt=build(anchor('now','继续聊。'),{opportunity:allowance(normal,independent)});
-    assert.ok(prompt.system.includes(`普通机会最多还剩 ${normal} 轮、独立同伴机会最多还剩 ${independent} 轮`));
-    assert.match(prompt.system,/可以慢慢聊/);assert.match(prompt.system,/余量只是上限，不要求用满，也不保证随后自动轮到你/);
-    assert.match(prompt.system,/即使余量为零，也不用临时补结语或硬总结/);
+    assert.deepEqual(prompt.control.opportunity,allowance(normal,independent));
+    assert.match(prompt.system,/余量只是上限，不要求用满，也不保证再轮到你/);
+    assert.match(prompt.system,/最后一次也不用总结/);
     assert.match(prompt.system,/正文不报额度，不为续聊刻意互相点名/);
   }
   const invalid=build(anchor('now','继续聊。'),{opportunity:allowance(99)});
@@ -47,11 +46,11 @@ test('a complete requested work answer still carries its material conditions, un
     assistant:['前位已概括一部分，但用户这次明确要完整总结。'],status:'ready',userParts:undefined};
   const prompt=build(current,{workContext,exchange:[prior],coordination:{work:'required',sourceIds:['work'],request:'answer',evidence:current.user,basis:'model'},opportunity:allowance(2)});
   assert.equal(prompt.control.sharedResponse.workRole,'optional-addition','an explicit complete request remains an exception even with prior shared answers');
-  assert.match(prompt.system,/用户明确要完整总结、集中说明或完整答复时，按要求说清/);
-  assert.match(prompt.system,/不能把必要限定拆到下一轮或留作悬念/);
+  assert.match(prompt.system,/用户明确要重述、完整总结或集中答复时当次给齐/);
+  assert.match(prompt.system,/工作判断所需的重要条件、风险、未知与来源一起保留/);
   assert.match(prompt.system,/按原文保留重要条件、风险、不确定性与建议的性质/);
   assert.match(prompt.system,/不代表你检查了文件、跑过测试或核验了云端/);
-  assert.match(prompt.system,/previousReport 属于上轮/);assert.match(prompt.system,/原文片段以外仍保持未知/);
+  assert.match(prompt.system,/previousReport 属于上轮/);assert.match(prompt.system,/没有提供的部分保持未知/);
   const supplied=prompt.control.workContext.sources[0];
   for(const key of ['turn','goalSeq','reportSeq','reportStatus','goal','report','previousReport'])assert.deepEqual(supplied[key],workContext.sources[0][key]);
   assert.doesNotMatch(prompt.system,/REPORT_ONLY_RULE/);
@@ -63,18 +62,18 @@ test('a personal invitation and a short agreement remain valid even when shared 
   const prompt=build(current,{exchange:[earlier],workContext:{scopeKey,sources:[{sessionId:'work',report:'已知材料，尚未正式验收。'}]},
     coordination:{work:'required',sourceIds:['work'],request:'answer',evidence:current.user,basis:'model'}});
   assert.equal(prompt.control.sharedResponse.workRole,'optional-addition');
-  assert.match(prompt.system,/共同工作回答留在原处，不重列事实清单/);
-  assert.match(prompt.system,/个人邀请、应声和一句真心的赞同也有价值，不要求每人都有新事实/);
-  assert.match(prompt.system,/不必为证明有价值而制造新事实/);assert.match(prompt.system,/不轮流复制同一个梗/);
+  assert.match(prompt.system,/共同摘要说过就接着聊/);
+  assert.match(prompt.system,/个人邀请、应声、赞同也有价值/);
+  assert.match(prompt.system,/不必硬找新事实/);assert.match(prompt.system,/不是要求再找一项遗漏/);
   assert.doesNotMatch(prompt.system,/没有真实差异就沉默/,'source de-duplication is not a blanket ban on personal replies');
 });
 
-test('a short beat still ends as complete messages-only JSON and retains the existing memory and attribution boundaries',()=>{
+test('a short beat supports both body entrances and retains complete JSON, memory and attribution boundaries',()=>{
   const prompt=build(anchor('now','原话仍在当前房间。'),{memory:['OWN_PERSONA_PREFERENCE'],participants:[speaker,{...peer,privateMemory:'OTHER_PERSONA_PRIVATE'}]});
   assert.match(prompt.system,/只使用本房间当前参考范围的公开原话/);
   assert.match(prompt.system,/不共享其他人格的私有记忆，不从别的房间补经历/);
   assert.match(prompt.system,/不替同伴编台词、心理、沉默原因或承诺/);
-  assert.match(prompt.system,/正常说完这一句、提交完整 JSON，不用半句话索取下一轮/);
+  assert.match(prompt.system,/可以直接输出自然正文/);assert.match(prompt.system,/JSON须完整/);assert.match(prompt.system,/不用半句话索取下一轮/);
   assert.match(prompt.system,/唯一输出 \{"messages":\["你的话"\]\}/);assert.match(prompt.system,/没有必要再说时返回 \{"messages":\[\]\}/);
   assert.match(prompt.system,/只允许 messages 这一个键/);assert.match(prompt.system,/OWN_PERSONA_PREFERENCE/);
   assert.doesNotMatch(JSON.stringify(prompt),/OTHER_PERSONA_PRIVATE|REPORT_ONLY_RULE/);

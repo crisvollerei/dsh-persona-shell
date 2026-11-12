@@ -398,7 +398,7 @@ test('settled failed and skipped reports expose adjustment beside the unchanged 
     const controls=all(tree).find(element=>element.props?.['data-persona-shell']==='controls');
     assert.ok(controls);assert.ok(all(controls).some(element=>element.children.includes('原始汇报')));
     const buttons=all(controls).filter(element=>element.type==='button');
-    assert.deepEqual(buttons.map(button=>button.children[0]),['调整表达','可视化']);
+    assert.deepEqual(buttons.map(button=>button.children[0]),['调整表达','阅读报告']);
     buttons[0].props.onClick();tree=app.renderer.render();
     const feedback=all(tree).find(element=>element.type===app.module.__testing.ReportFeedback);
     assert.equal(feedback.props.row.status,status);assert.equal(feedback.props.row.canRetry,true);

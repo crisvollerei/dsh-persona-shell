@@ -16,7 +16,7 @@ const build=(current,extra={})=>buildChatPrompt({pack,speaker,participants:[spea
 test('compact chat instructions preserve literal custom material and remain separate from formal rewriting',()=>{
   const current=anchor('now','NORMAL_CHAT_INPUT'),before=structuredClone(pack),prompt=build(current);
   for(const value of [pack.identity,...pack.voice,...pack.samples,...pack.avoid])assert.ok(prompt.system.includes(value));
-  assert.doesNotMatch(prompt.system,/FORMAL_REPORT_ONLY/);assert.equal(prompt.system.length<2000,true,'the small chat brief should not regain the old field-by-field manual');
+  assert.doesNotMatch(prompt.system,/FORMAL_REPORT_ONLY/);assert.equal(prompt.system.length<2200,true,'the shared brief retains the same text budget as the runtime-expression check');
   assert.deepEqual(pack,before);assert.equal(prompt.control.task,'chat-control');assert.equal(prompt.control.currentMessage.messageId,current.messageId);
   const report=buildRewritePrompt({pack,masked:'FORMAL_SOURCE',literalCount:0,history:[],memory:[]});
   assert.ok(report.system.includes('FORMAL_REPORT_ONLY'));assert.equal(report.user,'待改写：\nFORMAL_SOURCE');

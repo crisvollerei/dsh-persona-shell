@@ -490,7 +490,7 @@ window.__ModuleLoader__.load({
 }
     // END GENERATED CHAT PALETTE
 
-const CLIENT_BUILD = 2026111016;
+const CLIENT_BUILD = 2026111201;
 
     // --- host data -----------------------------------------------------------
 
@@ -1874,6 +1874,21 @@ const CLIENT_BUILD = 2026111016;
         h('span',{className:'dsh-persona-chat-recipient-portrait','data-order':order},h(PersonaAvatar,{id,name:person?.name??'已移除的人格',src:person?.avatar,className:'dsh-persona-chat-avatar'})),
         h('span',null,((id==='大肥鱼（默认）'&&person?.name==='大肥鱼（默认）')?'大肥鱼':(id==='鲸鲸（实验性）'&&person?.name==='小肥鱼（实验性）')?'小肥鱼':person?.name??'已移除的人格')+(person?.archived?'（已移除）':'')));}));
     }
+    function roomReferenceHint(context, foreground) {
+      if (!context?.initialized) return { text: '连接中', title: '正在初始化参考来源', different: false };
+      const sources = Array.isArray(context.sources) ? context.sources : [];
+      const primary = sources.find(source => source.sessionId === context.primarySessionId) ?? sources[0];
+      const name = typeof primary?.name === 'string' ? primary.name.trim() : '';
+      const different = !!foreground && !!primary?.sessionId && foreground !== primary.sessionId;
+      const names = sources.map(source => typeof source.name === 'string' ? source.name.trim() : '').filter(Boolean);
+      return {
+        text: name ? (different ? '固定 · ' : '来源 · ') + name + (sources.length > 1 ? ' +' + (sources.length - 1) : '') : '来源 · ' + sources.length,
+        title: '固定参考 · ' + (names.length ? names.join('、') : sources.length + ' 个会话')
+          + '。切换工作页不会更换来源。' + (different ? '主要参考与当前工作页不同。' : ''),
+        different,
+      };
+    }
+
     function WorkDraftPanel({roomId,scopeKey,generation,discussionRevision,onClose,onMinimize}){
       const [saved,setSaved]=React.useState(()=>chatWorkDrafts.get(roomId)??{instruction:'',refs:[],draft:'',basis:null});
       const [data,setData]=React.useState(null),[loading,setLoading]=React.useState(false),[busy,setBusy]=React.useState(false),[placing,setPlacing]=React.useState(false);
@@ -1918,7 +1933,9 @@ const CLIENT_BUILD = 2026111016;
         if(!emptyInput(snapshot)){setInfo('工作输入框已有文字、附件或正在发送。请先处理原输入，也可以只整理草稿。');return null;}
         let span;try{span=adapter.actions.captureInsertion();}catch{setInfo('工作输入框暂不可用，草稿保留，可以复制。');return null;}
         if(span?.start!==0||span.end!==0||span.draftRev!==snapshot.draftRev){setInfo('工作输入框已变化，请重新核对后再试。');return null;}
-        return{fixed,adapter,span,title:adapter.title||'当前工作会话'};
+        const captured = {fixed,adapter,span,title:adapter.title||'当前工作会话'};
+        own.current.targetTitle = captured.title;
+        return captured;
       };
       const targetUnchanged=captured=>captured&&chatForegroundSession===captured.fixed&&workInputBindings.get(captured.fixed)===captured.adapter
         &&emptyInput(captured.adapter.state)&&captured.adapter.state.draftRev===captured.span.draftRev;
@@ -1942,6 +1959,7 @@ const CLIENT_BUILD = 2026111016;
         if(own.current.busy||!data||!saved.refs.length||unavailable)return;
         const captured=mode==='conclusion'?captureTarget():null;if(mode==='conclusion'&&!captured)return;
         const current=own.current,editing=current.editing,token=++current.token,abort=new AbortController(),previous=data;
+        current.targetTitle = captured?.title ?? null;
         const intent={mode,captured,editing,basis:{roomId,epoch:data.epoch,scopeKey:data.scopeKey,discussionRevision:data.discussionRevision,refs:saved.refs},instruction:saved.instruction};
         current.abort?.abort();current.abort=abort;current.busy=true;setLoading(true);setInfo('');setConfirmation(null);
         let checkedIntent=null,timedOut=false;const timeout=setTimeout(()=>{timedOut=true;abort.abort();},10000);
@@ -1978,6 +1996,7 @@ const CLIENT_BUILD = 2026111016;
         if(own.current.busy||!data||intent.editing!==own.current.editing)return;
         if(intent.mode==='conclusion'&&!targetUnchanged(intent.captured)){setConfirmation(null);setInfo('工作会话或输入框已变化，没有开始整理。请重新核对目标。');return;}
         const current=own.current,token=++current.token,editing=current.editing,abort=new AbortController(),requestId=chatNonce();
+        current.targetTitle = intent.captured?.title ?? null;
         current.abort?.abort();current.abort=abort;current.requestId=requestId;current.busy=true;setBusy(true);setInfo('');setConfirmation(null);
         const basis=intent.basis;
         let timedOut=false;const timeout=setTimeout(()=>{timedOut=true;abort.abort();
@@ -2009,6 +2028,9 @@ const CLIENT_BUILD = 2026111016;
         }catch{if(own.current.live){output.current?.focus();output.current?.select();setInfo('复制未完成，已选中文本，请按 Ctrl+C 或长按复制。');}};
       };
       const target=chatForegroundSession,binding=workInputBindings.get(target);
+      const capturedTargetTitle = confirmation?.intent?.captured?.title ?? (own.current.busy ? own.current.targetTitle : null);
+      const targetTitle = capturedTargetTitle ? capturedTargetTitle
+        : target ? binding?.title || '当前工作会话（名称暂不可用）' : '暂无前台工作会话';
       const place=async()=>{
         const value=state.current,current=own.current;if(current.busy||!value.draft.trim()||!value.basis)return;
         const captured=captureTarget();if(!captured)return;
@@ -2034,6 +2056,7 @@ const CLIENT_BUILD = 2026111016;
               h('details',null,h('summary',null,author+' · '+Array.from(q.text.replace(/\s+/g,' ')).slice(0,70).join('')),h('blockquote',null,q.text)));}),
             !choices.length?h('p',null,'当前范围还没有可整理的原话，先聊几句再来。'):!filtered.length?h('p',null,'没有匹配的原话，试试其他关键词。'):null)) :null,
         h('label',null,'整理要求（可选）',h('textarea',{'aria-label':'工作指令整理要求',maxLength:2000,rows:2,value:saved.instruction,disabled:busy||placing,onChange:e=>edit({instruction:e.target.value})})),
+        h('p',{'data-work-draft-target':'conclusion'},'填入目标：'+targetTitle+'。'+(capturedTargetTitle?'本次目标已固定，不会改投其他会话。':'只填入空输入框，由你在工作区发送。')),
         h('div',{className:'dsh-persona-work-draft-actions'},h('button',{type:'button',ref:draftAction,disabled:loading||busy||placing||!data||!saved.refs.length||!!unavailable,onClick:()=>begin('draft')},busy?'正在整理…':'整理草稿'),
           h('button',{type:'button',ref:conclusionAction,'data-primary':'',disabled:loading||busy||placing||!data||!saved.refs.length||!!unavailable,onClick:()=>begin('conclusion')},'整理结论并填入'),
           busy?h('button',{type:'button',onClick:()=>{stop();setInfo('已停止这次整理，已有草稿保留。');}},'停止整理'):null),
@@ -2051,7 +2074,7 @@ const CLIENT_BUILD = 2026111016;
         saved.thinkingStatus==='unknown'?h('p',null,'本次思考方式由模型提供方决定，请核对结论。'):saved.thinkingStatus==='unavailable'?h('p',null,'模型不支持本次思考。草稿保留供你核对，不会自动填入。'):null,
         h('div',{className:'dsh-persona-work-draft-actions'},h('button',{type:'button',disabled:!saved.draft.trim(),onClick:()=>void copy()},'复制草稿'),
           h('button',{type:'button',disabled:busy||placing||!saved.draft.trim()||!saved.basis||!binding||!emptyInput(binding.state),onClick:()=>void place()},placing?'正在核对…':'填入当前工作输入框')),
-        h('p',null,'填入目标：'+(target?binding?.title||'当前工作会话（名称暂不可用）':'暂无前台工作会话')+'。'+(!binding?'宿主尚未提供可用的输入框接口，可以复制草稿。':!emptyInput(binding.state)?'输入框已有文字、附件或正在发送时不会填入。':'只填入空输入框，由你在工作区确认发送。')));
+        h('p',{'data-work-draft-target':'manual'},'填入目标：'+targetTitle+'。'+(!binding?'宿主尚未提供可用的输入框接口，可以复制草稿。':!emptyInput(binding.state)?'输入框已有文字、附件或正在发送时不会填入。':'只填入空输入框，由你在工作区确认发送。')));
     }
     function RoomChatWorkspace({sessionId,conversation,onClose}) {
       const [data,setData]=React.useState(null),[roomId,setRoomId]=React.useState(null),[panel,setPanel]=React.useState(null);
@@ -2531,12 +2554,13 @@ const CLIENT_BUILD = 2026111016;
           ...(confirmed ? { previousContextKey: turn.contextKey ?? null } : {}) });
       };
       const unread=dockSession.current?.count??0;
+      const sourceHint = roomReferenceHint(context, foreground);
       const view = minimized?h('aside',{ref:surface,className:'dsh-persona-chat-dock','data-dock-order':0,'aria-label':'已最小化的聊天室'},
         h('style',null,ROOM_CHAT_CSS),
         h('button',{type:'button',ref:dockButton,'aria-label':'还原聊天室'+(unread?'，'+unread+' 条新回复':''),title:'还原 · '+(data?.room?.name??'聊天室'),onClick:()=>chatRuntime.setMinimized(false)},
           h('span',{'aria-hidden':true},h(RoomAvatar,{memberIds:data?.room?.memberIds,contacts:data?.contacts})),h('span',null,'聊天室'),
           unread?h('span',{key:unread,className:'dsh-persona-chat-dock-count','aria-hidden':true},unread>99?'99+':String(unread)):null),
-        h('button',{type:'button','aria-label':'关闭聊天室',title:'关闭聊天室',onClick:onClose},'×'),
+        h('button',{type:'button','aria-label':'关闭聊天室',title:pending?'关闭窗口，已发送的回复会继续保存；需要中止请先停止回复。':'关闭聊天室',onClick:onClose},'×'),
         h('span',{className:'dsh-persona-chat-dock-status',role:'status','aria-live':'polite','aria-atomic':true},unread?'聊天室收到 '+unread+' 条新回复':'')):
         h('section', { ref:surface,className: 'dsh-persona-chat', 'data-wide': String(wide), 'data-compose-expanded':String(composeExpanded), role: 'dialog', 'aria-modal': false,
         'aria-label': '聊天室', onKeyDown: (event) => { if (event.key === 'Escape' && !event.nativeEvent?.isComposing) {
@@ -2552,8 +2576,8 @@ const CLIENT_BUILD = 2026111016;
               h('button',{type:'button','aria-label':'管理聊天室成员',disabled:roomBusy,
                 title:'管理成员 · '+(data?.room?.memberIds.length??0)+' 位人格',onClick:()=>{setWorkOpen(false);onOpenMembers?.();}},'成员'),
               h('button',{type:'button','aria-label':sourcesOpen?'收起来源':'参考来源','aria-expanded':sourcesOpen,'aria-controls':'dsh-persona-chat-source-panel',
-                title:context?.initialized?'固定参考 · '+(context.sources?.length??0)+' 个会话，切换工作页不会更换来源':'正在初始化参考来源',
-                onClick:()=>{setWorkOpen(false);setSourcesOpen(!sourcesOpen);}},context?.initialized?'来源 · '+(context.sources?.length??0):'连接中'),
+                title:sourceHint.title,'data-source-different':sourceHint.different,'data-source-count':context?.initialized?context.sources?.length??0:undefined,style:{flex:'0 1 auto',minWidth:0,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis'},
+                onClick:()=>{setWorkOpen(false);setSourcesOpen(!sourcesOpen);}},sourceHint.text),
               h('button',{type:'button',ref:workButton,'aria-label':'整理工作指令','aria-expanded':workOpen,disabled:roomBusy||!ready,
                 onClick:()=>{onDismissPanel?.();setAppearance(false);setSourcesOpen(false);setWorkOpen(!workOpen);}},'整理指令'))):h('strong', { className:'dsh-persona-chat-title' }, '聊天室'),
           h('div', { className:'dsh-persona-chat-actions' },
@@ -2563,7 +2587,7 @@ const CLIENT_BUILD = 2026111016;
               h('svg',{width:13,height:13,viewBox:'0 0 16 16',fill:'none','aria-hidden':true,style:{verticalAlign:'middle'}},
                 h('path',{d:'M3 11h10',stroke:'currentColor',strokeWidth:1.6,strokeLinecap:'round'}))),
             h('button', { type: 'button', onClick: () => {if(explicitRoomId)chatRoomLayout.wide=!wide;setWide(!wide);} }, wide ? '还原' : '放大'),
-            h('button', { type: 'button', 'aria-label': '关闭聊天室', onClick: onClose }, '关闭')),
+            h('button', { type: 'button', 'aria-label': '关闭聊天室', title:pending?'关闭窗口，已发送的回复会继续保存；需要中止请先停止回复。':'关闭聊天室', onClick: onClose }, '关闭')),
           !explicitRoomId?h('div', { className:'dsh-persona-chat-context-row' },
             h('select', { 'aria-label': '聊天人格',title:choice?contact?.name:'跟随主要参考会话的汇报人格', value: choice, disabled: busy || !data,
               onChange: (event) => {
@@ -2577,8 +2601,8 @@ const CLIENT_BUILD = 2026111016;
               data ? h('option', { value: '' }, '跟随汇报 · ' + (data.contacts?.find(p => p.id === (fixedReportPersona || data.reportPersonaId || data.defaultPersonaId))?.name ?? '默认人格')) : null,
               ...(data?.contacts ?? []).map((p) => h('option', { key: p.id, value: p.id }, p.name + (p.archived ? '（已移除）' : '')))),
             h('button',{type:'button','aria-label':sourcesOpen?'收起来源':'参考来源','aria-expanded':sourcesOpen,'aria-controls':'dsh-persona-chat-source-panel',
-              title:context?.initialized?'固定参考 · '+(context.sources?.length??0)+' 个会话，切换工作页不会更换来源':'正在初始化参考来源',
-              onClick:()=>setSourcesOpen(!sourcesOpen)},context?.initialized?'来源 · '+(context.sources?.length??0):'连接中')):null),
+              title:sourceHint.title,'data-source-different':sourceHint.different,'data-source-count':context?.initialized?context.sources?.length??0:undefined,style:{flex:'0 1 auto',minWidth:0,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis'},
+              onClick:()=>setSourcesOpen(!sourcesOpen)},sourceHint.text)):null),
         sourcesOpen || contextState.error ? h('div', { id:'dsh-persona-chat-source-panel', className: 'dsh-persona-chat-info dsh-persona-chat-sources' },
           contextState.error?h('p',{role:'status'},contextState.error,h('button',{type:'button',disabled:contextState.busy,onClick:()=>contextState.action({action:'open',sessionId,visible:true})},'重试连接')):null,
           sourcesOpen?h('div',null,
@@ -2840,6 +2864,11 @@ const CLIENT_BUILD = 2026111016;
       .dsh-report-reading .rr-theme-fields{display:grid;gap:8px}.dsh-report-reading .rr-theme-field{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;color:var(--rr-ink)}.dsh-report-reading .rr-theme-field select{font:inherit;color:var(--rr-ink);background:var(--rr-bg);border:1px solid var(--rr-border);border-radius:6px;padding:4px 7px;min-height:29px;min-width:145px;max-width:190px}.dsh-report-reading .rr-theme-field select:disabled{opacity:.65}.dsh-report-reading .rr-theme-current,.dsh-report-reading .rr-theme-notice{margin:0;font-size:10px;color:var(--rr-muted);line-height:1.7;max-width:290px}.dsh-report-reading .rr-theme-notice{padding-top:3px}
       .dsh-report-reading .rr-appearance{margin-inline-start:auto}.dsh-report-reading .rr-readable-note{max-width:740px;margin:0 auto 24px;display:flex;align-items:flex-start;gap:12px;color:var(--rr-muted);font-size:11px}.dsh-report-reading .rr-readable-note p{flex:1;margin:0}.dsh-report-reading .rr-readable-note button{flex:none;font-size:10px}.dsh-report-reading .rr-readable-passage{margin-bottom:1.15em;min-width:0}.dsh-report-reading .rr-readable-source{margin:-.45em 0 1.1em;font-size:10px;color:var(--rr-muted)}.dsh-report-reading .rr-readable-source summary{cursor:pointer;width:fit-content;padding:2px 0;list-style-position:inside}.dsh-report-reading .rr-readable-source summary:focus-visible{outline:2px solid var(--rr-accent);outline-offset:3px}.dsh-report-reading .rr-readable-source pre{font:11px/1.9 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;border-left:2px solid var(--rr-border);border-radius:0;margin:8px 0 14px;padding:2px 0 2px 12px;color:var(--rr-muted);background:transparent}
       @keyframes rr-enter{from{opacity:0;transform:translateY(7px) scale(.99)}to{opacity:1;transform:none}}@keyframes rr-locate{0%,70%{opacity:.9}100%{opacity:0}}@media(prefers-reduced-motion:reduce){.dsh-report-reading,.dsh-report-reading-dock{animation:none;scroll-behavior:auto}.dsh-report-reading .rr-document p[data-rr-locate]:before{animation:none;opacity:.9}}
+      .dsh-report-reading .rr-review-nav,.dsh-report-reading .rr-review-marker{display:flex;align-items:center;gap:4px 10px;flex-wrap:wrap;font-size:12px;color:var(--rr-muted)}
+      .dsh-report-reading .rr-review-nav{max-width:740px;margin:0 auto 18px;padding-bottom:8px;border-bottom:1px solid var(--rr-border)}
+      .dsh-report-reading .rr-review-marker{margin:0 0 5px}.dsh-report-reading .rr-review-marker span{border-inline-start:2px solid var(--rr-accent);padding-inline-start:7px}
+      .dsh-report-reading :is(.rr-review-nav,.rr-review-marker) button{font:inherit;color:var(--rr-accent);border:0;background:transparent;padding:3px 2px;text-decoration:underline;text-underline-offset:3px}
+      .dsh-report-reading .rr-readable-passage:focus-visible{outline:2px solid var(--rr-accent);outline-offset:4px}
       @media(max-width:600px){.dsh-report-reading,.dsh-report-reading[data-wide=true]{right:7px;bottom:max(7px,env(safe-area-inset-bottom));width:calc(100vw - 14px);height:calc(100dvh - 60px);max-height:calc(100dvh - 60px);border-radius:12px}.dsh-report-reading .rr-head{padding:10px;gap:5px}.dsh-report-reading .rr-head-title h2{font-size:13px}.dsh-report-reading .rr-head-title small{font-size:9px}.dsh-report-reading .rr-head-actions{gap:3px}.dsh-report-reading .rr-head-actions button{font-size:10px;padding:4px 6px}.dsh-report-reading .rr-toolbar{padding:9px 10px;gap:4px}.dsh-report-reading .rr-content{padding:23px 17px 30px}.dsh-report-reading .rr-document{font-size:14px;line-height:1.95}.dsh-report-reading .rr-intro{align-items:flex-start;gap:9px;font-size:11px}.dsh-report-reading .rr-footer{padding:8px 10px}.dsh-report-reading .rr-status{padding:7px 10px}}
       @media(max-width:330px){.dsh-report-reading .rr-head-title small{display:none}.dsh-report-reading .rr-head-actions button{padding:3px 5px;min-width:26px}.dsh-report-reading .rr-toolbar{align-items:flex-start}.dsh-report-reading .rr-content{padding:18px 13px}}
     `;
@@ -2873,16 +2902,17 @@ const CLIENT_BUILD = 2026111016;
       'report-busy':'这份报告正在整理，请稍后重新读取。',
       'report-request-conflict':'本次整理请求已变化，请重新读取后再试。',
       'report-capacity':'同时整理的报告较多，请等已有任务完成后再试。',
-      'report-model-unavailable':'暂时没有可用模型，请在设置中选择转述或可视化模型。',
+      'report-model-unavailable':'暂时没有可用模型，请在设置中选择转述或报告阅读模型。',
       'report-save-failed':'这次阅读页没有保存成功，原报告和已有阅读页均保留，可以重新整理。',
       'report-timeout':'这次整理等待超时，原报告和已有阅读页均保留，可以手动重试。',
       'report-cancelled':'这次整理已停止，原报告和已有阅读页均保留。',
       'storage-not-ready':'本地保存服务尚未就绪，请稍后重新读取。',
-      'model-unavailable':'暂时没有可用模型，请在设置中选择转述或可视化模型。',
+      'model-unavailable':'暂时没有可用模型，请在设置中选择转述或报告阅读模型。',
       'disposed':'插件已重载，请关闭后重新打开阅读页。',
     }[reason]??'这次读取或整理没有完成，原报告和已有阅读页均保留，可以手动重试。');
     function reportIssueExplanation(issue){
       const code=typeof issue?.code==='string'?issue.code:'';
+      if(code==='readable-all-fallback')return'这次返回的正文没有可采用的段落。当前显示的仍是上次保存的顺畅稿，没有自动重试。';
       if(code==='source-invalid')return'原文快照暂时无法核对。请先重新读取这份报告，再决定是否重新生成。';
       if(/(?:refs?|reference|citation|evidence)/i.test(code))return'有内容缺少有效的原文依据，无法安全整理。请先查看原文，或手动重新生成一次。';
       if(/(?:number|literal|command|path|version|ground)/i.test(code))return'有数字、路径或命令无法与引用的原文对应。为避免改错技术内容，这次没有采用该结果。';
@@ -2978,13 +3008,42 @@ const CLIENT_BUILD = 2026111016;
       return value?.schemaVersion===3&&Array.isArray(value.blocks)&&value.blocks.length===source.blocks.length
         &&value.blocks.every((block,index)=>block?.ref===source.blocks[index].id&&typeof block.text==='string'&&block.text.trim());
     }
-    function ReportReadableDocument({source,result}){
+    function readableReviewLocations(warnings,length){
+      const marked=new Map(),unlocated=new Set();
+      for(const warning of Array.isArray(warnings)?warnings:[]){
+        const code=warning?.code;
+        if(code!=='readable-block-original'&&code!=='readable-wording-review')continue;
+        const match=/^\$\.blocks\[(0|[1-9]\d*)\](?:\.text)?$/.exec(warning.path);
+        const index=match?Number(match[1]):-1;
+        if(index<0||index>=length){unlocated.add(code);continue;}
+        if(!marked.has(index)||code==='readable-block-original')marked.set(index,code);
+      }
+      return {marked,ordered:[...marked.keys()].sort((a,b)=>a-b),unlocated};
+    }
+    function ReportReadableDocument({source,result,warnings}){
+      const root=React.useRef(null);
       const passages=React.useMemo(()=>result.blocks.map((block,index)=>({ref:block.ref,text:block.text,
         original:source.blocks[index].text,content:renderMarkdown(block.text,false,{margin:0})})),[source,result]);
-      return h('div',{className:'rr-document rr-readable-document','data-source-hash':source.hash,'aria-label':'顺畅阅读稿'},
-        ...passages.map(block=>h('section',{key:block.ref,className:'rr-readable-passage','data-readable-ref':block.ref},block.content,
+      const {marked,ordered,unlocated}=React.useMemo(()=>readableReviewLocations(warnings,passages.length),[warnings,passages.length]);
+      const locate=index=>{
+        const section=root.current?.children[index],pane=root.current?.closest('.rr-content');
+        if(!pane||!section||section.dataset.readableRef!==passages[index]?.ref)return;
+        section.focus({preventScroll:true});
+        pane.scrollTop+=section.getBoundingClientRect().top-pane.getBoundingClientRect().top-18;
+      };
+      return h(React.Fragment,null,
+        ordered.length?h('nav',{className:'rr-review-nav','aria-label':'顺畅稿段落核对'},h('span',null,'已标出 '+ordered.length+' 段'),h('button',{type:'button',onClick:()=>locate(ordered[0])},'查看第一处')):null,
+        unlocated.has('readable-block-original')?h('p',{className:'rr-reading-status'},'部分段落保留了原文，可就地核对。'):null,
+        unlocated.has('readable-wording-review')?h('p',{className:'rr-reading-status'},'部分表达建议对照原文核对。'):null,
+        h('div',{ref:root,className:'rr-document rr-readable-document','data-source-hash':source.hash,'aria-label':'顺畅阅读稿'},
+        ...passages.map((block,index)=>{
+          const code=marked.get(index),label=code==='readable-block-original'?'已保留原文':'建议核对措辞';
+          return h('section',{key:block.ref,className:'rr-readable-passage','data-readable-ref':block.ref,
+            ...(code?{tabIndex:-1,'aria-label':'第 '+(index+1)+' 段：'+label}:{})},
+          code?h('div',{className:'rr-review-marker'},h('span',null,label),ordered.length>1?h('button',{type:'button',onClick:()=>locate(ordered[(ordered.indexOf(index)+1)%ordered.length])},'下一处'):null):null,block.content,
           block.text.trim()!==block.original.trim()?h('details',{className:'rr-readable-source'},h('summary',null,'核对原文'),
-            h('pre',null,block.original)):null)));
+            h('pre',null,block.original)):null);
+        })));
     }
     const READABLE_NOTICE_KEY='dsh-persona-shell:readable-notice:v1';
     function readableLocalDate(){const date=new Date();return date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0');}
@@ -3009,7 +3068,7 @@ const CLIENT_BUILD = 2026111016;
       const [focused,setFocused]=React.useState(false),[readingStatus,setReadingStatus]=React.useState({targets:[],foldable:0,folded:0}),[jump,setJump]=React.useState(null),[guidePosition,setGuidePosition]=React.useState(null);
       const [readable,setReadable]=React.useState(false),[readableData,setReadableData]=React.useState(null),[readableLoading,setReadableLoading]=React.useState(false),[readableBusy,setReadableBusy]=React.useState(false),[readableInfo,setReadableInfo]=React.useState(''),[readableIssue,setReadableIssue]=React.useState(null);
       const [readableNotice,setReadableNotice]=React.useState(null),readableNoticeRef=React.useRef(null);
-      const readableLifetime=React.useRef({live:true,revision:0,abort:null,task:null,loadedHash:null}),readableLatest=React.useRef(null);
+      const readableLifetime=React.useRef({live:true,revision:0,abort:null,task:null,loadedHash:null});
       const guideCursors=React.useRef(new Map()),jumpSequence=React.useRef(0);
       const lifetime=React.useRef({live:true,revision:0,abort:null,task:null}),heading=React.useRef(null),surface=React.useRef(null),dock=React.useRef(null),dockSurface=React.useRef(null),readingPosition=React.useRef(0);
       const modePositions=React.useRef({original:0,readable:0});
@@ -3023,11 +3082,11 @@ const CLIENT_BUILD = 2026111016;
       const acceptReadable=(value,source)=>{
         if(!value?.source||value.source.sessionId!==sessionId||value.source.seq!==seq||value.source.hash!==source.hash)throw Error('report-source-changed');
         if(value.result&&!readableReportMatches(value.result,source))throw Error('report-invalid-output');
-        const previous=readableLatest.current,retained=previous?.source?.hash===source.hash&&readableReportMatches(previous.result,source)?previous.result:undefined;
-        const next={...value,result:value.result??retained};setReadableData(next);readableLatest.current=next;
+        if(!value.result&&value.cached!==false)throw Error('report-invalid-output');
+        setReadableData(value);
       };
-      const loadReadable=async()=>{const own=readableLifetime.current,source=latest.current?.source;
-        if(!source||own.loadedHash===source.hash||own.abort)return;
+      const loadReadable=async(force=false)=>{const own=readableLifetime.current,source=latest.current?.source;
+        if(!source||(!force&&own.loadedHash===source.hash)||own.abort)return;
         stopReadable();const token=own.revision,abort=new AbortController();own.abort=abort;setReadableLoading(true);setReadableInfo('');setReadableIssue(null);
         try{const response=await fetch(ROUTE+'/report-visualization?session='+encodeURIComponent(sessionId)+'&seq='+seq+'&presentation=readable',{signal:abort.signal});const value=await response.json();
           if(!own.live||token!==own.revision)return;if(!response.ok)throw Object.assign(Error(value.error??value.reason),{issue:value.issue});
@@ -3043,8 +3102,8 @@ const CLIENT_BUILD = 2026111016;
         try{const response=await fetch(ROUTE+'/report-visualization',{method:'POST',headers:{'content-type':'application/json'},signal:abort.signal,
           body:JSON.stringify({action:'generate',sessionId,seq,presentation:'readable',sourceHash:source.hash,requestId,...(regenerate?{regenerate:true}:{})})});const value=await response.json();
           if(!own.live||token!==own.revision)return;if(!response.ok)throw Object.assign(Error(value.error??value.reason),{issue:value.issue});
-          if(latest.current?.source?.hash!==source.hash)throw Error('report-source-changed');if(!readableReportMatches(value.result,source))throw Error('report-invalid-output');acceptReadable(value,source);own.loadedHash=source.hash;setReadableInfo('');
-        }catch(error){if(own.live&&token===own.revision&&!abort.signal.aborted){setReadableInfo(reportReadingError(error.message));setReadableIssue(error.issue??null);}}
+          if(latest.current?.source?.hash!==source.hash)throw Error('report-source-changed');if(!readableReportMatches(value.result,source))throw Error('report-invalid-output');acceptReadable(value,source);own.loadedHash=source.hash;setReadableInfo(own.task?.stopRequested?'已保存本次顺畅稿。':'');
+        }catch(error){if(own.live&&token===own.revision&&!abort.signal.aborted){setReadableInfo(error.message==='report-cancelled'?'已停止整理，原文和已有顺畅稿保留。':error.issue?.code==='readable-all-fallback'?'这次没有可用的润色段落，已保留上次的顺畅稿。':reportReadingError(error.message));setReadableIssue(error.issue??null);}}
         finally{if(own.live&&token===own.revision){own.abort=null;own.task=null;setReadableBusy(false);}}
       };
       const requestReadable=(regenerate=false)=>{const own=readableLifetime.current,source=latest.current?.source;
@@ -3063,11 +3122,12 @@ const CLIENT_BUILD = 2026111016;
         const compatible=value?.result?.schemaVersion===2&&Array.isArray(value.result.annotations);
         const next={...value,result:compatible?value.result:undefined,cached:compatible&&value.cached===true};setData(next);latest.current=next;
       };
-      const load=async()=>{stop();const own=lifetime.current,token=own.revision,abort=new AbortController();own.abort=abort;setLoading(true);setInfo('');setIssue(null);
+      const load=async(refreshReadable=false)=>{stop();const own=lifetime.current,token=own.revision,abort=new AbortController(),previousHash=latest.current?.source?.hash;own.abort=abort;setLoading(true);setInfo('');setIssue(null);
         try{const response=await fetch(ROUTE+'/report-visualization?session='+encodeURIComponent(sessionId)+'&seq='+seq+'&presentation=emphasis',{signal:abort.signal});const value=await response.json();
           if(!own.live||token!==own.revision)return;if(!response.ok)throw Object.assign(Error(value.error??value.reason),{issue:value.issue});accept(value);
           if(!value.available)setInfo(reportReadingError(value.reason));
-        }catch(error){if(own.live&&token===own.revision&&!abort.signal.aborted){setInfo(reportReadingError(error.message));setIssue(error.issue??null);}}
+          else if(refreshReadable&&previousHash===value.source?.hash)await loadReadable(true);
+        }catch(error){if(own.live&&token===own.revision&&!abort.signal.aborted){setInfo(reportReadingError(error.message));setIssue(error.issue??null);if(refreshReadable){setReadableInfo(reportReadingError(error.message));setReadableIssue(error.issue??null);}}}
         finally{if(own.live&&token===own.revision){setLoading(false);own.abort=null;}}
       };
       React.useEffect(()=>{lifetime.current.live=true;readableLifetime.current.live=true;void load();return()=>{lifetime.current.live=false;readableLifetime.current.live=false;stop();stopReadable();};},[sessionId,seq]);
@@ -3079,24 +3139,33 @@ const CLIENT_BUILD = 2026111016;
         try{const response=await fetch(ROUTE+'/report-visualization',{method:'POST',headers:{'content-type':'application/json'},signal:abort.signal,
           body:JSON.stringify({action:'generate',sessionId,seq,presentation:'emphasis',sourceHash:source.hash,requestId,...(regenerate?{regenerate:true}:{})})});const value=await response.json();
           if(!own.live||token!==own.revision)return;if(!response.ok)throw Object.assign(Error(value.error??value.reason),{issue:value.issue});
-          if(value.result?.schemaVersion!==2||!Array.isArray(value.result.annotations)||value.source?.hash!==source.hash)throw Error('report-source-changed');accept(value);setInfo('');
-        }catch(error){if(own.live&&token===own.revision&&!abort.signal.aborted){setInfo(reportReadingError(error.message));setIssue(error.issue??null);}}
+          if(value.result?.schemaVersion!==2||!Array.isArray(value.result.annotations)||value.source?.hash!==source.hash)throw Error('report-source-changed');accept(value);setInfo(own.task?.stopRequested?'已保存本次阅读重点。':'');
+        }catch(error){if(own.live&&token===own.revision&&!abort.signal.aborted){setInfo(error.message==='report-cancelled'?'已停止分析，原文和已有导览保留。':reportReadingError(error.message));setIssue(error.issue??null);}}
         finally{if(own.live&&token===own.revision){setBusy(false);own.abort=null;own.task=null;}}
       };
       const source=data?.source,result=data?.result;
       const readableResult=source&&readableData?.source?.hash===source.hash&&readableReportMatches(readableData.result,source)?readableData.result:null;
-      const readableRetained=Array.isArray(readableData?.warnings)&&readableData.warnings.some(warning=>warning?.code==='readable-block-original');
-      const readableReview=Array.isArray(readableData?.warnings)&&readableData.warnings.some(warning=>warning?.code==='readable-wording-review');
       const readingPlan=React.useMemo(()=>source?createReportReadingPlan(source,result):null,[source,result]);
-      React.useEffect(()=>{setFocused(false);setJump(null);setGuidePosition(null);guideCursors.current.clear();stopReadable();readableLifetime.current.loadedHash=null;readableLatest.current=null;setReadableData(null);setReadableLoading(false);setReadableBusy(false);setReadableInfo('');setReadableIssue(null);modePositions.current={original:0,readable:0};setReadable(false);},[source?.hash]);
+      React.useEffect(()=>{setFocused(false);setJump(null);setGuidePosition(null);guideCursors.current.clear();stopReadable();readableLifetime.current.loadedHash=null;setReadableData(null);setReadableLoading(false);setReadableBusy(false);setReadableInfo('');setReadableIssue(null);modePositions.current={original:0,readable:0};setReadable(false);},[source?.hash]);
       const guideLabels={result:'主要结果',risk:'风险与条件',decision:'需要你确认',evidence:'验证依据',next:'下一步'};
       const targetIds=new Set(readingStatus.targets),guideGroups=['result','risk','decision','evidence','next'].map(kind=>({kind,items:(readingPlan?.navigation??[]).filter(item=>item.kind===kind&&targetIds.has(item.blockId))})).filter(group=>group.items.length);
       const navigate=(group,event)=>{const index=((guideCursors.current.get(group.kind)??-1)+1)%group.items.length;guideCursors.current.set(group.kind,index);
         setGuidePosition({kind:group.kind,index:index+1,total:group.items.length});setJump({blockId:group.items[index].blockId,token:++jumpSequence.current,sourceHash:source.hash,keyboard:event.detail===0});};
       const warnings=Array.isArray(data?.warnings)?data.warnings:[],contentWarnings=warnings.filter(warning=>!['json-fence-normalized','schema-version-defaulted','duplicate-refs-normalized'].includes(warning?.code));
-      const cancel=()=>{stop();setBusy(false);setIssue(null);setInfo('已停止分析，原文和已有导览保留。');};
+      // Keep the generation response attached: only it can report whether a pending save committed.
+      const requestStop=async(isReadable)=>{
+        const own=(isReadable?readableLifetime:lifetime).current,task=own.task;
+        if(!own.live||!task||task.stopRequested)return;
+        const show=isReadable?setReadableInfo:setInfo;
+        task.stopRequested=true;show('正在请求停止…');
+        try{
+          const {ok,value}=await actionRequest('report-visualization',{action:'cancel',sessionId,seq,presentation:isReadable?'readable':'emphasis',requestId:task.requestId,sourceHash:task.hash});
+          if(!own.live||own.task!==task)return;
+          if(!ok)throw Error('cancel-request-failed');
+          if(value?.outcome==='saving')show('正在保存，完成后会显示结果。');
+        }catch{if(own.live&&own.task===task){task.stopRequested=false;show('停止请求未送达，仍在等待本次结果。');}}
+      };
       const copy=async()=>{if(!source)return;try{await navigator.clipboard.writeText(source.text);setInfo('已复制完整原文。');}catch{setInfo('当前环境暂不支持复制，请选中原文后复制。');}};
-      const cancelReadable=()=>{stopReadable();setReadableBusy(false);setReadableLoading(false);setReadableIssue(null);setReadableInfo('已停止整理，原文和已有顺畅稿保留。');};
       const copyReadable=async()=>{if(!readableResult)return;try{await navigator.clipboard.writeText(readableResult.blocks.map(block=>block.text.trim()).join('\n\n'));setReadableInfo('已复制顺畅稿。原始报告仍可在「完整原文」中核对。');}catch{setReadableInfo('当前环境暂不支持复制，请选中顺畅稿后复制。');}};
       const close=()=>{stop();stopReadable();onClose();};
       const selectReadable=value=>{if(!value)clearReadableNotice();if(value!==readable){modePositions.current[readable?'readable':'original']=surface.current?.querySelector('.rr-content')?.scrollTop??0;setReadable(value);}if(value)void loadReadable();};
@@ -3104,13 +3173,13 @@ const CLIENT_BUILD = 2026111016;
       const readingChanged=value=>setReadingStatus(previous=>previous.foldable===value.foldable&&previous.folded===value.folded&&previous.targets.join('|')===value.targets.join('|')?previous:value);
       return h(React.Fragment,null,h('style',null,REPORT_READING_CSS),readableNotice&&!minimized?h(ReadableGenerationNotice,{onClose:clearReadableNotice,onConfirm:confirmReadable}):null,minimized?h('div',{ref:dockSurface,className:'dsh-report-reading-dock','data-dock-order':1,'data-busy':anyBusy,style:themeStyle,role:'region','aria-label':'已最小化的报告阅读页'},
         h('button',{ref:dock,type:'button','aria-label':'恢复报告阅读页',title:anyBusy?'正在整理报告':'原始报告与阅读导览',onClick:()=>reportReadingRuntime.restore()},h('span',{className:'rr-dock-icon','aria-hidden':true},'▤'),h('span',null,anyBusy?'整理中':'阅读页')),
-        h('button',{type:'button','aria-label':'关闭报告阅读页',onClick:close},'×')):null,
+        h('button',{type:'button','aria-label':'关闭报告阅读页',title:anyBusy?'关闭并停止本页未完成的生成':'关闭报告阅读页',onClick:close},'×')):null,
         h('section',{ref:surface,className:'dsh-report-reading',role:'dialog','aria-label':'报告阅读页','aria-modal':false,'data-wide':wide,'data-reading-theme':readingTheme.theme.id,'data-reading-appearance':readingTheme.theme.appearance,style:minimized?{...themeStyle,display:'none'}:themeStyle,onKeyDown:event=>{
           if(event.key==='Escape'&&!event.nativeEvent?.isComposing){event.preventDefault();event.stopPropagation();close();}}},
           h('header',{className:'rr-head'},h('div',{className:'rr-head-title'},h('h2',{ref:heading,tabIndex:-1},'报告阅读页'),h('small',null,'保留原文 · 按需展开')),
             h('div',{className:'rr-head-actions'},h('button',{type:'button','aria-label':'复制完整原文',disabled:!source,onClick:()=>void copy()},'复制'),
               h('button',{type:'button','aria-label':'最小化报告阅读页',title:'最小化',onClick:()=>reportReadingRuntime.minimize()},'—'),
-              h('button',{type:'button','aria-label':wide?'还原报告阅读页':'放大报告阅读页',onClick:()=>setWide(!wide)},wide?'还原':'放大'),h('button',{type:'button','aria-label':'关闭报告阅读页',onClick:close},'关闭'))),
+              h('button',{type:'button','aria-label':wide?'还原报告阅读页':'放大报告阅读页',onClick:()=>setWide(!wide)},wide?'还原':'放大'),h('button',{type:'button','aria-label':'关闭报告阅读页',title:anyBusy?'关闭并停止本页未完成的生成':'关闭报告阅读页',onClick:close},'关闭'))),
           source?h('div',{className:'rr-toolbar'},h('div',{className:'rr-reading-mode',role:'group','aria-label':'阅读范围'},h('button',{type:'button','aria-pressed':!readable&&!focused,onClick:()=>{selectReadable(false);setFocused(false);}},'完整原文'),h('button',{type:'button','aria-pressed':!readable&&focused,onClick:()=>{selectReadable(false);setFocused(true);}},'重点阅读'),h('button',{type:'button','aria-pressed':readable,onClick:()=>selectReadable(true)},'顺畅阅读')),
             h('details',{className:'rr-appearance'},h('summary',null,'阅读外观'),h('div',{className:'rr-appearance-options'},
               h('div',{className:'rr-theme-fields'},h('label',{className:'rr-theme-field'},'阅读主题',h('select',{'aria-label':'阅读主题',value:readingTheme.preference.theme,onChange:event=>readingTheme.change({theme:event.target.value})},...[['system','跟随 DSH'],['catppuccin','Catppuccin'],['nord','Nord'],['rosepine','Rosé Pine']].map(([value,label])=>h('option',{key:value,value},label)))),
@@ -3124,15 +3193,13 @@ const CLIENT_BUILD = 2026111016;
             !readable&&warnings.length?h('details',{className:'rr-explanation','aria-label':'本次分析说明'},h('summary',null,contentWarnings.length?'部分结果未采用，原文保持完整':'已规范化分析格式'),h('p',null,'只有能与原文可靠对应的段落才会加入导览或收起。无法核对的结果会被忽略，原文保持完整。')):null,
             readable?h(React.Fragment,null,h('div',{className:'rr-readable-note'},h('p',null,'按原文顺序润色表达，重要事实、条件与风险请对照原文核对。'),
               readableResult?h('button',{type:'button',onClick:()=>void copyReadable()},'复制顺畅稿'):null),
-              readableResult&&readableRetained?h('p',{className:'rr-reading-status'},'部分段落保留了原文，可就地核对。'):null,
-              readableResult&&readableReview?h('p',{className:'rr-reading-status'},'部分表达建议对照原文核对。'):null,
-              readableResult?h(ReportReadableDocument,{source,result:readableResult}):h('div',{className:'rr-intro'},h('p',null,readableLoading?'正在读取已有顺畅稿…':'首次生成会调用一次模型，原始报告保持不变。'),h('button',{type:'button','data-primary':'',disabled:anyBusy||loading||readableLoading||data?.running,onClick:()=>requestReadable()},readableBusy?'正在整理…':'生成顺畅稿'))):null,
+              readableResult?h(ReportReadableDocument,{source,result:readableResult,warnings:readableData.warnings}):h('div',{className:'rr-intro'},h('p',null,readableLoading?'正在读取已有顺畅稿…':'首次生成会调用一次模型，原始报告保持不变。'),h('button',{type:'button','data-primary':'',disabled:anyBusy||loading||readableLoading||data?.running,onClick:()=>requestReadable()},readableBusy?'正在整理…':'生成顺畅稿'))):null,
             h('div',{hidden:readable,'aria-hidden':readable||undefined},h(ReportOriginalDocument,{source,readingPlan,focused,jump,onReadingStatus:readingChanged,active:!minimized&&!readable}))):
             h('div',{className:'rr-unavailable'},loading?h('p',{role:'status'},'正在读取原始报告…'):h(React.Fragment,null,h('h3',null,'这份报告暂时无法读取'),h('p',null,reportReadingError(data?.reason)),h('button',{type:'button',onClick:()=>void load()},'重新读取')))),
           visibleInfo?h('div',{className:'rr-status',role:'status','aria-live':'polite'},h('p',null,visibleInfo),visibleIssue?h('details',{'aria-label':'本次分析未完成的原因'},h('summary',null,'查看原因'),h('p',null,reportIssueExplanation(visibleIssue))):null):null,
           h('footer',{className:'rr-footer'},h('span',null,visibleModel?.model?'整理模型：'+visibleModel.model+(visibleModel.provider?' · '+visibleModel.provider:'')+((readable?readableData?.cached:data.cached)?' · 已缓存':''):'导览、展开和外观切换均在本地完成。'),
-            readable?(readableBusy?h('button',{type:'button',onClick:cancelReadable},'停止整理'):readableResult?h('button',{type:'button',disabled:loading||busy||readableLoading||!data?.available,onClick:()=>requestReadable(true)},'重新生成顺畅稿'):null):busy?h('button',{type:'button',onClick:cancel},'停止分析'):result?h('button',{type:'button',disabled:loading||readableBusy||!data?.available,onClick:()=>void generate(true)},'重新分析'):null,
-            h('button',{type:'button',disabled:loading||anyBusy||readableLoading,onClick:()=>void load()},'重新读取'))));
+            readable?(readableBusy?h('button',{type:'button',disabled:!!readableLifetime.current.task?.stopRequested,onClick:()=>void requestStop(true)},'停止整理'):readableResult?h('button',{type:'button',disabled:loading||busy||readableLoading||!data?.available,onClick:()=>requestReadable(true)},'重新生成顺畅稿'):null):busy?h('button',{type:'button',disabled:!!lifetime.current.task?.stopRequested,onClick:()=>void requestStop(false)},'停止分析'):result?h('button',{type:'button',disabled:loading||readableBusy||!data?.available,onClick:()=>void generate(true)},'重新分析'):null,
+            h('button',{type:'button',disabled:loading||anyBusy||readableLoading,onClick:()=>void load(readable)},'重新读取'))));
     }
     function ConversationPanel({ sessionId, conversation, onClose }) {
       const [data, setData] = React.useState(conversation);
@@ -3885,7 +3952,7 @@ const CLIENT_BUILD = 2026111016;
         && settings.reviewThreshold >= 0 && settings.reviewThreshold <= 1 ? settings.reviewThreshold : 0.55;
       // A small edit can change a count or a local assertion. These signals
       // invite a comparison independently of the overall wording threshold.
-      const factual = review.reasons.includes('quantity-change') || review.criticalReasons?.length > 0;
+      const factual = review.reasons.includes('quantity-change') || review.reasons.includes('literal-order') || review.criticalReasons?.length > 0;
       if (!factual && !(review.editScore > 0 && review.editScore >= threshold)) return false;
       return review.sourceHash === reviewFingerprint(original) && review.targetHash === reviewFingerprint(row.text);
     }
@@ -4194,6 +4261,25 @@ const CLIENT_BUILD = 2026111016;
       });
     }
 
+    /** Explain a fallback on demand without exposing provider errors or internal codes. */
+    function reportFallbackReason(row) {
+      if (!row || !['failed', 'skipped'].includes(row.status)) return '';
+      const reason = row.reason;
+      if (['source-quantity-change', 'source-worker-change', 'source-permission-change'].includes(reason)) {
+        return '这次转述的数值表达、工作归属或执行条件未通过现有检查，未采用改写。原始汇报仍可阅读；这些检查不构成完整语义核验。';
+      }
+      if (['dropped-marker', 'unknown-marker', 'duplicate-marker', 'invented-fence'].includes(reason)) {
+        return '这次转述没有完整保留受保护的技术内容，未采用改写。原始汇报保持不变。';
+      }
+      if (reason === 'too-long') return '这次转述超过长度上限，未采用改写。原始汇报保持不变。';
+      if (['no-route', 'no-llm'].includes(reason)) return '暂时没有可用的转述模型，当前显示原始汇报。';
+      if (reason === 'persona-changed') return '转述期间人格设置已变化，这次结果未采用，当前保留原始汇报。';
+      if (reason === 'no-prose') return '这份汇报没有适合转述的普通说明，保留原始内容。';
+      if (['disabled', 'session-disabled', 'rewrite-disabled'].includes(reason)) return '按当前开关设置保留原始汇报。';
+      if (typeof reason === 'string' && /timeout|timed.out/iu.test(reason)) return '这次转述未能在时限内完成，当前保留原始汇报。';
+      return '这次转述没有完成或未被采用，当前保留原始汇报。可以按需要调整表达；不会重新执行工作。';
+    }
+
     /** Keep the official component mounted; change only one settled text block. */
     function PersonaStep({ delegate, ...props }) {
       const { node, sessionId, groupPart } = props;
@@ -4280,8 +4366,12 @@ const CLIENT_BUILD = 2026111016;
           }, t('shell.showOriginal') ?? 'origin'):null,
           showHeader?h('button', { type: 'button', style: toggleStyle, 'aria-haspopup': 'dialog',
             onClick: () => setFeedbackOpen({key,row}) }, row.retrying ? '正在调整…' : '调整表达'):null,
-          showReading?h('button',{type:'button',style:toggleStyle,'aria-haspopup':'dialog',onClick:()=>{try{reportReadingRuntime.open(sessionId,seq);setReadingError('');}catch(error){setReadingError(error.message);}}},'可视化'):null,
+          showReading?h('button',{type:'button',style:toggleStyle,'aria-haspopup':'dialog',onClick:()=>{try{reportReadingRuntime.open(sessionId,seq);setReadingError('');}catch(error){setReadingError(error.message);}}},'阅读报告'):null,
         ) : null,
+        showHeader && !ready && reportFallbackReason(row) ? h('details', { 'data-persona-shell': 'fallback-reason',
+          style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', lineHeight: 1.6, marginBottom: '6px' } },
+          h('summary', { style: { cursor: 'pointer' } }, '为什么显示原文'),
+          h('span', { style: { display: 'block', maxWidth: '42em', marginTop: '3px' } }, reportFallbackReason(row))) : null,
         readingError?h('small',{role:'status',style:{display:'block',color:'var(--dsw-alias-label-secondary)'}},readingError):null,
         report,
         ready && row.final !== true && state?.settings?.processToolUsage === true
@@ -4493,7 +4583,10 @@ const CLIENT_BUILD = 2026111016;
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(patch),
         });
-        if (!response.ok) return undefined;
+        if (!response.ok) {
+          const failure = await response.json();
+          return failure?.error === 'settings-save-failed' ? failure : undefined;
+        }
         const value = await response.json();
         if(value?.settings)acceptChatThinking(value.settings,{routeOnly:true,routeAt});
         if (typeof value?.settings?.progressNotices === 'boolean') setProgressEnabled(value.settings.progressNotices);
@@ -4617,7 +4710,7 @@ const CLIENT_BUILD = 2026111016;
       .dsh-persona-settings .dsh-persona-settings-hero{padding:0 0 18px;margin:0;border:0;border-radius:0;background:none;gap:12px;align-items:center}
       .dsh-persona-settings .dsh-persona-settings-hero h2{font-size:20px;font-weight:650;letter-spacing:-.02em;margin:0 0 5px}
       .dsh-persona-settings .dsh-persona-settings-hero p{font-size:13px;color:var(--dsh-persona-muted);margin:0}
-      .dsh-persona-settings .dsh-persona-save-state{border:0;padding:0;background:none;font-size:11px;display:inline-flex;align-items:center;gap:6px}
+      .dsh-persona-settings .dsh-persona-save-state{border:0;padding:0;background:none;font-size:11px;display:inline-flex;align-items:center;gap:6px;white-space:normal}
       .dsh-persona-settings .dsh-persona-save-state::before{content:'';width:6px;height:6px;border-radius:50%;background:#539574;flex:none}
       .dsh-persona-settings .dsh-persona-save-state[data-state=pending]::before{background:#7884bc}
       .dsh-persona-settings .dsh-persona-save-state[data-state=error]::before{background:#c66d55}
@@ -4671,11 +4764,11 @@ const CLIENT_BUILD = 2026111016;
 
     const USAGE_SECTIONS = [
       { label: '工作转述', keys: ['rewrite', 'progress'], tone: 'rewrite' },
-      { label: '报告可视化', keys: ['report-visualization'], tone: 'visualization' },
+      { label: '报告阅读', keys: ['report-visualization'], tone: 'visualization' },
       { label: '聊天室', keys: ['chat', 'chat-context-selection', 'chat-participation', 'reply-suggestions', 'chat-draft'], tone: 'chat' },
       { label: '其他功能', keys: ['preset', 'memory'], tone: 'other' },
     ];
-    const USAGE_NAMES = { rewrite: '汇报改写', progress: '静默播报', 'report-visualization':'报告可视化', chat: '角色发言',
+    const USAGE_NAMES = { rewrite: '汇报改写', progress: '静默播报', 'report-visualization':'报告阅读', chat: '角色发言',
       'chat-context-selection':'轮次规划', 'chat-participation': '调度判断', 'reply-suggestions': '快捷回复', 'chat-draft':'指令整理', preset: '预设生成', memory: '记忆提取' };
     const usageNumber = (n) => Number.isSafeInteger(n) && n >= 0 ? n.toLocaleString('zh-CN') : '—';
     const usageTokens = (m) => m.calls > 0 && !m.usageCalls ? '未上报' : usageNumber(m.totalTokens);
@@ -5394,7 +5487,7 @@ const CLIENT_BUILD = 2026111016;
         h('style', null, SETTINGS_CSS),
         h('label', { style: toggleRowStyle }, h('input', { type: 'checkbox', checked: settings.memory !== false,
           onChange: (e) => save({ memory: e.target.checked }) }), h('span', { style: labelStyle }, '记住偏好与约定')),
-        h('span', { style: hintStyle }, '记住你希望怎样被回应。关闭后停止采集和使用，已有记录会保留。'),
+        h('span', { style: hintStyle }, '从已启用的主工作会话识别明确偏好，供适用的人格表达参考。聊天室不会自动提炼长期记忆；可在这里手动管理。关闭后停止采集和使用，已有记录与房间聊天分别保留。'),
         settingsFold('memory-extraction', '后台整理', '可选，额外调用转述模型',
           h('div', null, h('label', { style: toggleRowStyle }, h('input', { type: 'checkbox', checked: settings.memoryExtraction === true,
             disabled: settings.memory === false, onChange: (e) => save({ memoryExtraction: e.target.checked }) }),
@@ -5466,7 +5559,7 @@ const CLIENT_BUILD = 2026111016;
       return h('section', { className: 'dsh-persona-avatar-editor', role: 'group', 'aria-label': user ? '编辑我的头像' : '编辑人格头像' },
         h('div', { className: 'dsh-persona-memory-footer' }, h('strong', null, preset.name + ' · 头像'),
           h('button', { type: 'button', style: toggleStyle, disabled: busy, onClick: onClose }, '取消头像修改')),
-        h('p', { style: hintStyle }, user ? '这张头像用于所有角色聊天，只改变显示，不影响人格与记忆。' : preset.builtin ? '内置原版保留；保存头像会另存为全局默认的人格。新人格不会自动加入已有聊天室，私人记忆不继承；可在房间成员管理中加入。' : '只改变这位角色的头像，身份、聊天记录与记忆保持不变。'),
+        h('p', { style: hintStyle }, user ? '这张头像用于所有角色聊天，只改变显示，不影响人格与记忆。' : preset.builtin ? '只覆盖这位内置人格在本机的显示头像，可恢复原图。身份、默认选择、房间成员与私人记忆归属保持不变。' : '只改变这位角色的头像，身份、聊天记录与记忆保持不变。'),
         h('div', { className: 'dsh-persona-avatar-workbench' },
           picture ? h('canvas', { ref: canvas, width: 256, height: 256, 'aria-label': '头像取景预览' })
             : h(PersonaAvatar, { src: preset.avatar, id: preset.id, name: preset.name, className: 'dsh-persona-avatar-preview' }),
@@ -5480,9 +5573,9 @@ const CLIENT_BUILD = 2026111016;
               : h('p', { style: hintStyle }, '支持 PNG、JPG、WebP，选好后可调整取景。图片仅保存在插件内，不发送给模型。'))),
         h('div', { className: 'dsh-persona-memory-actions' },
           h('button', { type: 'button', style: primaryButtonStyle, disabled: busy || reading || !picture, onClick: () => save() },
-            busy ? '正在保存…' : user ? '保存我的头像' : preset.builtin ? '另存新人格并使用' : '保存头像'),
-          preset.avatar ? h('button', { type: 'button', style: toggleStyle, disabled: busy || reading, onClick: () => save(true) },
-            user ? '使用账号头像' : preset.builtin ? '另存为无图片人格' : '移除头像') : null),
+            busy ? '正在保存…' : user ? '保存我的头像' : '保存头像'),
+          (preset.builtin ? preset.avatarOverridden === true : !!preset.avatar) ? h('button', { type: 'button', style: toggleStyle, disabled: busy || reading, onClick: () => save(true) },
+            user ? '使用账号头像' : preset.builtin ? '恢复原头像' : '移除头像') : null),
         h('p', { style: hintStyle, role: 'status', 'aria-live': 'polite' }, reading ? '正在读取图片…' : notice));
     }
 
@@ -5530,7 +5623,7 @@ const CLIENT_BUILD = 2026111016;
           if (next.state) { accept(next.state); for (const update of chatProfileUpdates) update(next.state); }
           if (!response.ok) return { ok: false, reason: next.error === 'profile-conflict' ? 'avatar-conflict' : next.error };
           accept(next); for (const update of chatProfileUpdates) update(next);
-          if (live.current&&!Object.hasOwn(patch,'userAddress')) { setEditing(undefined); setNotice('头像已保存。'); }
+          if (live.current&&(Object.hasOwn(patch,'avatar')||Object.hasOwn(patch,'avatarMode'))) { setEditing(undefined); setNotice('头像已保存。'); }
           return { ok: true, state:next };
         } catch { return { ok: false,reason:abort.signal.aborted?'profile-timeout':undefined }; }
         finally { clearTimeout(timeout);saving.current = false; if (live.current) setBusy(false); }
@@ -5542,6 +5635,11 @@ const CLIENT_BUILD = 2026111016;
         const result = await persist({ avatarMode }, state.current.revision);
         if (live.current && !result.ok) setNotice(result.reason === 'avatar-conflict'
           ? '外观已在别处更新，请核对当前选择后再试。' : '显示方式未保存，原设置仍保留，请重试。');
+      };
+      const changeGender = async (userGender) => {
+        const result = await persist({ userGender }, state.current.revision);
+        if (live.current) setNotice(result.ok ? '性别设置已保存，只影响之后的聊天回复。' : result.reason === 'avatar-conflict'
+          ? '个人资料已在别处更新，请核对当前性别选择后重试。' : '未能确认性别设置已保存，请核对后重试。');
       };
       const confirmedAddress=typeof value?.userAddress==='string'?value.userAddress:'',address=addressDraft?.text??confirmedAddress,
         addressError=userAddressProblem(address),addressDirty=address!==confirmedAddress;
@@ -5576,6 +5674,11 @@ const CLIENT_BUILD = 2026111016;
             disabled:!value||busy||addressSaving||!!editing||!!addressError||!addressDirty,onClick:()=>void saveAddress()},addressSaving?'保存中…':'保存称呼')),
         h('p',{style:hintStyle},'所有聊天室共用；只用于角色聊天中的称呼，不改工作汇报，也不会存入长期记忆。留空即可按人设自然称呼。'),
         h('p',{style:hintStyle,role:'status','aria-live':'polite'},addressError||addressNotice),
+        h('label',{style:{...fieldStyle,marginTop:'14px'}},h('span',{style:labelStyle},'你的性别（聊天室）'),
+          h('select',{style:inputStyle,'aria-label':'你的性别（聊天室）',value:value?.userGender??'unset',disabled:!value||busy||addressSaving||!!editing,
+            onChange:event=>void changeGender(event.target.value)},
+            h('option',{value:'unset'},'不指定'),h('option',{value:'female'},'女性'),h('option',{value:'male'},'男性'),h('option',{value:'none'},'无性别'))),
+        h('p',{style:hintStyle},'可选，默认不指定；不指定表示不提供性别，不等于无性别。所有聊天室共用，不改工作汇报或长期记忆。默认不因性别差异拉开距离；设为男性时，女性人格会更克制，不主动肢体接触，收到你的邀请也保留分寸。女性或不指定时按性格自然相处；性别不代表同意接触。'),
         h('strong',{style:{display:'block',marginTop:'18px',marginBottom:'8px'}},'我的头像'),
         h('p', { style: hintStyle }, '默认跟随 DSH 账号头像。没有头像或加载失败时，只显示你的消息气泡。'),
         h('label', { style: { ...fieldStyle, marginTop: '14px' } }, h('span', { style: labelStyle }, '用户头像显示'),
@@ -5594,6 +5697,31 @@ const CLIENT_BUILD = 2026111016;
             : '使用已上传的自定义图片；只保存取景后的图片，不发送给模型。') : null,
         h('p', { style: hintStyle, role: 'status' }, notice),
         notice==='个人资料暂时无法读取，可以刷新重试。'?h('button',{type:'button',style:toggleStyle,disabled:busy,onClick:()=>void refresh()},'重新读取个人资料'):null);
+    }
+
+    /** A visible model selector owns its catalogue request and retires it on hide/change. */
+    function useModelCatalogue(provider, visible, retry = 0) {
+      const [state, setState] = React.useState({ provider: null, models: [], failed: false });
+      React.useEffect(() => {
+        if (!visible || !provider) return;
+        let live = true;
+        const abort = new AbortController();
+        const fail = () => { if (live) setState({ provider, models: [], failed: true }); };
+        const timeout = setTimeout(() => { abort.abort(); fail(); }, 10000);
+        setState({ provider, models: [], failed: false });
+        void (async () => {
+          try {
+            const response = await fetch(ROUTE + '/models?provider=' + encodeURIComponent(provider), { signal: abort.signal });
+            if (!response.ok) throw Error('models-unavailable');
+            const value = await response.json();
+            if (value.error || !Array.isArray(value.models)) throw Error('models-unavailable');
+            if (live && !abort.signal.aborted) setState({ provider, models: value.models, failed: false });
+          } catch { fail(); }
+          finally { clearTimeout(timeout); }
+        })();
+        return () => { live = false; clearTimeout(timeout); abort.abort(); };
+      }, [provider, visible, retry]);
+      return provider && state.provider === provider ? state : { models: [], failed: false };
     }
 
     let nextSettingsId = 0;
@@ -5628,11 +5756,11 @@ const CLIENT_BUILD = 2026111016;
       }, []);
       const [providers, setProviders] = React.useState([]);
       const [providersFailed,setProvidersFailed]=React.useState(false),[catalogueRetry,setCatalogueRetry]=React.useState(0);
-      const [models, setModels] = React.useState([]);
-      const [modelsFailed,setModelsFailed]=React.useState(false);
-      const [chatModels,setChatModels]=React.useState([]),[chatModelsFailed,setChatModelsFailed]=React.useState(false);
-      const [visualizationModels,setVisualizationModels]=React.useState([]),[visualizationModelsFailed,setVisualizationModelsFailed]=React.useState(false);
+      const { models, failed: modelsFailed } = useModelCatalogue(settings?.provider, activeTab === 'advanced', catalogueRetry);
+      const { models: chatModels, failed: chatModelsFailed } = useModelCatalogue(settings?.chatProvider, activeTab === 'chat', catalogueRetry);
+      const { models: visualizationModels, failed: visualizationModelsFailed } = useModelCatalogue(settings?.visualizationProvider, activeTab === 'advanced', catalogueRetry);
       const [status, setStatus] = React.useState('');
+      const [failedSettingsSave, setFailedSettingsSave] = React.useState(false);
       const [reviewThresholdDraft, setReviewThresholdDraft] = React.useState(undefined);
       const [progressMinutesDraft, setProgressMinutesDraft] = React.useState(undefined);
       /** What long-term memory currently claims, so it can be inspected. */
@@ -5647,6 +5775,14 @@ const CLIENT_BUILD = 2026111016;
       const [generating, setGenerating] = React.useState(false);
       const [generated, setGenerated] = React.useState(undefined);
       const [generatedSource, setGeneratedSource] = React.useState('');
+      const [generatedReviewOpen, setGeneratedReviewOpen] = React.useState(false);
+      const generatedReview = React.useRef(null), generatedReviewReturn = React.useRef(null), generateButton = React.useRef(null);
+      React.useEffect(() => {
+        if (generatedReviewOpen) {
+          generatedReview.current?.focus({ preventScroll: true });
+          generatedReview.current?.scrollIntoView?.({ block: 'nearest' });
+        }
+      }, [generatedReviewOpen]);
       const generatingRef = React.useRef(false);
       const [presetStatus, setPresetStatus] = React.useState('');
       /** Name the user chose for a freshly generated preset. */
@@ -5679,22 +5815,23 @@ const CLIENT_BUILD = 2026111016;
         return true;
       };
 
+      const catalogueVisible = !!settings && (activeTab === 'chat' || activeTab === 'advanced');
       React.useEffect(() => {
-        if(!settings)return;
+        if (!catalogueVisible) return;
         let cancelled = false;
-        const abort=new AbortController(),timeout=setTimeout(()=>abort.abort(),10000);setProvidersFailed(false);
+        const abort=new AbortController(),timeout=setTimeout(()=>{abort.abort();if(!cancelled)setProvidersFailed(true);},10000);setProvidersFailed(false);
         (async () => {
           try {
             const response = await fetch(`${ROUTE}/models`,{signal:abort.signal});
             if (!response.ok) throw Error('models-unavailable');
             const value = await response.json();
             if(value.error||!Array.isArray(value.providers))throw Error('models-unavailable');
-            if (!cancelled) setProviders(value.providers);
+            if (!cancelled && !abort.signal.aborted) setProviders(value.providers);
           } catch { if(!cancelled)setProvidersFailed(true); }
           finally{clearTimeout(timeout);}
         })();
         return () => { cancelled = true;clearTimeout(timeout);abort.abort(); };
-      }, [!!settings,catalogueRetry]);
+      }, [catalogueVisible,catalogueRetry]);
 
       // Presets load once, and again whenever a preset operation returns a new
       // list: the host is the source of truth, the page only mirrors it.
@@ -5735,7 +5872,8 @@ const CLIENT_BUILD = 2026111016;
         presetBusyRef.current = true;
         setPresetBusy(true);
         editorGeneration.current += 1;
-        const replacesCard = body.action === 'apply' || body.action === 'save' || body.action === 'avatar'
+        const builtinAvatarOnly = body.action === 'avatar' && presets.some(preset => preset.id === body.id && preset.builtin);
+        const replacesCard = body.action === 'apply' || body.action === 'save' || (body.action === 'avatar' && !builtinAvatarOnly)
           || (body.action === 'delete' && body.id === activePresetId);
         return queueWrite(async () => {
           try {
@@ -5772,14 +5910,24 @@ const CLIENT_BUILD = 2026111016;
         });
       };
 
-      const generatePreset = async () => {
+      const returnFromGeneratedReview = (removed = false) => {
+        const target = generatedReviewReturn.current;
+        if (!removed && target?.isConnected) target.focus();
+        else if (removed) generateButton.current?.closest('[data-settings-fold="create-persona"]')?.querySelector('summary')?.focus();
+        else generateButton.current?.focus();
+      };
+      const closeGeneratedReview = () => {
         if (generatingRef.current || presetBusyRef.current) return;
+        setGeneratedReviewOpen(false);
+        returnFromGeneratedReview();
+      };
+      const generatePreset = async (event) => {
+        if (generatingRef.current || presetBusyRef.current) return;
+        generatedReviewReturn.current = event?.currentTarget ?? generateButton.current;
         generatingRef.current = true;
         const prompt = personaPrompt;
         setGenerating(true);
         setPresetStatus('正在读取人设…');
-        setGenerated(undefined);
-        setGeneratedName('');
         const result = await postPreset({ action: 'generate', prompt });
         generatingRef.current = false;
         setGenerating(false);
@@ -5789,9 +5937,12 @@ const CLIENT_BUILD = 2026111016;
           // Seeded from the generated suggestion, but editable: it is a starting
           // point, not the user's decision.
           setGeneratedName(result.preset?.name ?? '');
+          setGeneratedReviewOpen(true);
           setPresetStatus('已生成，确认后保存');
         } else {
-          setPresetStatus(`生成失败：${result?.reason ?? '未知原因'}`);
+          setPresetStatus(typeof result?.reason === 'string' && result.reason.startsWith('generation-')
+            ? '模型返回的结构或多轮示例不完整，未采用。输入和已有预览已保留，可调整后重新生成。'
+            : `生成失败：${result?.reason ?? '未知原因'}`);
         }
       };
 
@@ -5810,42 +5961,13 @@ const CLIENT_BUILD = 2026111016;
         }
       };
 
-      React.useEffect(() => {
-        if (settings?.provider === undefined || settings.provider === '') { setModels([]);setModelsFailed(false); return; }
-        let cancelled = false;
-        setModelsFailed(false);
-        (async () => {
-          try {
-            const response = await fetch(`${ROUTE}/models?provider=${encodeURIComponent(settings.provider)}`);
-            if (!response.ok) throw Error('models-unavailable');
-            const value = await response.json();
-            if(value.error||!Array.isArray(value.models))throw Error('models-unavailable');
-            if (!cancelled) setModels(value.models ?? []);
-          } catch {if(!cancelled)setModelsFailed(true);}
-        })();
-        return () => { cancelled = true; };
-      }, [settings?.provider,catalogueRetry]);
-      React.useEffect(()=>{
-        if(activeTab!=='chat'||!settings?.chatProvider)return;
-        let cancelled=false;setChatModels([]);setChatModelsFailed(false);
-        void (async()=>{try{const response=await fetch(ROUTE+'/models?provider='+encodeURIComponent(settings.chatProvider));
-          if(!response.ok)throw Error('unavailable');const value=await response.json();if(value.error||!Array.isArray(value.models))throw Error('models-unavailable');if(!cancelled)setChatModels(value.models??[]);
-        }catch{if(!cancelled)setChatModelsFailed(true);}})();return()=>{cancelled=true;};
-      },[activeTab,settings?.chatProvider,catalogueRetry]);
-      React.useEffect(()=>{
-        if(activeTab!=='advanced'||!settings?.visualizationProvider)return;
-        let cancelled=false;setVisualizationModels([]);setVisualizationModelsFailed(false);
-        void (async()=>{try{const response=await fetch(ROUTE+'/models?provider='+encodeURIComponent(settings.visualizationProvider));
-          if(!response.ok)throw Error('unavailable');const value=await response.json();if(value.error||!Array.isArray(value.models))throw Error('models-unavailable');if(!cancelled)setVisualizationModels(value.models??[]);
-        }catch{if(!cancelled)setVisualizationModelsFailed(true);}})();return()=>{cancelled=true;};
-      },[activeTab,settings?.visualizationProvider,catalogueRetry]);
-
       const pack = settings?.pack;
 
       const writeSettings = async (patch) => {
         showStatus('正在保存…');
         const result = await postSettings(patch);
         if (result?.settings !== undefined) {
+          setFailedSettingsSave(false);
           acceptSettings(result.settings);
           // Saving can change the learned profile (a clear resets it), so the
           // memory panel refreshes from the same response rather than going stale.
@@ -5856,9 +5978,15 @@ const CLIENT_BUILD = 2026111016;
           if (Array.isArray(result.presets)) {
             await refreshPresets({ presets: result.presets, active: result.settings.presetName });
           }
-          showStatus('已保存', true);
+          showStatus(result.settingsPersistence === 'pending' ? '当前已生效，存储尚未就绪。'
+            : result.settingsPersistence === 'memory-only' ? '仅本次生效，当前没有可用存储。' : '已保存',
+            result.settingsPersistence !== 'pending' && result.settingsPersistence !== 'memory-only');
         } else {
-          showStatus('保存失败，请重试');
+          if (result?.error === 'settings-save-failed' && result.appliedSettings) {
+            acceptSettings(result.appliedSettings);
+            setFailedSettingsSave(true);
+            showStatus('当前已生效，但保存失败。');
+          } else showStatus('保存失败，请重试');
         }
         return result;
       };
@@ -5866,11 +5994,41 @@ const CLIENT_BUILD = 2026111016;
       const draftChanges = () => Object.entries(draftsRef.current.values)
         .map(([field, value]) => ({ field, value, version: draftsRef.current.versions[field] }));
       const persistPackChanges = async (changes) => {
+        const ordered = [...changes].sort((a, b) => a.version - b.version);
+        for (const change of ordered) if (change.field === 'chatVoice') {
+          const lines = change.value.split('\n').filter(line => line.trim() !== '');
+          if (lines.length > 8 || lines.some(line => line.length > 400)) {
+            showStatus('聊天室语气最多8条，每条400字；请缩短后保存。');
+            return { error: 'chat-voice-too-long' };
+          }
+        }
         const nextPack = { ...settingsRef.current?.pack };
-        for (const { field, value } of changes) {
+        for (const { field, value } of ordered) {
           if (field === 'subagent') nextPack.address = { ...nextPack.address, subagent: value };
           else if (field === 'narrationMode') nextPack.narration = { ...nextPack.narration, mode: value };
           else if (field === 'narrationAssistant') nextPack.narration = { ...nextPack.narration, assistant: value };
+          else if (field === 'chatVoice') nextPack.chat = { ...(nextPack.chat ?? { samples: [] }), voice: value.split('\n').filter(line => line.trim() !== '') };
+          else if (field === 'chatGender') nextPack.chat = { ...(nextPack.chat ?? {}), gender: value };
+          else if (field === 'chatSource' && nextPack.chat?.source) {
+            const effectiveVoice = nextPack.chat.voice ?? (nextPack.voice ?? []).filter(line => line.trim());
+            if (value === 'use' && !chatSourceCanBind(nextPack.identity, effectiveVoice)) {
+              const draft = draftsRef.current;
+              if (draft.versions.chatSource === changes.find(change => change.field === 'chatSource')?.version) {
+                const values = { ...draft.values }, versions = { ...draft.versions };
+                delete values.chatSource; delete versions.chatSource;
+                draftsRef.current = { ...draft, values, versions }; setPackDrafts(values);
+              }
+              showStatus('当前身份或聊天语气超出原始参考的绑定范围，未启用，原文仍保留。');
+              return { error: 'chat-source-binding-limit' };
+            }
+            nextPack.chat = { ...nextPack.chat, source: { ...nextPack.chat.source, enabled: value === 'use',
+              ...(value === 'use' ? { identity: nextPack.identity.trim(), voice: [...effectiveVoice] } : {}) } };
+          }
+          else if (field === 'chatReset') {
+            const gender = nextPack.chat?.gender;
+            if (gender !== undefined) nextPack.chat = { gender };
+            else delete nextPack.chat;
+          }
           else nextPack[field] = field === 'identity' ? value : value.split('\n').filter((line) => line.trim() !== '');
         }
         const result = await writeSettings({ pack: nextPack });
@@ -5880,6 +6038,10 @@ const CLIENT_BUILD = 2026111016;
           const versions = { ...draft.versions };
           for (const { field, version } of changes) if (versions[field] === version) {
             delete values[field]; delete versions[field];
+          }
+          const resetVersion = Math.max(-1, ...changes.filter(change => change.field === 'chatReset').map(change => change.version));
+          if (versions.chatVoice !== undefined && versions.chatVoice <= resetVersion) {
+            delete values.chatVoice; delete versions.chatVoice;
           }
           draftsRef.current = { ...draft, values, versions };
           setPackDrafts(values);
@@ -5919,16 +6081,20 @@ const CLIENT_BUILD = 2026111016;
             h('input', {
               type: 'checkbox',
               checked: settings?.includeToolSteps !== false,
+              disabled: settings.trigger === 'report',
+              'aria-describedby': tabsId.current + '-process-scope-hint',
               onChange: (event) => save({ includeToolSteps: event.target.checked }),
             }),
             h('span', { style: labelStyle }, '同时改写阶段性输出'),
           ),
-          h('span', { style: hintStyle },
-            '让带工具调用的阶段汇报也使用当前人格。',
+          h('span', { style: hintStyle, id: tabsId.current + '-process-scope-hint' },
+            settings.trigger === 'report' ? '仅最终汇报不使用以下过程选项，原选择已保留；独立设为全部汇报的会话仍沿用这些选择。'
+              : '让带工具调用的阶段汇报也使用当前人格。',
           ),
           h('label', { style: { ...toggleRowStyle, marginTop: '10px' } },
             h('input', { type: 'checkbox', checked: settings?.processToolUsage === true,
-              disabled: settings?.includeToolSteps === false,
+              disabled: settings.trigger === 'report' || settings?.includeToolSteps === false,
+              'aria-describedby': tabsId.current + '-process-scope-hint',
               onChange: (event) => save({ processToolUsage: event.target.checked }) }),
             h('span', { style: labelStyle }, '允许过程转述参考运行信息'),
           ),
@@ -6103,10 +6269,29 @@ const CLIENT_BUILD = 2026111016;
             )
             : null,
         );
+      const chatSourceCanBind = (identity, voice) => typeof identity === 'string' && identity.trim() && identity.trim().length <= 4000
+        && Array.isArray(voice) && voice.length <= 8 && voice.every(line => typeof line === 'string' && line.trim() && line.length <= 400);
+      const chatSourceActive = (profile, identity, voice) => profile?.source?.enabled === true && profile.source.identity === identity?.trim()
+        && Array.isArray(profile.source.voice) && profile.source.voice.length === (profile.voice ?? voice ?? []).length
+        && profile.source.voice.every((line, index) => line === (profile.voice ?? voice ?? [])[index]);
+      const sourcePreview = (profile, identity, voice) => profile?.source ? h('details', { style: { marginTop: '6px' } },
+        h('summary', null, `原始人设参考（${chatSourceActive(profile, identity, voice) ? '用于聊天' : '未启用'}）`),
+        h('p', { style: hintStyle }, '仅作虚构角色资料，当前身份、语气和用户本次原话优先；不是实际经历、长期记忆或工具权限，不提供给工作转述。'),
+        h('div', { style: { ...memoryLineStyle, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, profile.source.text)) : null;
+      const chatExamplesPreview = (profile) => h(React.Fragment, null,
+        profile?.samples?.length ? h('details', { style: { marginTop: '6px' } }, h('summary', null, '聊天语气示例'),
+          h('div', { style: { ...memoryLineStyle, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, profile.samples.join('\n\n'))) : null,
+        ...[['dialogueExamples', '日常虚构示例'], ['workDialogueExamples', '工作讨论虚构示例']].map(([key, label]) =>
+          Array.isArray(profile?.[key]) && profile[key].length ? h('details', { key, style: { marginTop: '6px' } },
+            h('summary', null, label), ...profile[key].map((group, index) => h('div', { key: index,
+              style: { ...memoryLineStyle, marginTop: '6px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } },
+              (group.turns ?? []).map(turn => `${turn.speaker === 'self' ? '本人' : turn.speaker === 'user' ? '用户' : turn.speaker}：${turn.text}`).join('\n')))) : null));
+      const editGenerated = (section, key, value) => setGenerated(current => current
+        ? section ? { ...current, [section]: { ...current[section], [key]: value } } : { ...current, [key]: value } : current);
       const generatorControls = h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
           h('span', { style: labelStyle }, '从人设提示词生成预设'),
           h('span', { style: hintStyle },
-            '粘贴人设提示词，提取说话风格。生成后可预览、改名，再保存启用。',
+            '粘贴人设提示词，分别准备聊天和转述表达。先预览、改名，再保存启用；生成不会自动替换当前人格。',
           ),
           h('textarea', {
             style: { ...inputStyle, minHeight: '88px', resize: 'vertical' },
@@ -6117,15 +6302,34 @@ const CLIENT_BUILD = 2026111016;
           h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '6px' } },
             h('button', {
               type: 'button',
+              ref: generateButton,
               style: primaryButtonStyle,
               disabled: generating || presetBusy || personaPrompt.trim().length < 20,
-              onClick: () => generatePreset(),
+              onClick: (event) => generatePreset(event),
             }, generating ? '生成中…' : '生成预设'),
             presetStatus !== '' ? h('span', { style: hintStyle }, presetStatus) : null,
           ),
           generated !== undefined
-            ? h('div', { style: presetPreviewStyle },
-              h('div', { style: { ...labelStyle, marginBottom: '4px' } }, '预览'),
+            ? h('details', { style: presetPreviewStyle, open: generatedReviewOpen,
+              onToggle: event => { if (event.currentTarget.open !== generatedReviewOpen) setGeneratedReviewOpen(event.currentTarget.open); } },
+              h('summary', { style: { ...labelStyle, cursor: 'pointer', overflowWrap: 'anywhere' },
+                'aria-disabled': generating || presetBusy,
+                onClick: event => {
+                  if (generating || presetBusy) event.preventDefault();
+                  else if (!generatedReviewOpen) generatedReviewReturn.current = event.currentTarget;
+                } }, '核对生成结果（未保存）'),
+              h('section', { ref: generatedReview, role: generatedReviewOpen ? 'dialog' : undefined,
+                'aria-label': '核对生成的人格', 'aria-modal': false, tabIndex: -1,
+                style: { maxHeight: 'min(72vh, 760px)', overflowY: 'auto', overscrollBehavior: 'contain', padding: '8px 2px 2px', outlineOffset: '2px' },
+                onKeyDown: event => {
+                  if (event.key === 'Escape' && !event.nativeEvent?.isComposing) {
+                    event.preventDefault(); event.stopPropagation(); closeGeneratedReview();
+                  }
+                } },
+              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' } },
+                h('strong', { style: labelStyle }, '保存前核对一下'),
+                h('button', { type: 'button', style: toggleStyle, disabled: presetBusy || generating, onClick: closeGeneratedReview }, '稍后编辑')),
+              h('p', { style: hintStyle }, '可以在这里修正身份、性别、称呼和转述关系。关闭后草稿仍保留；只有“保存并启用”才会采用。'),
               // The generated name is a suggestion, not a decision: the user
               // names their own presets.
               h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' } },
@@ -6133,27 +6337,56 @@ const CLIENT_BUILD = 2026111016;
                 h('input', {
                   style: { ...inputStyle, flex: 1 },
                   value: generatedName,
-                  disabled: presetBusy,
+                  disabled: presetBusy || generating,
                   'aria-label': '新预设名称', placeholder: '给这个预设起个名字',
                   onChange: (event) => setGeneratedName(event.target.value),
                 }),
               ),
-              h('div', { style: { ...memoryLineStyle, marginTop: '4px' } }, `身份：${generated.identity ?? ''}`),
-              h('div', { style: { ...memoryLineStyle, marginTop: '4px' } }, generated.narration?.mode === 'relay'
-                ? `发言关系：转达${generated.narration.assistant || '原助手'}的工作` : '发言关系：用角色口吻重述'),
+              h('label', { style: fieldStyle }, h('span', { style: labelStyle }, '身份摘要（可修正）'),
+                h('textarea', { style: { ...inputStyle, minHeight: '74px', resize: 'vertical' }, 'aria-label': '生成身份摘要',
+                  value: generated.identity ?? '', disabled: presetBusy || generating, onChange: event => editGenerated(null, 'identity', event.target.value) })),
+              h('label',{style:fieldStyle},h('span',{style:labelStyle},'人格性别（聊天室）'),
+                h('select',{style:inputStyle,'aria-label':'生成人格性别（聊天室）',value:generated.chat?.gender??'unset',disabled:presetBusy||generating,
+                  onChange:event=>editGenerated('chat','gender',event.target.value)},
+                  h('option',{value:'unset'},'不指定'),h('option',{value:'female'},'女性'),h('option',{value:'male'},'男性'),h('option',{value:'none'},'无性别（如明确无性别的智能助手）'))),
+              h('p', { style: hintStyle }, '不指定表示不作判断；无性别是明确设定，并非所有 AI 都无性别。男娘、假小子是表达风格，不能从气质、衣着或外形推定性别；请按原设或自行选择。'),
+              h('label', { style: fieldStyle }, h('span', { style: labelStyle }, '发言关系'),
+                h('select', { style: inputStyle, 'aria-label': '生成发言关系', value: generated.narration?.mode ?? 'voice', disabled: presetBusy || generating,
+                  onChange: event => editGenerated('narration', 'mode', event.target.value) }, h('option', { value: 'voice' }, '用角色口吻重述'), h('option', { value: 'relay' }, '转达另一位助手的工作'))),
+              ...[['narration','assistant','原助手称呼'],['address','user','用户称呼'],['address','subagent','子代理称呼']].map(([section,key,label]) =>
+                h('label', { key: label, style: fieldStyle }, h('span', { style: labelStyle }, label), h('input', { style: inputStyle, maxLength: 20,
+                  'aria-label': '生成'+label, value: generated[section]?.[key] ?? '', disabled: presetBusy || generating,
+                  onChange: event => editGenerated(section, key, event.target.value) }))),
+              generated.chat ? h('div', { 'aria-label': '生成的聊天表达', style: { marginTop: '8px' } },
+                h('div', { style: labelStyle }, '聊天室'),
+                h('div', { style: memoryLineStyle }, (generated.chat.voice ?? []).join(' ／ ')),
+                h('p', { style: hintStyle }, `日常多轮示例：${generated.chat.dialogueExamples?.length ?? 0}组；工作讨论示例：${generated.chat.workDialogueExamples?.length ?? 0}组。`),
+                h('p', { style: hintStyle }, '示例是虚构风格参考，不是实际经历或记忆。'), chatExamplesPreview(generated.chat),
+                sourcePreview(generated.chat, generated.identity, generated.voice),
+                generated.chat.source ? h('label', { style: toggleRowStyle }, h('input', { type: 'checkbox',
+                  'aria-label': '生成预览参考原始人设', checked: chatSourceActive(generated.chat, generated.identity, generated.voice),
+                  disabled: generating || presetBusy || !chatSourceCanBind(generated.identity, generated.chat.voice ?? generated.voice ?? []),
+                  onChange: event => { const enabled = event.target.checked; setGenerated(current => current?.chat?.source ? ({ ...current, chat: { ...current.chat,
+                    source: { ...current.chat.source, enabled, ...(enabled ? { identity: current.identity.trim(), voice: [...(current.chat.voice ?? current.voice ?? [])] } : {}) } } }) : current); } }), '聊天时参考原始人设') : null)
+                : h('p', { style: hintStyle }, '本次未生成独立聊天表达，聊天将沿用基础语感；可以补充人设后再生成。'),
+              h('div', { style: { ...labelStyle, marginTop: '8px' } }, '工作转述'),
+              (generated.voice ?? []).length ? h('div', { style: memoryLineStyle }, `语气：${generated.voice.join(' ／ ')}`) : null,
               (generated.report ?? []).length > 0
                 ? h('div', { style: { ...memoryLineStyle, marginTop: '4px' } },
                   `汇报规则：${generated.report.join(' ／ ')}`)
                 : null,
               (generated.samples ?? []).length > 0
                 ? h('div', { style: { ...memoryLineStyle, marginTop: '4px' } },
-                  `示例：${generated.samples.join(' ／ ')}`)
+                  h('details', null, h('summary', null, '转述示例'), h('div', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, generated.samples.join('\n\n'))))
                 : null,
+              generated.avoid?.length ? h('details', { style: { marginTop: '6px' } }, h('summary', null, '表达边界'),
+                h('div', { style: { ...memoryLineStyle, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, generated.avoid.join('\n'))) : null,
               h('div', { style: { display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '8px' } },
                 h('button', {
                   type: 'button',
                   style: primaryButtonStyle,
-                  disabled: presetBusy || generatedName.trim() === '',
+                  disabled: generating || presetBusy || generatedName.trim() === '' || !generated.identity?.trim()
+                    || !generated.address?.user?.trim() || !generated.address?.subagent?.trim() || !generated.narration?.assistant?.trim(),
                   onClick: async () => {
                     const result = await presetAction({
                       action: 'save',
@@ -6164,17 +6397,19 @@ const CLIENT_BUILD = 2026111016;
                     if (result?.ok === true) {
                       setGenerated(undefined);
                       setGeneratedName('');
+                      setGeneratedReviewOpen(false);
+                      returnFromGeneratedReview(true);
                     }
                   },
                 }, '保存并启用'),
                 h('button', {
                   type: 'button',
                   style: toggleStyle,
-                  disabled: presetBusy,
-                  onClick: () => { setGenerated(undefined); setPresetStatus(''); },
+                  disabled: presetBusy || generating,
+                  onClick: () => { setGenerated(undefined); setGeneratedReviewOpen(false); setPresetStatus(''); returnFromGeneratedReview(true); },
                 }, '丢弃'),
               ),
-            )
+            ))
             : null,
         );
       const editorControls = h('div', { className: 'dsh-persona-editor-grid' }, h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
@@ -6190,6 +6425,13 @@ const CLIENT_BUILD = 2026111016;
         ),
 
         h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
+          h('span',{style:labelStyle},'人格性别（聊天室）'),
+          h('select',{style:inputStyle,'aria-label':'人格性别（聊天室）',
+            value:presets.some(p=>p.id===activePresetId&&p.builtin)?'female':draftValue('chatGender',pack?.chat?.gender??'unset'),
+            disabled:presetBusy||presets.some(p=>p.id===activePresetId&&p.builtin),onChange:event=>savePackField('chatGender',event.target.value)},
+            h('option',{value:'unset'},'不指定'),h('option',{value:'female'},'女性'),h('option',{value:'male'},'男性'),h('option',{value:'none'},'无性别')),
+          h('p',{style:hintStyle},'内置人格保持女性；自定义人格按原设选择。不指定不等于无性别，智能助手也不默认无性别。男娘、假小子是表达风格，不能从气质、衣着或外形判定性别。这里只调整聊天，明确选择优先于旧示例，不自动改写身份文字或转述。')),
+        h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '汇报里的说话规则（每行一条）'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '76px', resize: 'vertical' },
@@ -6203,6 +6445,7 @@ const CLIENT_BUILD = 2026111016;
 
         h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '通用语感（每行一条）'),
+          h('span', { style: hintStyle }, '有独立聊天表达时，这组语感用于工作转述。'),
           h('textarea', {
             style: { ...inputStyle, minHeight: '76px', resize: 'vertical' },
             disabled: presetBusy,
@@ -6236,6 +6479,32 @@ const CLIENT_BUILD = 2026111016;
             onBlur: (event) => savePackField('avoid', event.target.value),
           }),
         ),
+
+        h('div', { className: 'dsh-persona-editor-field', style: fieldStyle, 'aria-label': '独立聊天表达' },
+          h('span', { style: labelStyle }, '聊天室语气'),
+          pack?.chat || Object.hasOwn(packDrafts, 'chatVoice') ? h(React.Fragment, null,
+            h('textarea', { style: { ...inputStyle, minHeight: '90px', resize: 'vertical' }, disabled: presetBusy,
+              'aria-label': '聊天室语气', value: draftValue('chatVoice', (pack.chat?.voice ?? pack.voice ?? []).join('\n')),
+              onChange: event => setDraft('chatVoice', event.target.value), onBlur: event => savePackField('chatVoice', event.target.value) }),
+            chatExamplesPreview(pack.chat),
+            sourcePreview(pack.chat, pack.identity, pack.voice),
+            pack.chat?.source ? h(React.Fragment, null,
+              h('label', { style: toggleRowStyle }, h('input', { type: 'checkbox', 'aria-label': '聊天室参考原始人设',
+                checked: chatSourceActive(pack.chat, pack.identity, pack.voice), disabled: presetBusy || Object.hasOwn(packDrafts, 'chatReset')
+                  || !chatSourceCanBind(pack.identity, pack.chat.voice ?? pack.voice ?? []),
+                onChange: event => savePackField('chatSource', event.target.checked ? 'use' : 'skip') }), '聊天时参考原始人设'),
+              pack.chat.source.enabled && !chatSourceActive(pack.chat, pack.identity, pack.voice)
+                ? h('button', { type: 'button', style: toggleStyle, disabled: presetBusy || Object.hasOwn(packDrafts, 'chatReset'),
+                  onClick: () => savePackField('chatSource', 'skip') }, '停用这份原始参考') : null,
+              h('p', { style: hintStyle }, '修改身份或聊天室语气会暂停旧参考；重新勾选时，按当前已保存的身份和语气启用。原文保留，可随时查看。')) : null,
+            pack.chat?.source && !chatSourceCanBind(pack.identity, pack.chat.voice ?? pack.voice ?? [])
+              ? h('p', { style: hintStyle }, '重新启用需要身份摘要在4000字内、有效聊天语气最多8条且每条400字；请调整后再启用，原始材料仍保留。') : null,
+            h('p', { style: hintStyle }, '这里单独用于聊天，不改变转述语气。最多8条，每条400字。恢复基础表达会移除独立语气、示例和原始参考。'),
+            h('button', { type: 'button', style: toggleStyle, disabled: presetBusy,
+              onClick: () => savePackField('chatReset', 'inherit') }, '恢复基础表达并清除聊天示例'))
+            : h(React.Fragment, null, h('span', { style: hintStyle }, '尚未单独设置；自定义人格沿用基础语感，内置人格使用自己的聊天材料。'),
+              h('button', { type: 'button', style: toggleStyle, disabled: presetBusy,
+                onClick: () => savePackField('chatVoice', (pack?.voice ?? []).join('\n')) }, '从基础语感设置聊天表达'))),
 
         h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
           h('span', { style: labelStyle }, '子代理称呼'),
@@ -6295,13 +6564,13 @@ const CLIENT_BUILD = 2026111016;
           : null,modelsFailed&&!providersFailed?catalogueFailure('模型列表暂时无法读取，已保存选择仍保留。'):null);
       const settingsTabs = [['persona', '人格'], ['rewrite', '转述'], ['chat','聊天室'], ['memory', '记忆'], ['appearance', '外观'], ['usage', '用量'], ['advanced', '高级']];
       const visualizationControls=h('div',null,
-        h('label',{style:fieldStyle},h('span',{style:labelStyle},'报告可视化模型'),
-          h('select',{style:inputStyle,'aria-label':'报告可视化模型',value:settings.visualizationProvider??'',onChange:event=>save({visualizationProvider:event.target.value,visualizationModel:''})},
+        h('label',{style:fieldStyle},h('span',{style:labelStyle},'报告阅读模型'),
+          h('select',{style:inputStyle,'aria-label':'报告阅读模型',value:settings.visualizationProvider??'',onChange:event=>save({visualizationProvider:event.target.value,visualizationModel:''})},
             h('option',{value:''},'跟随转述模型（默认）'),
             settings.visualizationProvider&&!providers.some(provider=>provider.provider===settings.visualizationProvider)?h('option',{value:settings.visualizationProvider},settings.visualizationProvider+'（暂不可用）'):null,
             ...providers.map(provider=>h('option',{key:provider.provider,value:provider.provider},provider.name??provider.provider)))),
         settings.visualizationProvider?h('label',{style:fieldStyle},h('span',{style:labelStyle},'模型名称'),
-          h('select',{style:inputStyle,'aria-label':'报告可视化模型名称',value:settings.visualizationModel??'',onChange:event=>save({visualizationModel:event.target.value})},
+          h('select',{style:inputStyle,'aria-label':'报告阅读模型名称',value:settings.visualizationModel??'',onChange:event=>save({visualizationModel:event.target.value})},
             h('option',{value:''},'该提供方的默认模型'),
             settings.visualizationModel&&!visualizationModels.some(model=>model.id===settings.visualizationModel)?h('option',{value:settings.visualizationModel},settings.visualizationModel):null,
             ...visualizationModels.map(model=>h('option',{key:model.id,value:model.id},model.name??model.id)))):null,
@@ -6309,7 +6578,7 @@ const CLIENT_BUILD = 2026111016;
         h('label',{style:toggleRowStyle},h('input',{type:'checkbox',checked:settings.visualizationThinking===true,onChange:event=>save({visualizationThinking:event.target.checked})}),h('span',null,'重点分析开启思考')),
         h('p',{style:hintStyle},'重点分析默认关闭思考。导览、展开和阅读主题在本地完成，不再次调用模型。'),
         h('label',{style:toggleRowStyle},h('input',{type:'checkbox',checked:settings.readableThinking!==false,onChange:event=>save({readableThinking:event.target.checked})}),h('span',null,'顺畅阅读开启思考')),
-        h('p',{style:hintStyle},'顺畅阅读默认开启，强度采用模型默认档位。只在你确认生成后调用，结果计入报告可视化用量；不影响重点分析或聊天室。'));
+        h('p',{style:hintStyle},'顺畅阅读默认开启，强度采用模型默认档位。只在你确认生成后调用，结果计入报告阅读用量；不影响重点分析或聊天室。'));
       const panel = (id, content) => h('div', { key: id, role: 'tabpanel', id: tabsId.current + '-' + id,
         'aria-labelledby': tabsId.current + '-tab-' + id, hidden: activeTab !== id, 'data-settings-panel': id }, content);
       return h('div', { 'data-persona-shell': 'settings', className: 'dsh-persona-settings' },
@@ -6318,8 +6587,10 @@ const CLIENT_BUILD = 2026111016;
           h('div', null,
             h('h2', null, '人格套壳'),
             h('p', null, '只换表达，原文随时可查。')),
-          h('span', { className: 'dsh-persona-save-state', role: 'status', 'aria-live': 'polite',
-            'data-state': /失败/.test(status) ? 'error' : /正在/.test(status) ? 'pending' : 'saved' }, status || '自动保存')),
+          h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', minWidth: 0 } },
+            h('span', { className: 'dsh-persona-save-state', role: 'status', 'aria-live': 'polite',
+              'data-state': /失败/.test(status) ? 'error' : /正在|尚未就绪/.test(status) ? 'pending' : 'saved' }, status || '自动保存'),
+            failedSettingsSave ? h('button', { type: 'button', style: toggleStyle, disabled: status === '正在保存…', onClick: () => save({}) }, '重试保存当前设置') : null)),
         h('div', { className: 'dsh-persona-settings-tabs', role: 'tablist', 'aria-label': '设置分类',
           onKeyDown: (event) => {
             if (event.nativeEvent?.isComposing || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -6389,7 +6660,7 @@ const CLIENT_BUILD = 2026111016;
             h('div', null, h('h3', { className: 'dsh-persona-subheading' }, '转述模型'), modelControls),
             h('div', null, subagentControls),
             h('div', { className: 'dsh-persona-wide' }, thresholdControls)),
-          settingsFold('report-visualization-model','报告可视化','按需生成 · 默认跟随转述模型',visualizationControls))),
+          settingsFold('report-visualization-model','报告阅读','按需生成 · 默认跟随转述模型',visualizationControls))),
         h('p', { className: 'dsh-persona-footer-note' }, '转述失败时显示原文。聊天室保留独立记录。'));
     }
 
@@ -6461,6 +6732,10 @@ const CLIENT_BUILD = 2026111016;
         PersonaChatLauncher,
         MemoryPanel,
         SettingsSection,
+        useModelCatalogue,
+        roomReferenceHint,
+        PersonaAvatarEditor,
+        reportFallbackReason,
         rowBranch,
         renderMarkdown,
         resolveChatDelegate,
@@ -6745,7 +7020,7 @@ const CLIENT_BUILD = 2026111016;
         if (typeof ctx.inject === 'function') ctx.inject(['remote', 'remote.account'], (owner) => {
           const remote = owner.get('remote');
           if (typeof remote?.account?.getProfile !== 'function' || typeof remote?.account?.getState !== 'function') return;
-          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.1',
+          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.2',
             locale: typeof navigator !== 'undefined' ? navigator.language : 'zh-CN', timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 }));
           owner.effect(() => release);
           if (typeof owner.on === 'function') owner.on('connection/reset', () => { void accountAvatarSource.refresh(); });

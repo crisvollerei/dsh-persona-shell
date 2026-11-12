@@ -139,13 +139,15 @@ test('long evidence is a bounded exact literal fragment without broken surrogate
   const evidence = result.next.evidence.text;
   assert.ok(evidence.length <= 1600); assert.ok(line.includes(evidence)); assert.equal(evidence.isWellFormed(), true);
   assert.equal(view(options).events[0].messages[0], line);
-  const longPeer = '前'.repeat(1900) + '鲸鲸，你怎么看？' + '后'.repeat(200);
+  const longPeer = '前'.repeat(1899) + '。鲸鲸，你怎么看？' + '后'.repeat(200);
   options.events[1].messages = [longPeer];
   const peerChoice = pick(options, choice => choice.kind === 'peer');
   const peerResult = parseDirector(wire(peerChoice.choiceId), options);
   assert.ok(longPeer.includes(peerResult.next.evidence.text)); assert.match(peerResult.next.evidence.text, /鲸鲸/);
   assert.ok(peerResult.next.evidence.text.length <= 1600);
-  const boundaryPeer = '前'.repeat(1599) + '鲸鲸' + '后'.repeat(200);
+  options.events[1].messages = ['前'.repeat(1599) + '鲸鲸' + '后'.repeat(200)];
+  assert.ok(!view(options).choices.some(choice => choice.kind === 'peer'),'a bare embedded name at a clipping boundary is not an address');
+  const boundaryPeer = '前'.repeat(1598) + '。鲸鲸，你来看。' + '后'.repeat(200);
   options.events[1].messages = [boundaryPeer];
   const boundary = parseDirector(wire(pick(options, choice => choice.kind === 'peer').choiceId), options).next.evidence.text;
   assert.ok(boundaryPeer.includes(boundary));assert.match(boundary,/鲸鲸/,'a locating fragment retains the whole direct name crossing its original budget edge');

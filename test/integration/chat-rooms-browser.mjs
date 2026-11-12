@@ -165,7 +165,7 @@ const entry = [
   source,
   'window.chatUiAPI=plugin.__testing;window.renderBubbleProbe=(turn,frame)=>{if(!window.bubbleProbe){const node=document.createElement("div");node.id="bubble-probe";document.body.append(node);window.bubbleProbe={node,root:createRoot(node)};}window.bubbleProbe.root.render(h(plugin.__testing.ChatReplyBubbles,{turn,frame,latest:false,running:turn.status==="pending",showSpeaker:true,avatar:()=>h("span",{"data-probe-avatar":""},"头像"),onQuote:(turn,index,text)=>{window.probeQuote={id:turn.id,index,text};}}));};window.clearBubbleProbe=()=>{window.bubbleProbe?.root.unmount();window.bubbleProbe?.node.remove();delete window.bubbleProbe;};',
   'window.reportReadingRuntime=plugin.__testing.reportReadingRuntime;window.accountReads=0;window.accountAvatar=null;window.accountSignedIn=true;plugin.__testing.accountAvatarSource.bind({account:{getState:async()=>({ok:true,value:{status:window.accountSignedIn?"credential-stored":"signed-out"}}),getProfile:async()=>{window.accountReads++;return{ok:true,value:{status:"ready",value:{avatarUrl:window.accountAvatar}}}}}},()=>({version:"test",locale:"zh-CN",timezoneOffsetSeconds:0}));window.refreshAccountAvatar=()=>plugin.__testing.accountAvatarSource.refresh();',
-  'function Demo(){const[settings,setSettings]=React.useState(false);const[report,setReport]=React.useState("大肥鱼（默认）");const[workSession,setWorkSession]=React.useState("work");const[inputs,setInputs]=React.useState({});const current=inputs[workSession]??{draft:"WORK_ONLY_DO_NOT_READ",attachmentIds:[],occurrences:[],phase:"plain",draftRev:0};const native=React.useRef({});native.current={inputs,workSession,current};window.switchWorkSession=setWorkSession;window.setReportPersona=setReport;window.nativeFills??=0;window.nativePersists??=0;const put=(id,value)=>setInputs(old=>({...old,[id]:value}));window.setNativeWorkInput=(draft,extra={})=>{const n=native.current;put(n.workSession,{...n.current,...extra,draft,draftRev:n.current.draftRev+1});};window.setNativeWorkMeta=extra=>{const n=native.current;put(n.workSession,{...n.current,...extra});};const actions=React.useMemo(()=>({captureInsertion(){const n=native.current;return{start:n.current.draft.length,end:n.current.draft.length,draftRev:n.current.draftRev};},insertText(text,span){const n=native.current;if(n.workSession!==workSession||n.current.phase!=="plain"||n.current.draftRev!==span.draftRev)return false;window.nativeFills++;put(workSession,{...n.current,draft:n.current.draft.slice(0,span.start)+text+n.current.draft.slice(span.end),draftRev:n.current.draftRev+1});return true;},persistDraft(){window.nativePersists++;}}),[workSession]);return h(React.Fragment,null,h("header",{key:workSession},h(plugin.__testing.WorkInputBridge,{sessionId:workSession,useInput:selector=>selector(current),inputActions:actions,useSessions:selector=>selector({byId:{work:{displayTitle:"当前任务"},other:{displayTitle:"后台任务"}}})}),h(plugin.__testing.PersonaChatLauncher,{sessionId:workSession,conversation:{effectivePersonaId:report}})),',
+  'function Demo(){const[settings,setSettings]=React.useState(false);const[report,setReport]=React.useState("大肥鱼（默认）");const[workSession,setWorkSession]=React.useState("work");const[inputs,setInputs]=React.useState({});const current=inputs[workSession]??{draft:"WORK_ONLY_DO_NOT_READ",attachmentIds:[],occurrences:[],phase:"plain",draftRev:0};const native=React.useRef({});native.current={inputs,workSession,current};window.currentWorkSession=workSession;window.switchWorkSession=setWorkSession;window.setReportPersona=setReport;window.nativeFills??=0;window.nativePersists??=0;const put=(id,value)=>setInputs(old=>({...old,[id]:value}));window.setNativeWorkInput=(draft,extra={})=>{const n=native.current;put(n.workSession,{...n.current,...extra,draft,draftRev:n.current.draftRev+1});};window.setNativeWorkMeta=extra=>{const n=native.current;put(n.workSession,{...n.current,...extra});};const actions=React.useMemo(()=>({captureInsertion(){const n=native.current;return{start:n.current.draft.length,end:n.current.draft.length,draftRev:n.current.draftRev};},insertText(text,span){const n=native.current;if(n.workSession!==workSession||n.current.phase!=="plain"||n.current.draftRev!==span.draftRev)return false;window.nativeFills++;put(workSession,{...n.current,draft:n.current.draft.slice(0,span.start)+text+n.current.draft.slice(span.end),draftRev:n.current.draftRev+1});return true;},persistDraft(){window.nativePersists++;}}),[workSession]);return h(React.Fragment,null,h("header",{key:workSession},h(plugin.__testing.WorkInputBridge,{sessionId:workSession,useInput:selector=>selector(current),inputActions:actions,useSessions:selector=>selector({byId:{work:{displayTitle:"当前任务"},other:{displayTitle:"后台任务"}}})}),h(plugin.__testing.PersonaChatLauncher,{sessionId:workSession,conversation:{effectivePersonaId:report}})),',
   'h("main",null,h("h1",null,"原始工作会话"),h("textarea",{"aria-label":"工作会话输入",value:current.draft,onChange:e=>window.setNativeWorkInput(e.target.value)}),',
   'h("p",null,"这部分始终由原始工作界面显示。")),h("aside",null,h(plugin.__testing.PersonaChatLauncher),h("button",{onClick:()=>setSettings(!settings)},"插件设置")),settings?h(plugin.__testing.SettingsSection):null)}',
   'createRoot(document.getElementById("app")).render(h(Demo));',
@@ -244,7 +244,9 @@ try {
   const input=()=>page.getByLabel('发送给角色的消息');
   const state=()=>owner('chat');
   const replies=room=>room.turns.filter(turn=>turn.phase!=='anchor');
-  const open=async()=>{await page.getByRole('button',{name:'聊天室',exact:true}).first().click();await input().waitFor();await page.getByText('来源 · 1',{exact:true}).waitFor();};
+  const sourceControl=()=>dialog().getByRole('button',{name:/^(参考来源|收起来源)$/});
+  const waitSources=async count=>{await dialog().locator('button[data-source-count="'+count+'"]').waitFor();};
+  const open=async()=>{await page.getByRole('button',{name:'聊天室',exact:true}).first().click();await input().waitFor();await waitSources(1);};
   const recipients=page.getByRole('group',{name:'回复对象',exact:true});
   const toggleTarget=async name=>{const option=recipients.getByRole('checkbox',{name,exact:true}),next=await option.getAttribute('aria-checked')!=='true';await option.click();
     await page.waitForFunction(({name,next})=>{const option=document.querySelector('.dsh-persona-chat-recipient-option[aria-label="'+name+'"]');
@@ -417,7 +419,7 @@ try {
   assert.equal((await readingAnchor()).turn,restartAnchor.turn);assert.ok(Math.abs((await readingAnchor()).offset-restartAnchor.offset)<2);
   assert.equal(calls.length,beforeReloadCalls);assert.equal(contextSelections.length,beforeReloadSelections);
   await page.evaluate(()=>window.switchWorkSession('other'));await page.getByRole('button',{name:'参考来源',exact:true}).click();await page.getByRole('button',{name:'接入当前会话',exact:true}).click();
-  await page.getByText('来源 · 2',{exact:true}).waitFor();await page.getByRole('button',{name:'收起来源',exact:true}).click();
+  await waitSources(2);await page.getByRole('button',{name:'收起来源',exact:true}).click();
   await page.getByLabel('正在引用的消息',{exact:true}).waitFor({state:'hidden'});assert.equal(await input().inputValue(),'重启后继续修改的本房间草稿');
   await page.getByRole('button',{name:'清空',exact:true}).click();await page.getByRole('button',{name:'确认清空聊天',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('#dsh-persona-chat-input')?.value==='');
@@ -492,7 +494,8 @@ try {
   await page.getByRole('button',{name:'关闭聊天室',exact:true}).click();
   await Promise.all([page.waitForRequest(r=>new URL(r.url()).pathname.endsWith('/chat-rooms')&&r.method()==='POST'),
     page.getByRole('button',{name:'聊天室',exact:true}).first().click()]);
-  releaseChatWrite();await input().waitFor();await page.getByText('来源 · 1',{exact:true}).waitFor();
+  releaseChatWrite();await input().waitFor();await waitSources(1);
+  assert.match(await sourceControl().innerText(),/当前任务/);assert.equal(await sourceControl().getAttribute('data-source-different'),'false');
   assert.equal((await state()).rooms.length,1,'reopening during the initial save joins the first creation');
   assert.deepEqual(sourceReads,['work']);assert.equal(calls.length,0);assert.equal(contextSelections.length,0,'opening does not select a work context');assert.equal(judgements.length,0,'opening never judges whether listeners should join');
   const initial=await state(),roomA=initial.room.id;assert.deepEqual(initial.room.memberIds,['大肥鱼（默认）']);
@@ -654,6 +657,7 @@ try {
 
   await target('大肥鱼（默认）');await send('等一下再回');
   const typing=page.getByRole('status',{name:'角色输入中',exact:true});await typing.waitFor();
+  assert.match(await page.getByRole('button',{name:'关闭聊天室',exact:true}).getAttribute('title'),/已发送的回复会继续保存/);
   assert.equal(await typing.locator('[aria-label="大肥鱼（默认）头像"]').count(),1);
   const originalCall=calls.at(-1);await target('Claude小姐');assert.equal(originalCall.signal.aborted,false);
   assert.equal(await typing.locator('[aria-label="大肥鱼（默认）头像"]').count(),1,'choosing another target does not relabel the original speaker');
@@ -680,7 +684,7 @@ try {
   await page.getByLabel('聊天室名称').fill('另一段讨论');
   await page.getByRole('checkbox',{name:'成员 大肥鱼（默认）',exact:true,checked:true}).waitFor();
   assert.equal(await page.getByRole('checkbox',{name:'成员 Claude小姐',exact:true}).isChecked(),false);
-  await page.getByRole('button',{name:'创建聊天室',exact:true}).click();await input().waitFor();await page.getByText('来源 · 1',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'创建聊天室',exact:true}).click();await input().waitFor();await waitSources(1);
   const roomB=(await state()).room.id;assert.notEqual(roomB,roomA);assert.equal(await input().inputValue(),'');assert.equal(calls.length,beforeRooms);
   assert.equal(await recipients.count(),0,'returning to a single-person room hides the member controls');
   await page.getByRole('button',{name:'放大',exact:true}).click();
@@ -689,8 +693,10 @@ try {
   await page.getByRole('button',{name:'还原',exact:true}).click();
   await page.evaluate(()=>window.switchWorkSession('other'));
   assert.equal(await dialog().count(),1,'global window survives working-header unmount');
+  await page.waitForFunction(()=>document.querySelector('.dsh-persona-chat [data-source-different="true"]'));
+  assert.match(await sourceControl().innerText(),/^固定 · 当前任务/);assert.match(await sourceControl().getAttribute('title'),/主要参考与当前工作页不同/);
   await page.getByRole('button',{name:'参考来源',exact:true}).click();await page.getByRole('button',{name:'接入当前会话',exact:true}).click();
-  await page.getByText('来源 · 2',{exact:true}).waitFor();
+  await waitSources(2);
   assert.deepEqual((await state()).room.sources,['work','other']);
   assert.deepEqual((await owner('chat?room='+encodeURIComponent(roomA))).room.sources,['work']);
   await page.getByRole('button',{name:'收起来源',exact:true}).click();
@@ -794,7 +800,7 @@ try {
   await page.waitForFunction(()=>document.querySelectorAll('[data-chat-turn]').length===0);
   assert.deepEqual((await state()).room.memberIds,existingMembers);assert.deepEqual((await state()).room.sources,['work','other']);
   await members();await page.getByRole('button',{name:'删除聊天室',exact:true}).click();await page.getByRole('button',{name:'确认删除聊天室',exact:true}).click();
-  await page.getByRole('button',{name:'切换聊天室',exact:true}).waitFor();await page.getByText('来源 · 1',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'切换聊天室',exact:true}).waitFor();await waitSources(1);
   assert.equal((await state()).room.id,roomA);assert.equal((await state()).rooms.length,1);assert.equal(await input().inputValue(),'A 房间还没发送的草稿');
   assert.equal(calls.length,beforeClear);
   await members();await page.getByRole('button',{name:'删除聊天室',exact:true}).click();await page.getByRole('button',{name:'确认删除聊天室',exact:true}).click();
@@ -968,6 +974,11 @@ try {
   const beforeWorkDraft=calls.length,beforeDraftSourceReads=sourceReads.length;
   failWorkRead=true;await page.getByRole('button',{name:'整理工作指令',exact:true}).click();
   const workDraft=page.getByRole('region',{name:'工作指令草稿',exact:true});
+  const currentWorkTitle=sourceHeaders[await page.evaluate(()=>window.currentWorkSession)].title;
+  assert.match(await workDraft.locator('[data-work-draft-target="conclusion"]').innerText(),new RegExp(currentWorkTitle));
+  assert.match(await workDraft.locator('[data-work-draft-target="manual"]').innerText(),new RegExp(currentWorkTitle));
+  assert.equal(await workDraft.getByRole('button',{name:'整理结论并填入',exact:true}).evaluate(button=>button.parentElement.previousElementSibling.dataset.workDraftTarget),'conclusion','the automatic-fill action has its target immediately above it');
+  assert.equal(await workDraft.getByRole('button',{name:'填入当前工作输入框',exact:true}).evaluate(button=>button.parentElement.nextElementSibling.dataset.workDraftTarget),'manual','manual fill keeps its target beside the action');
   const continueThinking=async(enabled=false)=>{const options=workDraft.getByRole('group',{name:'本次结论思考设置',exact:true});
     await options.waitFor();await options.getByRole('button',{name:enabled?'开启思考并继续':'保持关闭并继续',exact:true}).click();};
   await workDraft.getByText('暂时无法读取原话，草稿保留。请重试。',{exact:true}).waitFor();
@@ -1235,7 +1246,7 @@ try {
   await open();await chooseRoom(relevanceRoom.room.name);
   await page.evaluate(()=>window.switchWorkSession('other'));
   await page.getByRole('button',{name:'参考来源',exact:true}).click();await page.getByRole('button',{name:'接入当前会话',exact:true}).click();
-  await page.getByText('来源 · 2',{exact:true}).waitFor();await page.getByRole('button',{name:'收起来源',exact:true}).click();
+  await waitSources(2);await page.getByRole('button',{name:'收起来源',exact:true}).click();
   const fixedSelection=structuredClone((await state()).room),beforeIdleSelections=contextSelections.length,beforeIdleCalls=calls.length;
   await send('今天就聊点轻松的吧。');await settled();
   assert.equal(contextSelections.length,beforeIdleSelections+2,'the same director selects two actual speakers and exhausted candidates stop locally');

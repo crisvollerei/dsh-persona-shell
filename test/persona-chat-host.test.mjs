@@ -2,12 +2,22 @@ import {readChatInput} from './helpers/chat-input.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAvatar } from './helpers/avatar-fixture.mjs';
+import { BUILTIN_PRESETS } from '../lib/pack.js';
 import { flush, whale, dragon, claude, reply, directorReply, domain, fixture, preference, newRoom, roomSend, roomState, settledRoom } from './helpers/persona-chat-host.mjs';
 
 
 // Native director fixtures select from actual public events; no legacy plan DTOs.
 const directorInput = options => readChatInput(options);
 const currentSpeech = value => value.events.slice(value.events.findLastIndex(event => event.author.role === 'user') + 1).filter(event => event.author.role === 'assistant');
+function assertDirectRepliesOnly(calls, actors) {
+  const decisions = calls.map(directorInput);
+  assert.deepEqual(decisions.map(value => currentSpeech(value).length), actors.map((_, i) => i),
+    'each call allocates a delivered reply; no terminal WAIT judgement is needed');
+  decisions.forEach((value, i) => {
+    assert.ok(value.choices.some(c => c.id === actors[i] && c.kind === 'normal' && c.to === 'user'));
+    assert.ok(value.choices.every(c => c.kind !== 'peer'), 'the fixture’s self-reference is not a companion invitation');
+  });
+}
 const directorContext = (value, work) => {
   const sourceIds = (value.sources ?? []).map(source => source.id);
   return { work: work ?? (sourceIds.length ? 'required' : 'not-needed'), sourceIds: work === 'not-needed' ? [] : sourceIds,
@@ -77,7 +87,7 @@ test('the two builtin whale speakers keep distinct room identities and separate 
   const state=await roomState(f,binding);await f.request('chat-rooms',{action:'update',roomId:binding.roomId,configRevision:state.room.configRevision,
     epoch:state.epoch,targetPersonaIds:[whale,experiment]});
   await roomSend(f,binding,whale,'两位鲸鲸分别说一句','two-whales');await settledRoom(f,binding);
-  assert.equal(f.calls.length,2);assert.equal(f.directors.length,3);assert.equal(f.plans.length+f.continuations.length,0);
+  assert.equal(f.calls.length,2);assertDirectRepliesOnly(f.directors,[whale,experiment]);assert.equal(f.plans.length+f.continuations.length,0);
   const first=publicCast(f.calls[0]),second=publicCast(f.calls[1]);
   assert.equal(first.self.id,whale);assert.equal(first.self.kind,'whale-maid');
   assert.equal(second.self.id,experiment);assert.equal(second.self.name,'小肥鱼（实验性）');
@@ -101,10 +111,10 @@ test('a solo relay can identify her big sister without reading that persona’s 
   assert.doesNotMatch(call.system+JSON.stringify(input),/OLDER_SISTER_PRIVATE/);
 });
 
-test('avatar forks keep their copied voice card but never inherit builtin character DTOs or room self identities',async t=>{
+test('explicit builtin card copies keep their voice but never inherit builtin character DTOs or room self identities',async t=>{
   const f=fixture(t);await f.ready();const before=(await f.request('presets')).value.presets,builtin=before.find(person=>person.id===whale);
   assert.equal(builtin.character.id,whale);assert.equal(builtin.character.gender,'female');assert.equal(builtin.character.relations.length,4);
-  const changed=await f.request('presets',{action:'avatar',id:whale,requestId:'relation-fork-avatar',expectedAvatar:builtin.avatar,avatar:makeAvatar()});
+  const changed=await f.request('settings',{pack:builtin.pack});
   assert.equal(changed.status,200);const fork=changed.value.presets.find(person=>!person.builtin);
   assert.ok(fork);assert.notEqual(fork.id,whale);assert.deepEqual(fork.pack,builtin.pack);assert.equal(fork.character,undefined);
   assert.equal(changed.value.presets.find(person=>person.id===whale).character.gender,'female');
@@ -117,12 +127,13 @@ test('avatar forks keep their copied voice card but never inherit builtin charac
   assert.equal(restored.character,undefined);assert.deepEqual(restored.pack,fork.pack);
 });
 
-test('an avatar copy of the experimental relay keeps its voice and worker attribution without claiming the original social identity',async t=>{
+test('an explicit card copy of the experimental relay keeps its voice and worker attribution without claiming the original social identity',async t=>{
   const f=fixture(t);await f.ready();
   const source=(await f.request('presets')).value.presets.find(p=>p.id==='鲸鲸（实验性）');
-  const saved=await f.request('presets',{action:'avatar',id:source.id,requestId:'relay-fork',expectedAvatar:source.avatar,avatar:makeAvatar()});
+  assert.equal((await f.request('presets',{action:'apply',id:source.id})).status,200);
+  const saved=await f.request('settings',{pack:source.pack});
   assert.equal(saved.status,200);
-  const fork=saved.value.presets.find(p=>p.avatarParentId===source.id)??saved.value.presets.find(p=>!p.builtin);
+  const fork=saved.value.presets.find(p=>!p.builtin);
   assert.ok(fork);assert.notEqual(fork.id,source.id);
   assert.equal((await f.request('presets',{action:'rename',id:fork.id,name:'潮声'})).status,200);
   const room=await newRoom(f,[fork.id,whale],'副本和内置大肥鱼');
@@ -185,7 +196,7 @@ test('the native director may choose an unselected member without reading privat
     modelInfo:async()=>({reasoning:{efforts:[{id:'off'},{id:'low'},{id:'high'}],defaultEffort:'low'}})});
   await f.ready();await preference(f,'PRIMARY_PRIVATE_MEMORY');await preference(f,'LISTENER_PRIVATE_MEMORY',dragon);
   const binding=await newRoom(f);assert.equal(f.directors.length,0);await roomSend(f,binding,whale,'你们对这件事有什么看法');const state=await settledRoom(f,binding);
-  assert.equal(f.directors.length,3);assert.equal(f.calls.length,2);assert.equal(f.plans.length+f.continuations.length,0);
+  assertDirectRepliesOnly(f.directors,[whale,dragon]);assert.equal(f.calls.length,2);assert.equal(f.plans.length+f.continuations.length,0);
   assert.deepEqual(state.room.turns.filter(turn=>turn.phase!=='anchor').map(turn=>[turn.recipientId,turn.responsePlan.kind,turn.status]),[[whale,'normal','ready'],[dragon,'normal','ready']]);
   const decision=f.directors[0],input=directorInput(decision);assert.equal(decision.maxTokens,2048);assert.equal(decision.reasoningEffort,'off');assert.equal(f.calls[0].reasoningEffort,'low');
   assert.equal(input.message,'你们对这件事有什么看法');assert.deepEqual(input.members.map(person=>person.id),[whale,dragon]);
@@ -671,9 +682,11 @@ test('suggestion context changes reject stale delivery and a newer candidate req
   assert.equal((await f.state()).room.turns.filter(turn => turn.phase !== 'anchor').length, 1);
 });
 
-test('builtin avatars are owner-only local images and avatar edits fork once without inheriting private memory or chat', async (t) => {
+test('builtin avatar overrides retain identity, relations, default, private memory and room, and null restores the original', async (t) => {
   const f = fixture(t); await f.ready(); await preference(f, 'OLD_PRIVATE_MEMORY'); await f.send('原角色的聊天'); await flush();
   const before = (await f.request('presets')).value.presets; const builtin = before.find((p) => p.id === whale);
+  const oldRoom=(await f.state()).room,memoryBefore=(await f.request('memory')).value.entries;
+  const oldSettings=(await f.request('settings')).value.settings;
   for (const item of before.filter((p) => p.builtin)) {
     assert.match(item.avatar, /^\/persona-shell\/avatar\//);
     const asset = await f.request(item.avatar.slice('/persona-shell/'.length)); assert.equal(asset.status, 200);
@@ -682,16 +695,33 @@ test('builtin avatars are owner-only local images and avatar edits fork once wit
   }
   const body = { action: 'avatar', id: whale, requestId: 'first-avatar-change', expectedAvatar: builtin.avatar, avatar: makeAvatar() };
   const result = await f.request('presets', body); assert.equal(result.status, 200);
-  const fork = result.value.presets.find((p) => !p.builtin);
-  assert.equal(result.value.active, fork.name); assert.equal(result.value.presets.find((p) => p.id === whale).avatar, builtin.avatar);
-  assert.notEqual(fork.id, whale); assert.deepEqual(fork.pack, builtin.pack);
-  assert.equal((await f.state(fork.id)).room, null); assert.equal((await f.state()).room.turns.filter(turn => turn.phase !== 'anchor').length, 1);
-  await f.send('新角色聊聊', fork.id, 'fork-message'); await flush(); assert.doesNotMatch(f.calls.at(-1).system, /OLD_PRIVATE_MEMORY/);
-  assert.equal((await f.request('presets', body)).value.presets.length, before.length + 1, 'retry cannot fork twice');
-  const image = await f.request(fork.avatar.slice('/persona-shell/'.length)); assert.deepEqual(image.value, Buffer.from(body.avatar.split(',')[1], 'base64'));
+  const changed = result.value.presets.find((p) => p.id === whale);
+  assert.equal(changed.builtin,true);assert.equal(changed.avatarOverridden,true);assert.notEqual(changed.avatar,builtin.avatar);
+  assert.deepEqual(changed.character,builtin.character);assert.deepEqual(changed.pack,builtin.pack);
+  assert.equal(result.value.active,oldSettings.presetName);assert.equal(result.value.presets.length,before.length);
+  assert.deepEqual(result.value.settings.pack,oldSettings.pack);
+  assert.deepEqual((await f.state()).room,oldRoom);assert.deepEqual((await f.request('memory')).value.entries,memoryBefore);
+  await f.send('换图后仍是原来的角色',whale,'same-builtin-message');await flush();assert.match(f.calls.at(-1).system,/OLD_PRIVATE_MEMORY/);
+  assert.equal(publicCast(f.calls.at(-1)).self.id,whale);
+  const afterRoom=(await f.state()).room;
+  assert.equal((await f.request('presets', body)).value.presets.length,before.length,'idempotent retry cannot create a copy');
+  const image = await f.request(changed.avatar.slice('/persona-shell/'.length)); assert.deepEqual(image.value, Buffer.from(body.avatar.split(',')[1], 'base64'));
+  assert.deepEqual(f.storage.tables.get('profile').get(JSON.stringify(['builtin-avatar',whale])),{version:1,avatar:body.avatar});
   assert.doesNotMatch(JSON.stringify(result.value), /data:image|base64/);
   await f.dispose(); const next = fixture(t, { storage: f.storage }); await next.ready();
-  assert.equal((await next.request('presets')).value.presets.find((p) => p.id === fork.id).avatar, fork.avatar);
+  const restored=(await next.request('presets')).value.presets.find(p=>p.id===whale);
+  assert.equal(restored.avatar,changed.avatar);assert.equal(restored.builtin,true);assert.equal(restored.avatarOverridden,true);
+  assert.deepEqual(restored.character,builtin.character);
+  assert.deepEqual((await next.state()).room,{...afterRoom,createRequestId:null,createFingerprint:null},'restoration only fills legacy nullable creation metadata');
+  assert.deepEqual((await next.request('memory')).value.entries,memoryBefore);
+  assert.equal((await next.request('settings')).value.settings.presetName,oldSettings.presetName);
+  const removed=await next.request('presets',{action:'avatar',id:whale,avatar:null,expectedAvatar:restored.avatar,requestId:'restore-builtin-original'});
+  assert.equal(removed.status,200);const original=removed.value.presets.find(p=>p.id===whale);
+  assert.equal(original.avatar,builtin.avatar);assert.equal(original.avatarOverridden,false);assert.deepEqual(original.character,builtin.character);
+  assert.deepEqual(f.storage.tables.get('profile').get(JSON.stringify(['builtin-avatar',whale])),{version:1,avatar:null});
+  await next.dispose();const again=fixture(t,{storage:f.storage});await again.ready();
+  const reset=(await again.request('presets')).value.presets.find(p=>p.id===whale);
+  assert.equal(reset.avatar,builtin.avatar);assert.equal(reset.avatarOverridden,false);assert.equal(reset.builtin,true);
 });
 
 test('custom avatar updates and removal keep persona identity, reports and chat, while card edits preserve the picture', async (t) => {
@@ -725,12 +755,13 @@ test('a builtin card fork keeps its original picture and changing only an avatar
   assert.deepEqual((await f.state(custom.id)).room.turns.filter(turn => turn.phase !== 'anchor')[0].assistant, ['完成这条回复']);
 });
 
-test('failed avatar save keeps the old image and failed/stale operations cannot overwrite newer cards', async (t) => {
+test('failed builtin avatar saves and conflicts never adopt images or create copies', {timeout:5000}, async (t) => {
   let fail = false, block = false, release, began;
   const started = new Promise((r) => { began = r; });
   const storage = domain(Promise.resolve(), { fail: () => fail, beforePut: async (id) => {
-    if (block && id.startsWith('preset-avatar-')) { block = false; began(); await new Promise((r) => { release = r; }); }
+    if (block && id===JSON.stringify(['builtin-avatar',whale])) { block = false; began(); await new Promise((r) => { release = r; }); }
   } });
+  t.after(()=>release?.());
   const f = fixture(t, { storage }); await f.ready();
   const before = (await f.request('presets')).value.presets, builtin = before.find((p) => p.id === whale);
   const body = { action: 'avatar', id: whale, avatar: makeAvatar(), expectedAvatar: builtin.avatar, requestId: 'avatar-retry-one' };
@@ -741,9 +772,64 @@ test('failed avatar save keeps the old image and failed/stale operations cannot 
   assert.equal((await f.request('presets', { action: 'delete', id: whale })).status, 409);
   release(); assert.equal((await task).status, 200);
   assert.equal((await f.request('presets', { ...body, requestId: 'bad-image-retry', avatar: 'https://remote.invalid/x.png' })).status, 400);
-  const fork = (await f.request('presets')).value.presets.find((p) => !p.builtin);
-  assert.equal((await f.request('presets', { ...body, id: fork.id, avatar: null, expectedAvatar: null })).status, 409);
+  const changed=(await f.request('presets')).value.presets.find(p=>p.id===whale);
+  assert.equal(changed.builtin,true);assert.equal(changed.avatarOverridden,true);
+  assert.equal((await f.request('presets',{...body,avatar:makeAvatar(101),requestId:'stale-avatar-write'})).status,409);
+  assert.equal((await f.request('presets', { ...body, avatar: null, expectedAvatar: null, requestId:'stale-avatar-reset' })).status, 409);
+  const final=(await f.request('presets')).value.presets;
+  assert.equal(final.length,before.length);assert.deepEqual(final.find(p=>p.id===whale),changed);
   assert.equal(f.calls.length, 0);
+});
+
+test('changing an inactive builtin image leaves the selected default and all rooms untouched',async t=>{
+  const f=fixture(t);await f.ready();await f.send('当前默认角色的消息');await flush();
+  const before=(await f.request('presets')).value,room=(await f.state()).room;
+  const target=before.presets.find(p=>p.id==='Gemini'),current=before.presets.find(p=>p.name===before.active);
+  const changed=await f.request('presets',{action:'avatar',id:target.id,avatar:makeAvatar(42),expectedAvatar:target.avatar,requestId:'inactive-builtin-avatar'});
+  assert.equal(changed.status,200);assert.equal(changed.value.active,current.name);
+  assert.equal(changed.value.presets.length,before.presets.length);
+  assert.deepEqual(changed.value.presets.find(p=>p.id===current.id),current);
+  const cat=changed.value.presets.find(p=>p.id===target.id);
+  assert.equal(cat.id,target.id);assert.equal(cat.builtin,true);assert.equal(cat.avatarOverridden,true);assert.deepEqual(cat.character,target.character);
+  assert.deepEqual((await f.state()).room,room);
+  await f.dispose();const next=fixture(t,{storage:f.storage});await next.ready();
+  assert.equal((await next.request('settings')).value.settings.presetName,current.name);
+  assert.equal((await next.request('presets')).value.presets.find(p=>p.id===target.id).avatar,cat.avatar);
+});
+
+test('an in-flight builtin reply stays valid when only its image changes', {timeout:5000}, async t=>{
+  let release,signal;const gate=new Promise(resolve=>release=resolve);t.after(()=>release());
+  const f=fixture(t,{script:options=>(async function*(){signal=options.signal;await gate;yield*reply(['身份和这条回复都没换。']);})()});
+  await f.ready();const original=(await f.request('presets')).value.presets.find(p=>p.id===whale);
+  await f.send('正在生成',whale,'builtin-pending-reply');await flush();assert.ok(signal);assert.equal(signal.aborted,false);
+  const changed=await f.request('presets',{action:'avatar',id:whale,avatar:makeAvatar(65),expectedAvatar:original.avatar,requestId:'pending-builtin-avatar'});
+  assert.equal(changed.status,200);assert.equal(signal.aborted,false);assert.equal(changed.value.presets.find(p=>p.id===whale).builtin,true);
+  release();await flush();
+  assert.deepEqual((await f.state()).room.turns.filter(turn=>turn.phase!=='anchor')[0].assistant,['身份和这条回复都没换。']);
+  assert.equal(f.calls.length,1);assert.equal(publicCast(f.calls[0]).self.id,whale);
+});
+
+test('stored legacy avatar copies remain separate and are never migrated or merged into a builtin override',async t=>{
+  const legacy={id:'preset-avatar-legacy-copy',name:'大肥鱼（默认） ·头像 2',builtin:false,
+    pack:structuredClone(BUILTIN_PRESETS.find(p=>p.id===whale).pack),avatar:makeAvatar(80),avatarParentId:whale,source:'',at:1};
+  const storage=domain();storage.tables.set('presets',new Map([[legacy.id,structuredClone(legacy)]]));
+  storage.tables.set('profile',new Map([['activePreset',legacy.id]]));
+  const f=fixture(t,{storage});await f.ready();await preference(f,'LEGACY_COPY_PRIVATE',legacy.id);
+  await f.send('旧副本中的聊天',legacy.id,'legacy-copy-message');await flush();const room=(await f.state(legacy.id)).room;
+  const before=(await f.request('presets')).value,original=before.presets.find(p=>p.id===whale),old=before.presets.find(p=>p.id===legacy.id);
+  assert.equal(before.active,legacy.name);assert.equal(old.builtin,false);assert.equal(old.character,undefined);
+  const changed=await f.request('presets',{action:'avatar',id:whale,avatar:makeAvatar(81),expectedAvatar:original.avatar,requestId:'builtin-independent-of-legacy'});
+  assert.equal(changed.status,200);assert.equal(changed.value.active,legacy.name);assert.equal(changed.value.presets.length,before.presets.length);
+  assert.deepEqual(changed.value.presets.find(p=>p.id===legacy.id),old);assert.deepEqual((await f.state(legacy.id)).room,room);
+  assert.equal((await f.state(whale)).room,null);
+  assert.ok((await f.request('memory')).value.entries.some(e=>e.personaId===legacy.id&&e.content==='LEGACY_COPY_PRIVATE'));
+  assert.equal((await f.request('memory')).value.entries.some(e=>e.personaId===whale&&e.content==='LEGACY_COPY_PRIVATE'),false);
+  await f.dispose();const next=fixture(t,{storage});await next.ready();
+  const restored=(await next.request('presets')).value;
+  assert.equal(restored.active,legacy.name);assert.deepEqual(restored.presets.find(p=>p.id===legacy.id),old);
+  assert.equal(restored.presets.find(p=>p.id===whale).avatarOverridden,true);
+  assert.deepEqual((await next.state(legacy.id)).room,{...room,createRequestId:null,createFingerprint:null});assert.equal((await next.state(whale)).room,null);
+  assert.deepEqual(storage.tables.get('presets').get(legacy.id),legacy,'legacy stored bytes are not rewritten as an override');
 });
 
 test('suggestion request pending capability lookup cannot dispatch after unload', async (t) => {

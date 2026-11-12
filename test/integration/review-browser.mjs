@@ -5,6 +5,8 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { mask, unmask } from '../../lib/mask.js';
+import { assessRewrite } from '../../lib/review.js';
 
 const { values } = parseArgs({ options: {
   deps: { type: 'string' }, 'build-deps': { type: 'string' }, 'browser-deps': { type: 'string' },
@@ -17,6 +19,12 @@ const browserDeps = values['browser-deps'] ? createRequire(path.resolve(values['
 const { buildSync } = buildDeps('esbuild');
 const { chromium } = browserDeps('playwright');
 const source = readFileSync(new URL('../../client.js', import.meta.url), 'utf8');
+const originalOrder = '先在副本上执行 `layout-check --copy`，核准后再运行 `layout-export`。';
+const { masked, literals } = mask(originalOrder);
+const moved = masked.replace(/\[\[([01])\]\]/g, (_, i) => '[[' + (1 - Number(i)) + ']]');
+const otherOrder = unmask(moved, literals);
+const orderReview = assessRewrite({original:originalOrder,candidate:otherOrder,maskedOriginal:masked,maskedCandidate:moved});
+assert.equal(orderReview.editScore,0);assert.ok(orderReview.reasons.includes('literal-order'));
 const entry = `
   import * as React from ${JSON.stringify(deps.resolve('react'))};
   import { createPortal } from ${JSON.stringify(deps.resolve('react-dom'))};
@@ -37,6 +45,7 @@ const entry = `
   ${source}
   function Demo() {
     const [mounted, setMounted] = React.useState(true);
+    const [orderCase,setOrderCase]=React.useState(null);window.__showOrder=setOrderCase;
     React.useEffect(() => { window.__unmountHint = () => setMounted(false); }, []);
     return h(React.Fragment, null,
       h('header', null, 'Persona review preview'),
@@ -44,7 +53,8 @@ const entry = `
         h('div', { style: { height: '1200px' } }),
         h('section', { id: 'report' }, h('p', null, 'Personified report stays in the official message.'),
           h('details', { id: 'reasoning', open: true }, h('summary', null, 'Reasoning'), 'Keep disclosure state')),
-        h('div', { id: 'hint-holder' }, mounted ? h(plugin.__testing.ReviewHint, {
+        h('div', { id: 'hint-holder' }, orderCase ? (plugin.__testing.reviewNeeded(orderCase.row,orderCase.original,orderCase.settings)
+          ? h(plugin.__testing.ReviewHint,{original:orderCase.original,review:orderCase.row.review}) : null) : mounted ? h(plugin.__testing.ReviewHint, {
           original: Array.from({ length: 40 }, (_, i) => '原始汇报第 ' + i + ' 项：检查测试结果，通过后再部署。').join('\\n'),
           review: { editScore: 0.7, reasons: ['condition-change'] }
         }) : null),
@@ -173,10 +183,18 @@ try {
   await mark.click();
   await page.evaluate(() => window.__unmountHint());
   await panel.waitFor({ state: 'detached' });
+  const orderCase = {row:{status:'ready',text:otherOrder,review:orderReview},original:originalOrder,settings:{reviewThreshold:1}};
+  await page.evaluate(c=>window.__showOrder(c),orderCase);await mark.waitFor();await positionMark('top');await mark.click();
+  await panel.getByText('字面量顺序变化',{exact:true}).waitFor();await panel.getByText(originalOrder,{exact:true}).waitFor();
+  await page.evaluate(c=>window.__showOrder({...c,settings:{reviewHints:false}}),orderCase);await mark.waitFor({state:'detached'});
+  await page.evaluate(c=>window.__showOrder(c),orderCase);await mark.waitFor();
+  await page.evaluate(c=>window.__showOrder({...c,original:'另一份原报告'}),orderCase);
+  await mark.waitFor({state:'detached'});
   assert.deepEqual(errors, [], 'no browser runtime/ResizeObserver errors');
   console.log(JSON.stringify({ browser: 'passed', results, checks: ['up/down placement', 'body portal',
     'transformed scroll clipping', 'fixed composer', 'pointer crossing/selecting', 'local scroll',
-    'Escape/outside/focus', 'resize/offscreen/unmount', 'light/dark theme', 'unchanged main DOM'] }));
+    'Escape/outside/focus', 'resize/offscreen/unmount', 'light/dark theme', 'unchanged main DOM',
+    'command order is visible at zero prose change and highest threshold','explicitly disabled or unbound order hints stay hidden'] }));
 } finally {
   await browser.close();
 }

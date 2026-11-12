@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-shell",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "在工作提示词之外，为 DeepSeek Harness 的助手汇报提供人格化转述，原文随时可查。",
   "type": "module",
   "main": "index.js",
@@ -46,7 +46,9 @@
   ],
   "dsh": {
     "manifestVersion": 1,
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,

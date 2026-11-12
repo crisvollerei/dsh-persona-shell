@@ -19,8 +19,9 @@
 
 import { mask, unmask } from './lib/mask.js';
 import { BUILTIN_PRESETS, normalizePack } from './lib/pack.js';
-import { buildExtractPrompt, parseExtractedPreset } from './lib/preset.js';
-import { buildRewritePrompt, rewriteDistance, validateRewrite } from './lib/prompt.js';
+import { buildExtractPrompt, parseGeneratedPreset } from './lib/preset.js';
+import { buildPreparedRewritePrompt, rewriteDistance, validateRewrite } from './lib/prompt.js';
+import { prepareReportRequest } from './lib/report-request.js';
 import { assessRewrite, restoreReview } from './lib/review.js';
 import { Config, resolveConfig } from './lib/config.js';
 import { observeMessage, emptyProfile } from './lib/memory.js';
@@ -94,7 +95,7 @@ const MAX_SESSION_SWITCHES = 500;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 2026111016;
+const HOST_BUILD = 2026111201;
 const DIRECTOR_REASONS = new Set(['wire-type','wire-size','control','json','duplicate-key','shape','choice','goal','contribution','actor','event','evidence',
   'stale-event','author','normal-ineligible','peer-ineligible','peer-call','non-stop','tool-call','too-long','scene']);
 const DIRECTOR_FINISHES = new Set(['stop','max-tokens','tool-calls','error','aborted']);
@@ -287,7 +288,10 @@ export function apply(ctx, rawConfig, runtime = {}) {
     at: 0,
   }));
   let presetWrites = Promise.resolve();
+  let settingsWrites = Promise.resolve();
+  let settingsChanges = Promise.resolve();
   let presetChanging = false;
+  const builtinAvatarOverrides = new Map();
 
   /**
    * Last self-report from a page: whether the shipped markdown renderer
@@ -344,7 +348,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
   const activeModelMetadata = new Set();
   const modelTasks = new Set();
   const activeReportViews = new Map(), reportViewRequests = new Map(), cancelledReportViews = new Set();
-  const reportViews = createReportViews({ store: () => store, changed: id => touch(id),
+  const reportViews = createReportViews({ store: () => store, changed: id => notifySession(id),
     warn: error => warn('report view persistence failed', error) });
   const activeChats = new Map();
   const chatJobsFor = roomId => [...activeChats.values()].filter(job=>job.roomId===roomId);
@@ -680,6 +684,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
 
   const reportViewKey = (id, seq) => JSON.stringify([id, seq]);
   const reportViewRequestKey = (id, seq, requestId, presentation = 'summary') => JSON.stringify([id, seq, requestId, presentation]);
+  const reportViewCancelKey = (key, hash = null) => JSON.stringify([key, hash]);
   function pruneReportViewRequests() {
     for (const [id, receipt] of reportViewRequests) if (reportViewRequests.size > 128
       && ![...activeReportViews.values()].some(pending => pending.requestKey === receipt.key)) reportViewRequests.delete(id);
@@ -703,7 +708,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       if (previous.key !== requestKey || previous.hash !== sourceHash || previous.regenerate !== (body.regenerate === true)) throw Error('report-request-conflict');
       return previous.task;
     }
-    if (cancelledReportViews.has(requestKey)) throw Error('report-cancelled');
+    if (cancelledReportViews.has(reportViewCancelKey(requestKey, sourceHash)) || cancelledReportViews.has(reportViewCancelKey(requestKey))) throw Error('report-cancelled');
     const current = reportViewState(sessionId, seq, presentation);
     if (!current.available) throw Error(current.reason);
     if (current.source.hash !== sourceHash) throw Error('report-source-changed');
@@ -714,7 +719,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     }
     if (activeReportViews.has(key)) throw Error('report-busy');
     if (activeReportViews.size >= 3) throw Error('report-capacity');
-    const abort = new AbortController(), job = { abort, key, requestKey };
+    const abort = new AbortController(), job = { abort, key, requestKey, saving: false };
     const source = current.source;
     const options = { provider: settings.visualizationProvider, model: settings.visualizationModel,
       thinking: presentation === 'readable' ? settings.readableThinking !== false : settings.visualizationThinking === true };
@@ -722,19 +727,15 @@ export function apply(ctx, rawConfig, runtime = {}) {
     const timer = setTimeout(() => abort.abort(Error('report-timeout')), cfg.timeoutMs); timer.unref?.();
     const valid = () => {
       abort.signal.throwIfAborted();
-      if (storeClosing || cancelledReportViews.has(requestKey)) throw Error('report-cancelled');
+      if (storeClosing) throw Error('report-cancelled');
       const latest = reportViews.read(sessionId, seq);
       if (!latest.available || latest.source.hash !== sourceHash) throw Error('report-source-changed');
     };
     const task = (async () => {
       try {
-        let route = options.provider ? { provider: options.provider, model: options.model }
-          : resolveRoute(sessionId) ?? reportViews.route(sessionId, seq);
-        if (route && !route.model) {
-          const listed = await waitWithSignal(getLlm()?.listModels?.(route.provider), abort.signal);
-          const first = Array.isArray(listed) ? listed[0] : undefined;
-          route = typeof first?.id === 'string' && first.id ? { provider: route.provider, model: first.id } : undefined;
-        }
+        const route = routePair(await waitWithSignal(modelRoutes.resolve(sessionId,
+          { provider: options.provider, model: options.model }, { signal: abort.signal,
+            reportRoute: reportViews.route(sessionId, seq), overrideSource: 'reading' }), abort.signal));
         valid();
         const llm = expressionLlm('report-visualization', valid, options);
         if (!route || !llm) throw Error('report-model-unavailable');
@@ -754,13 +755,16 @@ export function apply(ctx, rawConfig, runtime = {}) {
         }
         valid();
         if (finish !== 'stop') throw Error('report-incomplete');
-        const parsed = presentation === 'readable' ? parseReportReadable(text, source)
+        const parsed = presentation === 'readable' ? parseReportReadable(text, source, { replacingDraft: current.cached && body.regenerate === true })
           : presentation === 'emphasis' ? validateReportEmphasis(text, source) : validateReportVisualization(text, source);
         if (!parsed.ok) throw Object.assign(Error('report-invalid-output'), { issue: reportViewIssue(parsed.issue) });
-        try { await reportViews.cache(sessionId, seq, sourceHash, parsed.value, route, parsed); }
+        try { await waitWithSignal(reportViews.cache(sessionId, seq, sourceHash, parsed.value, route, parsed, () => {
+          valid(); job.saving = true; clearTimeout(timer);
+        }), abort.signal); }
         catch (error) { throw Error(error.message === 'report-source-changed' ? error.message : 'report-save-failed'); }
-        valid();
-        return { ...reportViewState(sessionId, seq, presentation), running: false };
+        const saved = reportViewState(sessionId, seq, presentation);
+        if (!saved.cached || saved.source?.hash !== sourceHash) throw Error('report-source-changed');
+        return { ...saved, running: false };
       } catch (error) {
         const reason = abort.signal.aborted ? abort.signal.reason?.message : error?.message;
         throw Object.assign(Error(/^report-/.test(reason ?? '') ? reason : 'report-generation-failed'),
@@ -889,7 +893,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
   function publicChatProfile() {
     ensureChatProfile();
     const value = chatProfile.read();
-    return { instanceId, revision: value.revision, avatarMode: value.avatarMode, userAddress:value.userAddress,
+    return { instanceId, revision: value.revision, avatarMode: value.avatarMode, userAddress:value.userAddress, userGender:value.userGender,
       avatar: value.avatar ? ROUTE + '/chat-profile/avatar?v=' + avatarVersion(value.avatar) : null };
   }
   function reportRetryUnavailable(row,sessionId){
@@ -1230,11 +1234,15 @@ export function apply(ctx, rawConfig, runtime = {}) {
         const { system, messages:requestMessages, control:supplied } = buildChatPrompt({ pack: persona.pack, history, message: turn.user,
           persona:{id:persona.id,builtin:persona.builtin===true},
           userAddress:chatProfile.read().userAddress,
+          userGender:chatProfile.read().userGender,
           currentTurn:current.turns.find(t=>t.messageId===turn.messageId&&t.phase==='anchor')??turn,
           scopeKey:turn.scopeKey??turn.contextKey??null,
           scene:projectChatScene(chats.read(room.id),{messageId:turn.messageId,scopeKey:turn.scopeKey??turn.contextKey??null,referenceRevision:round.referenceRevision??0}),
           responsePlan,
           directorAssignment:round.directive?.id===persona.id?round.directive:undefined,
+          sceneDirection:round.directive?.id===persona.id&&round.directive.sceneDirection&&round.replyTarget?.ref?{
+            text:round.directive.sceneDirection,roomId:room.id,generation:current.generation??0,scopeKey:turn.scopeKey??turn.contextKey??null,
+            messageId:turn.messageId,actorId:persona.id,sourceRef:round.replyTarget.ref}:undefined,
           replyTarget:round.replyTarget,
           opportunity:{kind:actorSlot.kind,normalRemainingAfterThis:actorSlot.normalRemainingAfterThis,peerRemainingAfterThis:actorSlot.peerRemainingAfterThis},
           inbox:chatInbox(room.id,actorSlot.events,turn.scopeKey??turn.contextKey??null),
@@ -1255,7 +1263,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
           discussion:(supplied.discussionState??[]).map(({id,version})=>({id,version}))});
         let wire = '', finish;
         const preview=()=>{
-          const messages=partialChatReply(wire);if(!replyBudget)return messages;
+          const messages=partialChatReply(wire,replyBudget);if(!replyBudget)return messages;
           const allowed=[];let chars=0;
           for(const message of messages){
             if(allowed.length>=replyBudget.bubbles||chars+message.text.length>replyBudget.chars)break;
@@ -1285,7 +1293,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         clearTimeout(progressTimer);progressTimer=undefined;
         abort.signal.throwIfAborted();
         if (!valid() || finish !== 'stop') throw new Error(finish === 'max-tokens' ? 'chat-length' : 'chat-incomplete');
-        const decision = parseChatDecision(wire);
+        const decision = parseChatDecision(wire,replyBudget);
         if (!decision) { outcome = 'rejected'; throw new Error('chat-format'); }
         if(decision.kind==='silent'){
           let applied;
@@ -1444,14 +1452,18 @@ export function apply(ctx, rawConfig, runtime = {}) {
             // director's smaller reading window omitted its older long bubble.
             for(const event of retryTimeline)publishDirectorEvent(room.id,event,messageId);
             const retrySource=directedSource(chats.read(room.id),retryTimeline,turn.responsePlan,scopeKey);
-            if(turn.responsePlan?.to!=='user'&&!retrySource)throw Error('chat-peer-evidence');
             if(turn.responsePlan?.kind==='peer'){
               const event=retrySource?.event;
-              if(!event||!possiblePeerCall(person,event,present()))throw Error('chat-peer-evidence');
+              // An older failed seat may only have mentioned this member. It
+              // cannot borrow an invitation from a different bubble on retry.
+              if(!event||!possiblePeerCall(person,event,present(),{index:retrySource.index,evidence:turn.responsePlan.evidence})){
+                await chats.finish({roomId:room.id,personaId:person.id,id:turn.id,attemptId:turn.attemptId,status:'failed',failure:'source-changed',valid});
+                return;
+              }
               const grant=chatScheduler.read(room.id,person.id)?.peerGrant;
               if(grant ? grant.sourceEventId!==event.id||grant.fromId!==event.author.id
                 : !chatScheduler.grantPeer(room.id,person.id,{sourceEventId:event.id,fromId:event.author.id,evidence:turn.responsePlan.evidence}))throw Error('chat-peer-evidence');
-            }
+            }else if(turn.responsePlan?.to!=='user'&&!retrySource)throw Error('chat-peer-evidence');
             const contribution=normalizeChatContribution(turn.responsePlan?.contribution);
             round.directive={id:person.id,kind:turn.responsePlan?.kind==='peer'?'peer':'normal',to:turn.responsePlan?.to??'user',
               goal:contribution?.point??'完成这次未成功的回应，保持原话与回应对象，不重复已完成的其他发言。',...(contribution?{contribution}:{})};
@@ -1647,9 +1659,12 @@ export function apply(ctx, rawConfig, runtime = {}) {
   }
 
   /** Persist the durable switches and route. */
-  function saveSettings() {
-    if (store === undefined) return;
-    store.putSettings({
+  function saveSettings(opened = store) {
+    // Before restore, only pendingSettings may override the stored snapshot.
+    if (opened === undefined || !settingsRestored) {
+      return Promise.resolve(storeState === 'opening' ? 'pending' : 'memory-only');
+    }
+    const snapshot = {
       enabled: settings.enabled,
       includeToolSteps: settings.includeToolSteps,
       colloquialReports: settings.colloquialReports,
@@ -1671,7 +1686,11 @@ export function apply(ctx, rawConfig, runtime = {}) {
       visualizationProvider:settings.visualizationProvider,visualizationModel:settings.visualizationModel,
       visualizationThinking:settings.visualizationThinking,
       readableThinking:settings.readableThinking,
-    }).catch((error) => warn('settings persist failed', error));
+    };
+    // Capture before waiting: concurrent requests must keep their acceptance order.
+    const task = settingsWrites.then(() => opened.putSettings(snapshot)).then(() => 'saved');
+    settingsWrites = task.catch(() => {});
+    return task;
   }
 
   function queuePresetWrite(write) {
@@ -1715,6 +1734,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       pack: preset.pack,
       builtin: preset.builtin === true,
       avatar: avatarUrl(preset),
+      avatarOverridden: preset.builtin === true && builtinAvatarOverrides.has(preset.id),
       ...(character?.self?{character:{...character.self,relations:character.relationships}}:{}),
       // The generated preset keeps the prompt it came from, so the user can see
       // what it was derived from and regenerate rather than start over.
@@ -1769,7 +1789,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       abort.abort();
       activeExtractions.delete(abort);
     }
-    return parseExtractedPreset(collected);
+    return parseGeneratedPreset(collected, personaPrompt);
   }
 
   async function extractMemories(batch, parentSignal) {
@@ -1818,11 +1838,15 @@ export function apply(ctx, rawConfig, runtime = {}) {
     run: (batch, signal) => trackModelTask(extractMemories(batch, signal)),
   });
 
-  const touch = (sessionId) => {
+  function notifySession(sessionId) {
     if (storeClosing) return;
     revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
     wakeStateWaiters(sessionId);
     stateStream.changed(sessionId);
+  }
+  const touch = (sessionId) => {
+    notifySession(sessionId);
+    if (storeClosing) return;
     if (sessionId !== '') schedulePersist(sessionId);
   };
 
@@ -1975,10 +1999,12 @@ export function apply(ctx, rawConfig, runtime = {}) {
     hydrated.add(sessionId);
     try {
       let legacyFinalUnknown = false;
+      let recoveredStatus = false;
       for (const saved of savedRows) {
         if (saved?.final === undefined) legacyFinalUnknown = true;
         const key = `${sessionId}:${saved.seq}`;
         if (rows.has(key)) continue;
+        if (saved.status !== 'ready' && saved.status !== 'skipped') recoveredStatus = true;
         rows.set(key, {
           sessionId,
           seq: saved.seq,
@@ -2006,7 +2032,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
       }
       trim(sessionId);
       if (legacyFinalUnknown) markRestoredTail(sessionId);
-      touch(sessionId);
+      if (recoveredStatus) touch(sessionId);
+      else notifySession(sessionId);
     } catch (error) {
       warn(`hydrate failed for ${sessionId}`, error);
     }
@@ -2056,13 +2083,23 @@ export function apply(ctx, rawConfig, runtime = {}) {
    * session is the best available answer; an explicit settings-page model
    * override wins regardless.
    */
+  const sessionActivity = new Map();
+  function noteSessionActivity(session, event) {
+    if (typeof session?.id !== 'string' || !session.id || session.id.length > 512 || isSubagent(session) || session?.header?.origin === 'subagent'
+      || !['user/message', 'user-message', 'request/header', 'turn/start', 'assistant/message', 'turn/end'].includes(event.type)) return;
+    const prior = sessionActivity.get(session.id), seq = Number.isSafeInteger(event.seq) ? event.seq : undefined;
+    if ((seq === undefined && prior) || (seq !== undefined && seq <= (prior?.seq ?? -1))) return;
+    sessionActivity.delete(session.id);
+    sessionActivity.set(session.id, { seq: seq ?? -1 });
+    while (sessionActivity.size > 64) sessionActivity.delete(sessionActivity.keys().next().value);
+  }
   function currentSessionHint() {
-    let best;
-    for (const [sessionId, state] of turnState) {
-      if (state?.provider === undefined || state?.model === undefined) continue;
-      if (best === undefined) best = sessionId;
+    const validPart = value => typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= 512;
+    for (const sessionId of [...sessionActivity.keys()].reverse()) {
+      const state = turnState.get(sessionId);
+      if (validPart(state?.provider) && validPart(state?.model)) return sessionId;
     }
-    return best;
+    return undefined;
   }
 
   const routePair=route=>route?{provider:route.provider,model:route.model}:undefined;
@@ -2130,7 +2167,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       if (prose.length < 2) { settle('skipped', 'no-prose'); return; }
       memoryContext = expressionMemory(persona.id, sessionId, text, feedback ? 'retry' : processMode ? 'process' : 'report');
       const maxRatio = feedback ? Math.max(cfg.maxRatio, 1.7) : cfg.maxRatio;
-      const { system, user } = buildRewritePrompt({
+      const prepared = prepareReportRequest({
         pack: persona.pack,
         persona:{id:persona.id,builtin:persona.builtin===true},
         masked,
@@ -2141,8 +2178,9 @@ export function apply(ctx, rawConfig, runtime = {}) {
         colloquialReports: settings.colloquialReports,
         maxRatio,
         feedback,
-        sourceLabel: row.sourceIsSubagent ? persona.pack.address.subagent : undefined,
+        sourceIsSubagent: row.sourceIsSubagent === true,
       });
+      const { system, user } = buildPreparedRewritePrompt(prepared);
       const options = {
         provider: route.provider,
         model: route.model,
@@ -2159,7 +2197,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         lastEmit = now;
         row.partial = collected;
         row.partialLiterals = literals;
-        touch(sessionId);
+        notifySession(sessionId);
       };
       if (processMode) {
         const result = await runProcessRewrite({ llm, options, usage, allowed: processAllowed,
@@ -2186,16 +2224,14 @@ export function apply(ctx, rawConfig, runtime = {}) {
       if (!rewriteAllowedFor(sessionId)) { settle('skipped', rewriteBlockReason(sessionId)); return; }
       if (revision !== revisionFor(sessionId)) { settle('skipped', 'persona-changed'); return; }
       const verdict = validateRewrite({
+        ...prepared.validationOptions,
         candidate: collected,
         original: masked,
-        literalCount: literals.length,
-        maxRatio,
       });
       if (!verdict.ok) { rejected = true; settle('skipped', verdict.reason); return; }
 
       const candidate = unmask(collected.trim(), literals);
-      const fidelity = checkReportFidelity({ original: text, candidate, relay: persona.pack.narration?.mode === 'relay',
-        workerLabel: row.sourceIsSubagent ? persona.pack.address.subagent : persona.pack.narration?.assistant });
+      const fidelity = checkReportFidelity({ ...prepared.fidelityOptions, original: text, candidate });
       if (!fidelity.ok) { rejected = true; settle('skipped', 'source-' + fidelity.reasons[0]); return; }
       row.text = candidate;
       row.model = `${route.provider}/${route.model}`;
@@ -2402,6 +2438,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
 
   function onSessionEvent(session, event) {
     if (storeClosing) return;
+    noteSessionActivity(session, event);
     reportViews.event(session, event);
     chatContext.event(session, event);
     for (const context of roomContexts.values()) context.event(session,event);
@@ -2469,6 +2506,10 @@ export function apply(ctx, rawConfig, runtime = {}) {
 
     if (event.type === 'request/header') {
       const state = turnState.get(sessionId) ?? {};
+      if (Number.isSafeInteger(event.seq)) {
+        if (event.seq <= (state.routeSeq ?? -1)) return;
+        state.routeSeq = event.seq;
+      }
       const header = event.data?.header;
       state.provider = header?.config?.provider;
       state.model = header?.config?.model;
@@ -2671,6 +2712,15 @@ export function apply(ctx, rawConfig, runtime = {}) {
       // present even if the stored copy is missing or corrupt.
       const savedPresets = opened.listPresets();
       const restored = presets.filter((preset) => preset.builtin === true);
+      builtinAvatarOverrides.clear();
+      for (const preset of restored) {
+        const saved = opened.getBuiltinAvatar(preset.id);
+        const avatar = saved?.version === 1 ? restoreAvatar(saved.avatar) : null;
+        if (avatar && avatar !== builtinAvatar(preset.id)) {
+          preset.avatar = avatar;
+          builtinAvatarOverrides.set(preset.id, avatar);
+        } else preset.avatar = builtinAvatar(preset.id);
+      }
       const occupiedNames = new Set([...restored, ...savedPresets].map(p => p?.name));
       /** Old custom-preset id → the shipped preset that now carries its name. */
       const absorbed = new Map();
@@ -2789,7 +2839,10 @@ export function apply(ctx, rawConfig, runtime = {}) {
         saveSessionSwitches();
       }
       for (const id of sessionSwitches.keys()) memories.discardSession(id);
-      if (pendingSettings.size > 0) { pendingSettings.clear(); saveSettings(); }
+      if (pendingSettings.size > 0) {
+        pendingSettings.clear();
+        void saveSettings().catch(error => warn('settings persist failed', error));
+      }
       // A held /state request may have observed the storage-opening values;
       // wake every known session so the client can leave its loading state.
       for (const id of revisions.keys()) touch(id);
@@ -3639,11 +3692,18 @@ export function apply(ctx, rawConfig, runtime = {}) {
           || !body.requestId.trim() || body.requestId.length > 200) throw Error('invalid-report-request');
         const requestKey = reportViewRequestKey(id, seq, body.requestId, presentation);
         if (body.action === 'cancel') {
-          cancelledReportViews.add(requestKey);
-          while (cancelledReportViews.size > 128) cancelledReportViews.delete(cancelledReportViews.values().next().value);
-          const job = activeReportViews.get(reportViewKey(id, seq));
-          if (job?.requestKey === requestKey) job.abort.abort(Error('report-cancelled'));
-          sendJson(res, 200, { ok: true }); return;
+          if (body.sourceHash !== undefined && (typeof body.sourceHash !== 'string' || !/^[0-9a-f]{64}$/.test(body.sourceHash))) throw Error('invalid-report-request');
+          const receipt = reportViewRequests.get(body.requestId), job = activeReportViews.get(reportViewKey(id, seq));
+          if (receipt && (receipt.key !== requestKey || (body.sourceHash !== undefined && receipt.hash !== body.sourceHash))) throw Error('report-request-conflict');
+          const matchingJob = job?.requestKey === requestKey ? job : undefined;
+          const outcome = matchingJob?.saving ? 'saving' : receipt && !matchingJob ? 'settled' : 'cancelled';
+          if (outcome === 'cancelled') {
+            // The cancel can arrive before its generate POST. Without a hash, retain legacy exact-request cancellation.
+            cancelledReportViews.add(reportViewCancelKey(requestKey, receipt?.hash ?? body.sourceHash));
+            while (cancelledReportViews.size > 128) cancelledReportViews.delete(cancelledReportViews.values().next().value);
+            matchingJob?.abort.abort(Error('report-cancelled'));
+          }
+          sendJson(res, 200, { ok: true, outcome }); return;
         }
         if (storeClosing) throw Error('report-cancelled');
         if (storeState === 'opening') { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
@@ -3820,31 +3880,22 @@ export function apply(ctx, rawConfig, runtime = {}) {
           if (!Object.hasOwn(body, 'avatar')) throw new Error('invalid-avatar');
           avatar = normalizeAvatar(body.avatar);
         } catch { sendJson(res, 400, { error: 'invalid-avatar' }); return; }
-        const duplicate = target.builtin ? presets.find((p) => p.id === 'preset-avatar-' + body.requestId) : undefined;
-        if (duplicate && (duplicate.avatarParentId !== target.id || duplicate.avatar !== avatar)) {
-          sendJson(res, 409, { error: 'avatar-conflict' }); return;
-        }
-        if (duplicate || target.avatar === avatar || (!target.avatar && !avatar)) {
+        if (target.builtin && avatar === null) avatar = builtinAvatar(target.id);
+        if (target.avatar === avatar || (!target.avatar && !avatar)) {
           sendJson(res, 200, { ok: true, presets: presets.map(presetForClient), active: settings.presetName, settings }); return;
         }
         if (body.expectedAvatar !== (avatarUrl(target) ?? null)) { sendJson(res, 409, { error: 'avatar-conflict' }); return; }
-        if (target.builtin && presets.length >= MAX_PRESETS) { sendJson(res, 400, { error: 'too many presets' }); return; }
-        let name = target.name;
-        if (target.builtin) {
-          const base = target.name + ' · 我的版本'; name = base;
-          for (let suffix = 2; presets.some((p) => p.name === name); suffix++) name = base + ' ' + suffix;
-        }
-        const entry = { ...target, id: target.builtin ? 'preset-avatar-' + body.requestId : target.id,
-          name, avatar, builtin: false, at: Date.now(), ...(target.builtin ? { avatarParentId: target.id } : {}) };
+        const entry = { ...target, avatar, at: Date.now() };
         try {
-          await commitPresetChange({ entry, ...(target.builtin ? { activeId: entry.id } : {}) });
           if (target.builtin) {
-            presets = [...presets, entry];
-            invalidatePersona('persona-changed', (id) => !conversations.read(id).personaId);
-            settings.presetName = entry.name; settings.pack = entry.pack;
-            progress.configure();
-          } else presets = presets.map((p) => p.id === entry.id ? entry : p);
-          for (const id of revisions.keys()) touch(id);
+            const override = avatar === builtinAvatar(target.id) ? null : avatar;
+            await queuePresetWrite(db => db.putBuiltinAvatar(target.id, { version: 1, avatar: override }));
+            if (storeClosing) throw new Error('storage-not-ready');
+            if (override) builtinAvatarOverrides.set(target.id, override);
+            else builtinAvatarOverrides.delete(target.id);
+          } else await commitPresetChange({ entry });
+          presets = presets.map((p) => p.id === entry.id ? entry : p);
+          for (const id of revisions.keys()) notifySession(id);
           sendJson(res, 200, { ok: true, presets: presets.map(presetForClient), active: settings.presetName, settings });
         } catch { sendJson(res, 503, { error: 'avatar-save-failed' }); }
         return;
@@ -3983,6 +4034,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     }
 
     if (path === `${ROUTE}/settings` && req.method === 'POST') {
+      if (storeClosing) { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
       let raw = '';
       for await (const piece of req) {
         raw += piece;
@@ -3990,6 +4042,15 @@ export function apply(ctx, rawConfig, runtime = {}) {
       }
       let patch;
       try { patch = JSON.parse(raw === '' ? '{}' : raw); } catch { sendJson(res, 400, { error: 'invalid json' }); return; }
+      // Serialize the whole change, including a card write before scalar fields.
+      const previous = settingsChanges;
+      let complete;
+      settingsChanges = new Promise(resolve => { complete = resolve; });
+      await previous;
+      try {
+      if (storeClosing) { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
+      const settingsStore = store;
+      let responseSettings, settingsPersistence;
       if (patch !== null && typeof patch === 'object') {
         if (patch.pack !== undefined && storeState === 'opening') {
           sendJson(res, 503, { error: 'storage-not-ready' }); return;
@@ -4102,15 +4163,20 @@ export function apply(ctx, rawConfig, runtime = {}) {
             catch { sendJson(res, 503, { error: 'memory-save-failed' }); return; }
           }
         }
-        // Persist the switches and the route. The page reports 「已保存」, so a
-        // restart that restored the defaults would make that a lie.
-        saveSettings();
         memoryConsolidator.notify();
         if (['enabled', 'progressNotices', 'progressMinutes', 'provider', 'model'].some((key) => key in patch)) progress.configure();
         for (const id of revisions.keys()) touch(id);
+        responseSettings = { ...settings };
+        try { settingsPersistence = await saveSettings(settingsStore); }
+        catch (error) {
+          warn('settings persist failed', error);
+          // Live effects already happened; do not pretend a failed write rolled them back.
+          sendJson(res, 503, { error: 'settings-save-failed', appliedSettings: responseSettings }); return;
+        }
       }
       sendJson(res, 200, {
-        settings,
+        settings: responseSettings ?? settings,
+        settingsPersistence,
         memory: readerMemoryLines(),
         memoryStats: memoryStats(),
         // Returned so the page can show which preset the edit landed in — an
@@ -4119,6 +4185,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         sessionSwitches: sessionSwitchState(),
       });
       return;
+      } finally { complete(); }
     }
 
     sendJson(res, 404, { error: 'not found' });
@@ -4191,7 +4258,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     for (const controller of activeRewrites.values()) controller.abort(new Error('disposed'));
     for (const controller of activeExtractions) controller.abort(new Error('disposed'));
     for (const controller of activeModelMetadata) controller.abort(new Error('disposed'));
-    for (const job of activeReportViews.values()) job.abort.abort(new Error('disposed'));
+    for (const job of activeReportViews.values()) if (!job.saving) job.abort.abort(new Error('disposed'));
     reportViewRequests.clear(); cancelledReportViews.clear();
     for (const pending of activeChats.values()) pending.abort.abort(new Error('disposed'));
     for(const round of chatRounds.values())round.abort.abort(Error('disposed'));
@@ -4239,6 +4306,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     turnState.clear();
     candidates.clear();
     inFlight.clear();
+    sessionActivity.clear();
 
     const closing = store;
     store = undefined;
@@ -4256,7 +4324,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     const modelsDrain = Promise.allSettled([...modelTasks]);
     const owned = closing === undefined
       ? Promise.resolve()
-      : Promise.allSettled([...pending, modelsDrain, memoryDrain, presetWrites, chatProfile.drain()])
+      : Promise.allSettled([...pending, modelsDrain, memoryDrain, presetWrites, settingsWrites, settingsChanges, chatProfile.drain()])
         .then(async () => {
           // Abort settlement may finish after the first flush; retain its final delivery state.
           try { await closing.putMemoryUsage(memoryUsage.snapshot()); }

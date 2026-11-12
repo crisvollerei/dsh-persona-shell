@@ -10,14 +10,14 @@ const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('h
 const names=new Set(['user','self','鲸鲸','小肥鱼','GPT','Claude小姐','小克','猫猫']);
 const exampleFields=['dialogueExamples','workDialogueExamples'];
 
-// Full raw + normalized report views after the explicit report readability update.
+// Full raw + normalized report views after the explicit report style/channel update.
 // Later chat example edits must not change the report wording, samples or source card.
 const reportSignatures={
-  '大肥鱼（默认）':'2fea2e2bd2367d8b90d010646a8c3c1fb67aa038f3d4f06d723afd71a472c1e7',
-  '大肥龙':'2942ff77e5bc3dd59f429e9290e28b6a0c63942226b36d78e2496fbdef39271d',
-  'Claude小姐':'87fe5b40d7083adc0bb449f2158a1e541ca31d27e51bf78c365897bf80da1fbf',
-  '鲸鲸（实验性）':'c713794ba4d7ed719581503b00627b1fb9df1dc9808677c73be7f34aa58d312e',
-  Gemini:'8c778261710c5c1f07d301460693366a7935cf8314582bd2783d027c1c86914e',
+  '大肥鱼（默认）':'ac0677a4983159d93b705f12b08ae02c1a750b259d935ec927f3c6a20c737f39',
+  '大肥龙':'fb783bad9009bd4e095010ad6b3b34426e9f919ce3ecf0027b269242667cb9a3',
+  'Claude小姐':'708eb326394f7f3906f7ccb5e7430ebb3c5b9d69495d6945e160da8f6374046c',
+  '鲸鲸（实验性）':'e7b518608914052784aa9148f2e7de4e5e019964ab201081add3dc6f9b082472',
+  Gemini:'a35ccb0727d05cf369c34111d71eb32ef43157303ba50f3538309abfe46eba6b',
 };
 
 test('each builtin has separate bounded daily and work dialogue sets with varied conversational rhythm',()=>{

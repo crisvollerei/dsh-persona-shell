@@ -9,11 +9,11 @@ const view=(preset,channel='chat')=>resolvePersonaExpression(normalizePack(prese
 // Pin report identity, constraints and the explicitly updated report voice
 // separately from the evolving chat examples; report samples are checked below.
 const reportSignatures={
-  '大肥鱼（默认）':'01379f4aff18368f61ccfe9ff02468897c4fa6cd4e42da82e6ba2566bbcfdffc',
-  '大肥龙':'2ea0f77ff19876819424ae15ba6ee026737e653e7a243f8cec6f982e44727743',
-  'Claude小姐':'1210d03651fa97537b2e54457447cbda8730ce4ff8c3820124b839f4cce63cc7',
-  '鲸鲸（实验性）':'fa1c1c24f4916859b818ebaf47f8ca4b374fea1abaf580dbc78da799ce945044',
-  Gemini:'190de2ee77af7bc0279e204619693effd6c47f76bd7b8a828651df9ff24de4a7',
+  '大肥鱼（默认）':'db48091b4aa76e87d9df85b331a0e07a776629eae1e6a812e435175f6e778a3e',
+  '大肥龙':'e4190f18b5bf6716fb02754f389569d78a13c00edc5dda67ca0001687f1d56f7',
+  'Claude小姐':'fb7206420b9dc28527d125ec6c6936178ddf96b6ee2fb8e4449c456cf589e6b1',
+  '鲸鲸（实验性）':'d4c45b4b9a84e902ea120c84f3ce2fffd62ec1e689c0f021effc2cbf20445c2c',
+  Gemini:'698e5578e789c5b6fbe12ea519dbfccf6e5752aac958d05783d6b7754f4642c1',
 };
 // Pin identity and relations after removing third-person pronoun metadata from the actor's own view.
 const chatIdentitySignatures={

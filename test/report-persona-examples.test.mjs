@@ -44,18 +44,20 @@ test('readable examples conserve every numeric value and protected technical lit
 test('examples preserve unverified, failed and conditional results alongside completed work', () => {
   const whale = reports.get('大肥鱼（默认）').samples.map(split);
   assert.match(whale[0].expression, /本地.*2处配置.*改好.*离线检查.*过了.*客户端.*还没.*代码.*还没推送/u);
-  assert.match(whale[1].expression, /缓存.*刷新.*重新运行还是失败.*原因.*没查清.*原文件.*没有改动/u);
-  assert.match(whale[2].expression, /建议.*现有配置.*方案二.*迁移.*执行.*等你确认/u);
+  assert.match(whale[1].expression, /缓存.*刷新.*重新运行还是(?:失败|没成功).*原因.*没查清.*原文件.*没有改动/u);
+  assert.match(whale[2].expression, /鲸鲸.*只核对.*版本号.*图片还没打开/u);
+  assert.match(whale[2].expression, /小鲸鲸.*3张缩略图.*第3张被裁切.*其余2张完整.*原因还没复核.*还没修复/u);
 
   const dragon = reports.get('大肥龙').samples.map(split);
-  assert.match(dragon[0].expression, /原来的操作方式.*照常用.*6项离线检查.*移动端.*没验证.*发布前/u);
-  assert.match(dragon[1].expression, /临时绕过.*不用动存储结构.*根本修复.*迁移.*时间.*更长.*建议.*没有执行/u);
-  assert.match(dragon[2].expression, /恢复命令没跑成.*生效.*旧配置.*原因.*不能确定.*日志不够.*先补齐日志.*等你确认.*都满足才会重试/u);
+  assert.match(dragon[0].expression, /原来的操作方式.*照常保留.*6项离线检查.*移动端.*没验证.*发布前/u);
+  assert.match(dragon[1].expression, /建议优先做根本修复.*还没有执行/u);
+  assert.match(dragon[1].expression, /临时绕过.*不用动存储结构.*根本修复.*迁移.*耗时.*更长/u);
+  assert.match(dragon[2].expression, /恢复命令运行失败.*生效.*旧配置.*原因还定位不了.*日志不够.*只有补齐日志.*并且得到你的确认.*才可以重试/u);
 
   const claude = reports.get('Claude小姐').samples.map(split);
-  assert.match(claude[0].expression, /状态被覆盖.*修好.*3项回归测试全部通过.*客户端.*没有验证/u);
-  assert.match(claude[1].expression, /从日志里能确认.*请求.*送到.*接收端.*成功.*不能确定.*没有读取.*代码/u);
-  assert.match(claude[2].expression, /只讨论.*2种.*没读代码.*没有执行修改.*性能.*没有数据.*不推荐.*任何一种/u);
+  assert.match(claude[0].expression, /状态被覆盖.*修复.*3项回归测试全部通过.*客户端.*没有验证/u);
+  assert.match(claude[1].expression, /日志能确认.*请求.*送到.*接收端.*成功.*不能确定.*没有读取.*代码/u);
+  assert.match(claude[2].expression, /只讨论.*2种.*没有读代码.*没有执行修改.*性能.*没有数据.*不推荐.*任何一种/u);
 });
 
 test('relay samples retain the actual worker, check outcomes and user confirmation boundary', () => {
@@ -67,16 +69,16 @@ test('relay samples retain the actual worker, check outcomes and user confirmati
     assert.doesNotMatch(pair.expression, /小肥鱼(?:已经)?(?:修|改|测)|姐姐说|姐姐问/u);
   }
   const samples = relay.samples.map(split);
-  assert.match(samples[0].expression, /先恢复旧设置.*再接上.*操作.*重启.*还没有验证/u);
-  assert.match(samples[1].expression, /3项检查.*2项过了.*1项缺环境.*跳过.*没有检查结果/u);
-  assert.match(samples[2].expression, /建议.*别动原文件.*副本.*目录.*你定.*确认之前.*不会生成/u);
+  assert.match(samples[0].expression, /先恢复旧设置.*再应用.*操作.*重启.*还没验证/u);
+  assert.match(samples[1].expression, /3项检查.*2项通过.*1项缺环境.*跳过.*还没有.*检查结果/u);
+  assert.match(samples[2].expression, /建议.*保留原文件.*副本.*目录.*等你确认.*确认之前.*不会生成/u);
 });
 
 test('Gemini examples make comparison and supported scope explicit without extending the recommendation', () => {
   const samples = reports.get('Gemini').samples.map(split);
-  assert.match(samples[0].expression, /显示.*一样.*方案一不用额外依赖.*方案二.*`render-kit`.*建议用方案一.*性能.*没比较/u);
-  assert.match(samples[1].expression, /长段落.*按需展开.*原文.*顺序不会变.*文本报告.*图片报告.*不支持/u);
-  assert.match(samples[2].expression, /预览.*正常.*导出后的字体.*没验证.*超时.*没完成.*原因.*不明确.*原文件.*没修改/u);
+  assert.match(samples[0].expression, /显示.*一样.*方案一不需要额外依赖.*方案二.*`render-kit`.*建议用方案一.*性能.*没有比较/u);
+  assert.match(samples[1].expression, /长段落.*按需展开.*原文.*顺序保持不变.*文本报告.*图片报告.*不支持/u);
+  assert.match(samples[2].expression, /预览.*正常.*导出后的字体.*没有验证.*超时.*没能完成.*原因.*不清楚.*原文件.*没有修改/u);
 });
 
 test('report examples stay out of builtin chat material and cannot rewrite a custom card', () => {

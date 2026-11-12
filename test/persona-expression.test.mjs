@@ -10,9 +10,10 @@ test('trusted complete shipped cards resolve independent chat material and bound
   for(const preset of BUILTIN_PRESETS){
     const pack=normalizePack(preset.pack),before=structuredClone(pack),options={persona:persona(preset)};
     const chat=resolvePersonaExpression(pack,{...options,channel:'chat'}),report=resolvePersonaExpression(pack,{...options,channel:'report'});
-    assert.deepEqual(Object.keys(chat).sort(),['identity','voice','samples','dialogueExamples','workDialogueExamples','avoid','address'].sort());
+    assert.deepEqual(Object.keys(chat).sort(),['identity','voice','samples','dialogueExamples','workDialogueExamples','avoid','address','gender'].sort());
+    assert.equal(chat.gender,'female');assert.equal(report.gender,undefined);
     assert.notEqual(chat.identity,pack.identity);assert.notDeepEqual(chat.samples,pack.samples);
-    assert.deepEqual(chat.address,pack.address);assert.deepEqual(report.report,pack.report);assert.equal(report.identity,pack.identity);
+    assert.deepEqual(chat.address,pack.address);assert.ok(report.report.length>0&&report.report.length<=10);assert.equal(report.identity,pack.identity);
     assert.deepEqual(report.narration,pack.narration);assert.deepEqual(report.address,pack.address);
     assert.ok(report.voice.length>0&&report.voice.length<=3);assert.notDeepEqual(report.voice,chat.voice);
     assert.doesNotMatch(report.voice.join('\n'),/怎么被哄|想安慰就|不必先声明自己不会安慰/);
@@ -84,10 +85,10 @@ test('builtin chat preserves distinct self references and peer relationships wit
 
 test('report views retain source attribution and clarify facts versus wording, while examples stay work-specific',()=>{
   const relay=BUILTIN_PRESETS.find(preset=>preset.pack===JINGJING_RELAY_PACK),report=resolvePersonaExpression(normalizePack(relay.pack),{channel:'report',persona:persona(relay)});
-  assert.equal(report.narration.mode,'relay');assert.equal(report.narration.assistant,'姐姐');assert.deepEqual(report.report,JINGJING_RELAY_PACK.report);
+  assert.equal(report.narration.mode,'relay');assert.equal(report.narration.assistant,'姐姐');assert.match(report.report.join('\n'),/实际工作者.*姐姐/);
   assert.ok(report.samples.every(line=>line.includes('原文：工作助手')&&line.includes('\n表达：姐姐')));
   assert.match(report.samples.join('\n'),/1项因环境缺失而跳过/);assert.match(report.samples.join('\n'),/另外1项缺环境，先跳过了/);
-  assert.match(report.samples.join('\n'),/输出目录尚待用户确认/);assert.match(report.samples.join('\n'),/放在哪个目录，还得你定/);
+  assert.match(report.samples.join('\n'),/输出目录尚待用户确认/);assert.match(report.samples.join('\n'),/输出目录还等你确认/);
   assert.doesNotMatch(DAFEILONG_PACK.report.join('\n'),/不改一个字|只留在开头和收尾/);
   assert.match(DAFEILONG_PACK.report.join('\n'),/事实.*条件.*风险/);assert.match(DAFEILONG_PACK.report.join('\n'),/不改变原意/);
 });

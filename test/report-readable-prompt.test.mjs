@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRewritePrompt, validateRewrite } from '../lib/prompt.js';
 import { mask, unmask } from '../lib/mask.js';
+import { BUILTIN_PRESETS, normalizePack } from '../lib/pack.js';
 
 const pack = {
   identity: '角色甲', report: ['清楚转述原报告。'], voice: ['平实。'], samples: [], avoid: [],
@@ -82,19 +83,48 @@ test('automatic and manual ceilings agree with the caller while expansion remain
   assert.equal(validateRewrite({ candidate: expanded, original: compact, literalCount: 0, maxRatio: 1.7 }).ok, true);
 });
 
-test('explicit worker names cannot become subagent nicknames, while configured relay attribution remains valid', () => {
+test('configured aliases retain actor roles and explicit relay attribution', () => {
   for (const feedback of ['', '讲得更容易读一点。']) {
     const plain = buildRewritePrompt({ ...input, feedback });
-    assert.match(plain.system, /原文明示的名字与执行者称呼保持原样/);
+    assert.match(plain.system, /具名子代理也可以使用约定的别称/);
+    assert.match(plain.system, /谁做了什么、结果与条件保持对应/);
+    assert.match(plain.system, /有多位执行者时，让各自工作可以区分/);
     assert.match(plain.system, /普通“工作助手”不能按子代理称呼设定换成昵称，也不能据此改认成子代理/);
-    assert.match(plain.system, /唯一例外是本次发言关系已明确配置的中继工作者称呼/);
+    assert.match(plain.system, /本次原报告由主工作助手提交/);
     assert.ok(plain.user.includes('工作助手才可运行'));
     const relay = buildRewritePrompt({ ...input, feedback,
       pack: { ...pack, narration: { mode: 'relay', assistant: '设置中的工作者' } }, sourceLabel: '明确配置的工作者甲' });
     assert.ok(relay.system.includes('实际工作者称为 "明确配置的工作者甲"'));
-    assert.match(relay.system, /唯一例外是本次发言关系已明确配置的中继工作者称呼/);
+    assert.match(relay.system, /按本次人设和发言关系使用自称、工作者称呼及子代理别称/);
     assert.equal(relay.user, plain.user);
   }
+});
+
+test('report author metadata distinguishes a child report from a main report mentioning a child', () => {
+  const main = buildRewritePrompt({ ...input, masked: '工作助手读过子代理的报告，没有重跑。' });
+  const child = buildRewritePrompt({ ...input, sourceIsSubagent: true, sourceLabel: '小鲸鲸' });
+  assert.match(main.system, /本次原报告由主工作助手提交/);
+  assert.doesNotMatch(main.system, /本次原报告由子代理提交/);
+  assert.match(child.system, /本次原报告由子代理提交/);
+  assert.match(child.system, /引语里的“我”仍按原引语归属/);
+  assert.equal(child.user, '待改写：\n' + shielded.masked);
+});
+
+test('builtin relay work examples follow the actual worker without changing identity or saved cards', () => {
+  const preset = BUILTIN_PRESETS.find(item => item.id === '鲸鲸（实验性）');
+  const card = normalizePack(preset.pack), saved = structuredClone(card), persona = {id:preset.id,builtin:true};
+  const ordinary = buildRewritePrompt({...input,pack:card,persona});
+  const child = buildRewritePrompt({...input,pack:card,persona,sourceIsSubagent:true,sourceLabel:'小鲸鲸'});
+  const section = (text,title) => text.split('## '+title+'\n')[1].split('\n## ')[0];
+  assert.match(section(ordinary.system,'这份汇报里怎么说话'),/工作动作与检查结果归姐姐/);
+  assert.match(section(child.system,'这份汇报里怎么说话'),/工作动作与检查结果归小鲸鲸/);
+  assert.match(section(child.system,'汇报表达样例（只参考语感，不是本轮事实）'),/表达：小鲸鲸/);
+  assert.deepEqual(section(child.system,'你是谁'),section(ordinary.system,'你是谁'));
+  assert.deepEqual(section(child.system,'语气禁区'),section(ordinary.system,'语气禁区'));
+  assert.deepEqual(card,saved);assert.equal(child.user,ordinary.user);
+  const custom = buildRewritePrompt({...input,pack:card,persona:{...persona,builtin:false},sourceIsSubagent:true,sourceLabel:'小鲸鲸'});
+  assert.match(section(custom.system,'这份汇报里怎么说话'),/正文以「姐姐」为主语/);
+  assert.ok(child.system.indexOf('## 本次发言关系')>child.system.indexOf('## 语气禁区'));
 });
 
 test('easier wording preserves permission versus commitment, requirements, plans and completion', () => {

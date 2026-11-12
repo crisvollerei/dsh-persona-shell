@@ -189,16 +189,18 @@ test('resume retrieves the original work conditions while omitting the paused in
   assert.deepEqual(restored.messages,result.messages);assert.deepEqual(restored.conversationScene,result.conversationScene);
 });
 
-test('ongoing interaction is the top actor instruction only after a whole reply commits, preserving stream and reply order',()=>{
+test('a committed transition is a public reply pointer, not proof of user feedback or semantic fulfillment',()=>{
   const work=anchor('work','OLD_WORK_STREAM'),pause=anchor('pause','来贴贴'),draft=reply(pause,'draft',peer,['STREAM_PREVIEW_MUST_STAY_PRIVATE'],{status:'pending'});
   const pendingScene=frame(pause,pause,{relation:'pause',parked:userRef('work'),transition:{trigger:userRef('pause'),reply:null}});
   const first=prompt(pause,{history:[work],exchange:[draft],scene:pendingScene});
-  assert.equal(first.control.conversationScene.transition.acknowledged,false);assert.doesNotMatch(first.system.split('\n')[0],/当前互动已经开始/);
+  assert.equal(first.control.conversationScene.transition.acknowledged,false);assert.doesNotMatch(first.system.split('\n')[0],/转场后已有公开回复/);
   assert.doesNotMatch(JSON.stringify(first.messages),/STREAM_PREVIEW_MUST_STAY_PRIVATE|OLD_WORK_STREAM/);
   const ready={...draft,status:'ready',assistant:['（挪近一点）','来，这里。']},now=anchor('continue','其他人也来');
   const scene=frame(now,pause,{parked:userRef('work'),transition:{trigger:userRef('pause'),reply:ref(ready)},relatedReplies:[ref(ready)]});
   const second=prompt(now,{history:[work,pause,ready],scene});
-  assert.match(second.system.split('\n')[0],/当前互动已经开始.*延续自己这一拍/);
+  assert.match(second.system.split('\n')[0],/转场后已有公开回复.*先读实际原话/);
+  assert.match(second.system,/acknowledged 不是用户反馈/);
+  assert.match(second.system,/ready 只表示一轮回复已完整保存.*不表示共同内容已答全或用户已确认/);
   const event=second.control.timeline.find(value=>value.turnId===ready.id),body=packet(second.messages[event.messageIndex]);
   assert.deepEqual(body.messages.map(value=>value.text),ready.assistant);assert.equal(second.control.conversationScene.transition.acknowledged,true);
   assert.ok(second.control.sharedResponse.priorReplyEvents.includes(event.eventId));assert.doesNotMatch(JSON.stringify(second.messages),/OLD_WORK_STREAM/);

@@ -33,4 +33,6 @@ test('handing the turn to another person is judged from public invitations, not 
   const system=buildDirectorRequest(options).system;
   assert.match(system,/哪些个人邀请还没被接住/);assert.match(system,/优先考虑尚未回应/);
   assert.match(system,/不必硬找新事实/);assert.match(system,/不用替整场聊天收尾/);
+  assert.match(system,/沉默、改题或角色自称已解决不代表用户回答/);
+  assert.match(system,/用户可回应、拒绝、改题或暂停，不需要被催问/);
 });

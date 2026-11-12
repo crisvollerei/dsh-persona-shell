@@ -152,7 +152,9 @@ test('progress counts and character budgets keep recent whole tasks without chan
 
 test('production prompt assigns a concrete contribution without treating labels as fulfillment or quotas as tasks', () => {
   const options = setup(), prompt = buildDirectorRequest(options);
-  assert.match(prompt.system, /先判断共同请求现在还欠/);
+  assert.match(prompt.system, /下一步轮到谁/);
+  assert.match(prompt.system, /轮到用户时就把话交回去/);
+  assert.match(prompt.system, /剩余额度不是任务/);
   assert.match(prompt.system, /不证明她真正完成/);
   assert.match(prompt.system, /熟人应声、玩笑/);
   assert.match(prompt.system, /choiceId work sceneKey move \| point/);

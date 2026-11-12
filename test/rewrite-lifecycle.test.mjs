@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { apply } from '../index.js';
+import { GENERATION_RECORDS_EXAMPLE } from '../lib/preset.js';
 
 const drain = async () => {
   for (let index = 0; index < 12; index++) await new Promise(setImmediate);
@@ -164,7 +165,7 @@ test('thinking capability lookup shares the rewrite deadline and cannot dispatch
 });
 
 test('persona-card extraction uses the same default thinking policy', async (t) => {
-  const f = fixture(t, { stream: () => answer(JSON.stringify({ name: '测试人格', identity: '简单清楚的人格' })) });
+  const f = fixture(t, { stream: () => answer(GENERATION_RECORDS_EXAMPLE.map(record => JSON.stringify(record)).join('\n')) });
   const result = await f.request('presets', { action: 'generate', prompt: '一个简短清楚、能够保留事实、风险与适用条件的人格设定。' });
   assert.equal(result.ok, true); assert.equal(f.calls[0].reasoningEffort, 'off');
 });

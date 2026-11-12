@@ -131,7 +131,9 @@ function makeHost() {
         host.presets = host.presets.map((preset) => preset.name === host.settings.presetName
           ? { ...preset, pack: host.settings.pack } : preset);
       }
-      return ok(snapshot());
+      if (reply?.appliedFail) return { ok: false, status: 503,
+        json: async () => ({ error: 'settings-save-failed', appliedSettings: copy(host.settings) }) };
+      return ok({ ...snapshot(), settingsPersistence: reply?.persistence });
     }
     if (String(url).endsWith('/presets')) {
       if (options?.method !== 'POST') {
@@ -211,8 +213,126 @@ async function mount(t, host = makeHost()) {
   };
   const prompt = () => nodes(render()).find((node) => node.props.placeholder === '粘贴人设提示词…');
   const name = () => nodes(render()).find((node) => node.props.placeholder === '给这个预设起个名字');
-  return { host, render, field, checkbox, button, presetButton, prompt, name, text: () => text(render()) };
+  return { host, module, render, field, checkbox, button, presetButton, prompt, name, text: () => text(render()) };
 }
+
+test('model catalogues wait for visible selectors and abort a provider superseded in flight', async (t) => {
+  const host = makeHost(), requests = [], originalFetch = host.fetch;
+  Object.assign(host.settings, { provider: 'rewrite-old', chatProvider: 'chat-only', visualizationProvider: 'reading-only' });
+  host.fetch = async (url, options) => {
+    const provider = new URL(String(url), 'https://test.invalid').searchParams.get('provider');
+    if (String(url).includes('/models?') && provider) {
+      const gate = deferred(); requests.push({ provider, gate, signal: options?.signal }); await gate.promise;
+      return { ok: true, json: async () => ({ models: [{ id: provider, name: provider }] }) };
+    }
+    return originalFetch(url, options);
+  };
+  const ui = await mount(t, host);
+  assert.equal(requests.length, 0, 'the persona page does not prefetch model lists');
+  ui.button('高级').props.onClick(); ui.render(); await flush();
+  assert.deepEqual(requests.map(request => request.provider), ['rewrite-old', 'reading-only']);
+  const providerSelect = nodes(ui.render()).find(node => node.type === 'select' && node.props['aria-label'] === '改写所用模型');
+  await providerSelect.props.onChange(event('rewrite-new')); ui.render(); await flush();
+  assert.equal(requests[0].signal.aborted, true);
+  assert.equal(requests.at(-1).provider, 'rewrite-new');
+  requests.at(-1).gate.resolve(); await flush(); ui.render();
+  requests[0].gate.resolve(); await flush();
+  const modelSelect = nodes(ui.render()).find(node => node.type === 'select' && node.props['aria-label'] === '模型');
+  assert.ok(nodes(modelSelect).some(node => node.type === 'option' && node.props.value === 'rewrite-new'));
+  assert.equal(nodes(modelSelect).some(node => node.type === 'option' && node.props.value === 'rewrite-old'), false, 'a late catalogue cannot overwrite the new provider');
+  ui.button('聊天室').props.onClick(); ui.render(); await flush();
+  assert.equal(requests[1].signal.aborted, true, 'hiding reading settings aborts its request');
+  assert.equal(requests.at(-1).provider, 'chat-only');
+  requests[1].gate.resolve(); requests.at(-1).gate.resolve(); await flush();
+});
+
+for (const builtin of [true, false]) test(`avatar save ${builtin ? 'overlays a builtin without saving its voice draft' : 'still saves custom voice drafts first'}`, async (t) => {
+  const host = makeHost(), originalFetch = host.fetch;
+  Object.assign(host.presets[0], { builtin, avatar: '/avatar/base?original', avatarOverridden: false });
+  host.fetch = async (url, options) => {
+    if (String(url).endsWith('/presets') && options?.method === 'POST') {
+      const body = JSON.parse(options.body);
+      if (body.action === 'avatar') {
+        host.presetCalls.push(body);
+        const preset = host.presets.find(p => p.id === body.id);
+        preset.avatar = body.avatar ? '/avatar/base?override' : '/avatar/base?original';
+        preset.avatarOverridden = !!body.avatar;
+        return { ok: true, json: async () => copy({ ok: true, presets: host.presets, settings: host.settings, active: host.settings.presetName }) };
+      }
+    }
+    return originalFetch(url, options);
+  };
+  const ui = await mount(t, host), originalPack = copy(host.settings.pack), originalName = host.settings.presetName;
+  ui.field('通用语感（每行一条）').props.onChange(event('尚未提交的语气草稿'));
+  ui.presetButton('base', '头像').props.onClick();
+  let editor = nodes(ui.render()).find(node => node.type === ui.module.__testing.PersonaAvatarEditor);
+  assert.ok(editor);
+  assert.equal((await editor.props.onSave({ action: 'avatar', id: 'base', avatar: 'data:image/png;base64,mock', expectedAvatar: host.presets[0].avatar, requestId: 'avatar-overlay' })).ok, true);
+  await flush(); ui.render();
+  assert.equal(host.settings.presetName, originalName); assert.equal(host.presets.length, 2); assert.equal(host.presets[0].id, 'base');
+  assert.equal(host.presets[0].builtin, builtin); assert.equal(host.presets[0].avatarOverridden, true);
+  assert.equal(host.settingsCalls.length, builtin ? 0 : 1);
+  if (builtin) assert.deepEqual(host.settings.pack, originalPack, 'display-only changes cannot alter the saved voice');
+  assert.equal(ui.field('通用语感（每行一条）').props.value, '尚未提交的语气草稿', 'the voice draft survives avatar changes');
+  ui.presetButton('base', '头像').props.onClick(); editor = nodes(ui.render()).find(node => node.type === ui.module.__testing.PersonaAvatarEditor);
+  await editor.props.onSave({ action: 'avatar', id: 'base', avatar: null, expectedAvatar: host.presets[0].avatar, requestId: 'avatar-restore' });
+  await flush(); ui.render();
+  assert.equal(host.presets[0].avatarOverridden, false); assert.equal(host.presets[0].avatar, '/avatar/base?original');
+});
+
+function catalogueFixture(t) {
+  const renderer = hookRenderer(), timers = new Map(), requests = []; let nextTimer = 0, definition;
+  vm.runInNewContext(source, { window: { __ModuleLoader__: { load(value) { definition = value; } } },
+    AbortController, console,
+    setTimeout(fn) { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
+    fetch: async (url, options) => { const gate = deferred(); requests.push({ url, signal: options.signal, gate }); await gate.promise;
+      return { ok: true, json: async () => ({ models: [{ id: 'late-model' }] }) }; } });
+  const module = definition.factory(id => { if (id === 'react') return renderer.React; throw Error(id); });
+  let provider = 'held-provider', visible = true, retry = 0;
+  const render = () => renderer.render(() => module.__testing.useModelCatalogue(provider, visible, retry));
+  t.after(() => renderer.dispose());
+  return { requests, timers, render, module,
+    hide() { visible = false; return render(); }, clear() { provider = ''; return render(); }, retry() { retry++; return render(); } };
+}
+
+test('a model catalogue timeout aborts and cannot be undone by a late successful response', async t => {
+  const ui = catalogueFixture(t); ui.render(); assert.equal(ui.requests.length, 1);
+  for (const fire of [...ui.timers.values()]) fire();
+  assert.equal(ui.requests[0].signal.aborted, true); assert.equal(ui.render().failed, true);
+  ui.requests[0].gate.resolve(); await flush();
+  assert.equal(ui.render().failed, true); assert.equal(ui.render().models.length, 0);
+  ui.retry(); assert.equal(ui.requests.length, 2); assert.equal(ui.render().failed, false);
+  ui.hide(); assert.equal(ui.requests[1].signal.aborted, true);
+  ui.requests[1].gate.resolve(); await flush(); assert.equal(ui.render().models.length, 0);
+});
+
+test('empty model selection retires its request without retaining a previous catalogue', async t => {
+  const ui = catalogueFixture(t); ui.render(); ui.clear();
+  assert.equal(ui.requests[0].signal.aborted, true); assert.equal(ui.timers.size, 0);
+  ui.requests[0].gate.resolve(); await flush();
+  assert.equal(ui.render().models.length, 0); assert.equal(ui.render().failed, false); assert.equal(ui.requests.length, 1);
+});
+
+test('fallback explanations stay on demand and never expose arbitrary provider errors', t => {
+  const { reportFallbackReason } = catalogueFixture(t).module.__testing;
+  assert.equal(reportFallbackReason({ status: 'ready', reason: 'source-worker-change' }), '');
+  assert.equal(reportFallbackReason({ status: 'pending' }), '');
+  assert.match(reportFallbackReason({ status: 'skipped', reason: 'source-quantity-change' }), /现有检查/);
+  assert.match(reportFallbackReason({ status: 'skipped', reason: 'dropped-marker' }), /技术内容/);
+  assert.match(reportFallbackReason({ status: 'failed', reason: 'timeout' }), /时限/);
+  assert.doesNotMatch(reportFallbackReason({ status: 'failed', reason: 'PRIVATE_PROVIDER_TOKEN_ERROR' }), /PRIVATE|TOKEN/);
+});
+
+test('fixed source labels use existing metadata and distinguish another foreground work page', t => {
+  const { roomReferenceHint } = catalogueFixture(t).module.__testing;
+  const context = { initialized: true, primarySessionId: 'source-a', sources: [{ sessionId: 'source-a', name: '原参考任务' }, { sessionId: 'source-b', name: '补充任务' }] };
+  const before = copy(context), same = roomReferenceHint(context, 'source-a'), other = roomReferenceHint(context, 'work-c');
+  assert.equal(same.text, '来源 · 原参考任务 +1'); assert.equal(same.different, false);
+  assert.equal(other.text, '固定 · 原参考任务 +1'); assert.equal(other.different, true); assert.match(other.title, /主要参考与当前工作页不同/);
+  assert.equal(roomReferenceHint(context, undefined).different, false, 'unknown foreground metadata is not guessed');
+  assert.equal(roomReferenceHint({ initialized: true, sources: [] }, 'work-c').text, '来源 · 0');
+  assert.equal(roomReferenceHint(undefined, 'work-c').text, '连接中'); assert.deepEqual(context, before);
+});
 
 test('colloquial report saving defaults on and preserves a newer persona draft', async (t) => {
   const ui = await mount(t), gate = deferred();
@@ -225,6 +345,53 @@ test('colloquial report saving defaults on and preserves a newer persona draft',
   assert.equal(ui.checkbox('口语化转述').props.checked, false);
   assert.equal(ui.field('通用语感（每行一条）').props.value, '正在输入的新语感\n尚未提交', 'an older scalar save cannot replace a newer card draft');
   assert.deepEqual(ui.host.settings.pack.voice, ['原始语感']);
+});
+
+test('an applied but unpersisted setting stays visible and retries current settings without replaying a card', async t => {
+  const ui = await mount(t);
+  ui.host.settingsReplies.push({ appliedFail: true });
+  await ui.checkbox('口语化转述').props.onChange({ target: { checked: false } });
+  assert.equal(ui.checkbox('口语化转述').props.checked, false);
+  assert.match(ui.text(), /当前已生效，但保存失败/);
+  ui.host.settingsReplies.push({ fail: true });
+  await ui.button('重试保存当前设置').props.onClick();
+  assert.match(ui.text(), /保存失败，请重试/);
+  assert.equal(ui.button('重试保存当前设置').props.disabled, false, 'a failed retry must remain retryable');
+  ui.field('通用语感（每行一条）').props.onChange(event('新的未保存卡片草稿'));
+  await ui.button('重试保存当前设置').props.onClick();
+  assert.deepEqual(ui.host.settingsCalls, [{ colloquialReports: false }, {}, {}]);
+  assert.equal(ui.field('通用语感（每行一条）').props.value, '新的未保存卡片草稿');
+  assert.deepEqual(ui.host.settings.pack.voice, ['原始语感']);
+  assert.match(ui.text(), /已保存/); assert.doesNotMatch(ui.text(), /重试保存当前设置/);
+});
+
+for (const persistence of ['pending', 'memory-only']) {
+  test(`settings show ${persistence} without claiming durable success`, async t => {
+    const ui = await mount(t);
+    ui.host.settingsReplies.push({ persistence });
+    await ui.checkbox('口语化转述').props.onChange({ target: { checked: false } });
+    const status = nodes(ui.render()).find(node => node.props.className === 'dsh-persona-save-state');
+    assert.match(text(status), persistence === 'pending' ? /存储尚未就绪/ : /仅本次生效/);
+    assert.doesNotMatch(text(status), /已保存/);
+    assert.equal(ui.checkbox('口语化转述').props.checked, false);
+  });
+}
+
+test('final-only disables process controls without clearing their choices', async t => {
+  const host = makeHost(); Object.assign(host.settings, { trigger: 'report', includeToolSteps: true, processToolUsage: true });
+  const ui = await mount(t, host);
+  assert.equal(ui.checkbox('同时改写阶段性输出').props.disabled, true);
+  assert.equal(ui.checkbox('允许过程转述参考运行信息').props.disabled, true);
+  assert.equal(ui.checkbox('同时改写阶段性输出').props.checked, true);
+  assert.equal(ui.checkbox('允许过程转述参考运行信息').props.checked, true);
+  assert.match(ui.text(), /原选择已保留/);
+  const scope = nodes(ui.render()).find(node => node.props['aria-label'] === '默认转述范围');
+  await scope.props.onChange(event('step'));
+  assert.equal(ui.checkbox('同时改写阶段性输出').props.disabled, false);
+  assert.equal(ui.checkbox('允许过程转述参考运行信息').props.disabled, false);
+  await ui.checkbox('同时改写阶段性输出').props.onChange({ target: { checked: false } });
+  assert.equal(ui.checkbox('允许过程转述参考运行信息').props.disabled, true);
+  assert.equal(ui.checkbox('允许过程转述参考运行信息').props.checked, true);
 });
 
 test('colloquial report setting honors saved false and can retry a failed save', async (t) => {
@@ -357,11 +524,12 @@ test('generated preset remains editable after a failed save and clears only afte
   assert.equal(ui.host.presetCalls.filter((call) => call.action === 'save').length, 1);
   assert.equal(ui.button('保存并启用').props.disabled, true);
   assert.equal(ui.button('丢弃').props.disabled, true);
+  assert.equal(ui.button('稍后编辑').props.disabled, true);
   assert.equal(ui.name().props.disabled, true);
   gate.resolve();
   await Promise.all([saving, duplicate]);
   assert.equal(ui.name().props.value, '我的角色名');
-  assert.match(ui.text(), /身份：生成的身份/);
+  assert.equal(nodes(ui.render()).find(node => node.props['aria-label'] === '生成身份摘要')?.props.value, '生成的身份');
   assert.match(ui.text(), /storage-not-ready/);
   assert.equal(ui.button('保存并启用').props.disabled, false);
   ui.name().props.onChange(event('重试时改名'));
@@ -373,6 +541,65 @@ test('generated preset remains editable after a failed save and clears only afte
   assert.equal(ui.host.presetCalls.filter((call) => call.action === 'generate').length, 1, 'retry does not regenerate');
   assert.equal(ui.name(), undefined, 'successful save closes the generated preview');
   assert.equal(ui.field('身份').props.value, '生成的身份');
+});
+
+test('generated review opens once with the same editable draft and can be postponed without adopting it', async (t) => {
+  const ui = await mount(t);
+  const findReview = () => nodes(ui.render()).find(node => node.props.role === 'dialog' && node.props['aria-label'] === '核对生成的人格');
+  const reviewFold = () => nodes(ui.render()).find(node => node.type === 'details'
+    && node.children.some(child => child?.type === 'summary' && text(child) === '核对生成结果（未保存）'));
+  ui.prompt().props.onChange(event('一个喜欢收集旧地图、说话平实的虚构人物，不根据外形推断其性别。'));
+  await ui.button('生成预设').props.onClick();
+  assert.ok(findReview());
+  assert.equal(ui.host.presetCalls.filter(call => call.action === 'save').length, 0);
+  const identity = nodes(ui.render()).find(node => node.props['aria-label'] === '生成身份摘要');
+  identity.props.onChange(event('自己核对后的身份'));
+  const gender = nodes(ui.render()).find(node => node.props['aria-label'] === '生成人格性别（聊天室）');
+  assert.equal(gender.props.value, 'unset');
+  assert.equal(text(gender.children.find(node => node.props.value === 'unset')), '不指定');
+  assert.match(text(gender.children.find(node => node.props.value === 'none')), /^无性别/);
+  assert.match(ui.text(), /男娘、假小子是表达风格/);
+  await ui.button('稍后编辑').props.onClick();
+  assert.equal(findReview(), undefined);
+  assert.equal(reviewFold().props.open, false);
+  await ui.presetButton('other').props.onClick();
+  assert.equal(findReview(), undefined, 'switching cards cannot reopen the reminder');
+  assert.equal(ui.name().props.value, '建议名称');
+  assert.equal(nodes(ui.render()).find(node => node.props['aria-label'] === '生成身份摘要').props.value, '自己核对后的身份');
+  reviewFold().props.onToggle({ currentTarget: { open: true } });
+  assert.ok(findReview());
+  assert.equal(nodes(ui.render()).find(node => node.props['aria-label'] === '生成身份摘要').props.value, '自己核对后的身份');
+});
+
+test('failed generation does not open review or replace a postponed draft and generation locks review controls', async (t) => {
+  const ui = await mount(t);
+  const findReview = () => nodes(ui.render()).find(node => node.props.role === 'dialog' && node.props['aria-label'] === '核对生成的人格');
+  ui.prompt().props.onChange(event('一份足够长的虚构人物材料，只用于检查失败生成与核对面板的生命周期。'));
+  ui.host.presetReplies.push({ action: 'generate', fail: true });
+  await ui.button('生成预设').props.onClick();
+  assert.equal(findReview(), undefined);
+  await ui.button('生成预设').props.onClick();
+  ui.name().props.onChange(event('保留的预览名字'));
+  await ui.button('稍后编辑').props.onClick();
+  ui.host.presetReplies.push({ action: 'generate', fail: true });
+  await ui.button('生成预设').props.onClick();
+  assert.equal(findReview(), undefined);
+  assert.equal(ui.name().props.value, '保留的预览名字');
+  const reviewFold = nodes(ui.render()).find(node => node.type === 'details'
+    && node.children.some(child => child?.type === 'summary' && text(child) === '核对生成结果（未保存）'));
+  reviewFold.props.onToggle({ currentTarget: { open: true } });
+  const gate = deferred();
+  ui.host.presetReplies.push({ action: 'generate', gate, fail: true });
+  const generating = ui.button('生成预设').props.onClick();
+  await flush();
+  assert.equal(ui.button('稍后编辑').props.disabled, true);
+  assert.equal(ui.button('丢弃').props.disabled, true);
+  assert.equal(ui.name().props.disabled, true);
+  findReview().props.onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
+  assert.ok(findReview(), 'an in-flight generation cannot dismiss the locked review');
+  gate.resolve(); await generating;
+  assert.ok(findReview(), 'a failure preserves a review that was already open');
+  assert.equal(ui.name().props.value, '保留的预览名字');
 });
 
 test('late initial preset list cannot undo the selection returned by saving a generated preset', async (t) => {

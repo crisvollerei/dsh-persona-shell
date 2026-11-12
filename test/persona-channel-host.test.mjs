@@ -255,7 +255,7 @@ test('opted-in Host progress uses the session-selected report profile and scoped
   assert.equal(state.rows.length, 0); assert.equal(state.progress.text, '还没有收到新的正文汇报，先等消息。');
   const call = f.notices[0], report = profile(preset, 'report');
   containsProfile(call.system, report, ['identity', 'voice', 'samples']);
-  for (const value of preset.pack.report) assert.ok(call.system.includes(value));
+  for (const value of report.report) assert.ok(call.system.includes(value));
   for (const value of [...profile(preset, 'chat').voice, ...profile(preset, 'chat').samples]) assert.equal(call.system.includes(value), false);
   assert.match(call.system, /PROGRESS_CLAUDE_PRIVATE_STYLE/); assert.doesNotMatch(JSON.stringify(call), /PROGRESS_OTHER_PRIVATE_STYLE|PRIVATE_WORK_REQUEST_NOT_FOR_NOTICE|PRIVATE_TOOL_NAME|PRIVATE_TOOL_ARGUMENTS/);
   assert.equal(call.messages.length, 1); assert.equal(call.messages[0].role, 'user'); assert.equal(call.tools, undefined);

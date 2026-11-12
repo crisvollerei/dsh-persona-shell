@@ -73,12 +73,12 @@ test('a one-step answer still preserves complete requests, source conditions and
     coordination:{work:'required',sourceIds:['source'],request:'answer',evidence:words,basis:'model'},
     directorAssignment:assignment('answer','给本次工作判断，不把未知说成成功')});
   assert.deepEqual(prompt.control.workContext.sources,[source]);
-  assert.match(prompt.system,/用户明确要完整总结时仍当次说全/);
-  assert.match(prompt.system,/不能把必要限定拆到下一轮或留作悬念/);
+  assert.match(prompt.system,/用户明确要重述、完整总结或集中答复时当次给齐/);
+  assert.match(prompt.system,/工作判断所需的重要条件、风险、未知与来源一起保留/);
   assert.match(prompt.system,/报告中的检查和结论归原作者/);
   assert.match(prompt.system,/按原文保留重要条件、风险、不确定性与建议的性质/);
   assert.match(prompt.system,/previousReport 属于上轮/);
-  assert.match(prompt.system,/它不是用户原话、已证实结论或新的资料权限/);
+  assert.match(prompt.system,/不把它当成事实、用户要求或资料权限/);
   assert.equal(readChatInput(prompt).message,words);
 });
 
@@ -107,7 +107,7 @@ test('familiar phrasing remains conditional on the custom card and does not gran
     participants:[speaker,{...peer,privateMemory:'OTHER_PRIVATE_MEMORY',pack:{identity:'OTHER_COMPLETE_CARD'}}],
     directorAssignment:assignment('react','接眼下的问候')});
   for(const literal of [custom.identity,...custom.voice,...custom.samples])assert.ok(prompt.system.includes(literal));
-  assert.match(prompt.system,/关系和人设允许时/);
+  assert.match(prompt.system,/熟人间可以省略客套/);
   assert.match(prompt.system,/角色卡或用户明确要第三人称叙事时按要求表达/);
   assert.match(prompt.system,/不自动成为现实经历、永久关系或长期记忆/);
   assert.match(prompt.system,/不共享其他人格的私有记忆，不从别的房间补经历/);
@@ -118,15 +118,14 @@ test('familiar phrasing remains conditional on the custom card and does not gran
   assert.deepEqual(custom,before);
 });
 
-test('a light conversational beat keeps optional actions, silence and the messages-only complete transport contract',()=>{
+test('a light conversational beat keeps optional actions, explicit silence and complete structured transport',()=>{
   const prompt=build({directorAssignment:assignment('react','回应一句就够了')});
-  assert.match(prompt.system,/没有想说的仍可沉默/);
-  assert.match(prompt.system,/括号动作可选，顺口一句也可以没有动作或精致收尾/);
-  assert.match(prompt.system,/不为每条气泡配动作/);
-  assert.match(prompt.system,/正常说完这一句、提交完整 JSON/);
+  assert.match(prompt.system,/括号动作可选/);
+  assert.match(prompt.system,/只写本人动作与念头，不替他人表演/);
+  assert.match(prompt.system,/可以直接输出自然正文/);assert.match(prompt.system,/JSON须完整/);
   assert.match(prompt.system,/没有必要再说时返回 \{"messages":\[\]\}/);
   assert.match(prompt.system,/只允许 messages 这一个键/);
-  assert.match(prompt.system,/不返回.*模型内部推理/);
+  assert.match(prompt.system,/不返回.*内部推理/);
 });
 
 test('contribution prompting never changes source cards or the separate formal rewrite projection',()=>{

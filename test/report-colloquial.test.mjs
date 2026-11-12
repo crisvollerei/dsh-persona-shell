@@ -35,9 +35,9 @@ test('turning colloquial phrasing off preserves the persona, full source and com
   for (const result of [on, off]) {
     const section = expressionSection(result.system);
     assert.match(section, /优先于角色卡或历史语气样例中一般性的句式建议/);
-    assert.match(section, /技术术语保留原名/);
-    assert.match(section, /保留数量、否定、范围、适用条件、风险、证据来源和不确定程度/);
-    assert.match(section, /谁做的、做到哪一步、接下来由谁确认或执行/);
+    assert.match(result.system, /技术术语保留原名/);
+    assert.match(result.system, /保留数量、否定、范围、适用条件、风险、证据来源和不确定程度/);
+    assert.match(result.system, /谁做的、做到哪一步、接下来由谁确认或执行/);
     assert.match(result.system, /原样各保留一次，仍与对应事实、步骤和条件相连/);
     assert.match(result.system, /保留操作步骤的顺序、列表符号和标题层级/);
     assert.match(result.system, /普通说明段落可适当拆分、合并或前后调整/);
@@ -55,7 +55,7 @@ test('ordinary report phrasing changes only the instructions, never the supplied
   assert.ok(result.system.includes(pack.identity)); assert.ok(result.system.includes(pack.report[0])); assert.ok(result.system.includes(pack.voice[0]));
   const section = expressionSection(result.system);
   assert.match(section, /在当前人格的语气内/); assert.match(section, /拆开长句、名词堆叠和被动句/);
-  assert.match(section, /技术术语保留原名/); assert.match(section, /谁做的、做到哪一步、接下来由谁确认或执行/);
+  assert.match(result.system, /技术术语保留原名/); assert.match(result.system, /谁做的、做到哪一步、接下来由谁确认或执行/);
   assert.match(section, /不额外编造调侃情节、庆祝成功或催休息/);
   assert.doesNotMatch(section, /鲸鲸|Claude|GPT|姐姐说/u, 'the general expression policy does not replace the chosen persona or worker');
   assert.match(result.system, /保留操作步骤的顺序、列表符号和标题层级/);
