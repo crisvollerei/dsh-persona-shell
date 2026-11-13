@@ -148,9 +148,9 @@ test('an old settings reply cannot undo a pushed switch or introduce a supersede
     sessionSwitches: { instanceId, rev: 0, values: {} } });
   const apply = app.module.__testing.applyControls;
   assert.equal(apply(payload('first', 8, false), 8), true);
-  assert.equal(app.own(), undefined);
+  assert.ok(app.own());
   assert.equal(apply(payload('first', 7, true), 7), false);
-  assert.equal(app.own(), undefined, 'older settings cannot re-enable takeover');
+  assert.equal(first(app.render(nodeOf())).props.node.data.blocks[0].text,'original report','older settings cannot re-enable automatic replacement');
   assert.equal(apply(payload('second', 0, true), 10), true);
   assert.ok(app.own());
   assert.equal(apply(payload('never-accepted-old-response', 99, false), 9), false);
@@ -405,7 +405,7 @@ test('settled failed and skipped reports expose adjustment beside the unchanged 
   }
 });
 
-test('unfinished rows have no adjustment entry and disabled rewriting exposes an explanation without pretending it can retry', async (t) => {
+test('unfinished rows have no adjustment entry while disabled automatic rewriting retains explicit feedback', async (t) => {
   const app=await mount(t,{host:{rev:1,rows:[{seq:7,version:1,status:'pending',final:true,canRetry:false,speaker:{id:'fish',name:'大肥鱼'}}]}});
   await app.refresh();assert.equal(all(app.render(nodeOf())).some(element=>element.children?.includes('调整表达')),false);
   Object.assign(app.state.rows[0],{status:'ready',final:false,text:'process text'});await app.refresh();
@@ -414,7 +414,7 @@ test('unfinished rows have no adjustment entry and disabled rewriting exposes an
   let tree=app.renderer.render();assert.equal(first(tree).props.node.data.blocks[0].text,'original report');
   all(tree).find(element=>element.type==='button'&&element.children.includes('调整表达')).props.onClick();tree=app.renderer.render();
   const feedback=all(tree).find(element=>element.type===app.module.__testing.ReportFeedback);
-  assert.equal(feedback.props.row.canRetry,false);assert.equal(feedback.props.row.retryUnavailableReason,'rewrite-disabled');
+  assert.equal(feedback.props.row.canRetry,true);assert.equal(feedback.props.row.retryUnavailableReason,undefined);
 });
 
 test('an open feedback form cannot retarget a same-version report into another session', async (t) => {
@@ -426,6 +426,16 @@ test('an open feedback form cannot retarget a same-version report into another s
   assert.equal(submit.props.disabled,true);assert.equal(all(tree).find(element=>element.type==='textarea').props.value,'这次短一点');
   assert.ok(all(tree).some(element=>element.children.includes('这份汇报的会话、版本或说话者已变化。输入已保留，请关闭后重新打开，核对目标再调整。')));
   await submit.props.onClick();assert.equal(app.requests.some(request=>request.url.endsWith('/feedback')),false);
+});
+
+test('a changed source hash cannot retarget a manual report form with the same seq and version', async t=>{
+  const app=await mount(t),row={seq:7,version:1,status:'skipped',final:true,canRetry:true,sourceHash:'first',speaker:{id:'fish',name:'大肥鱼'}};
+  let tree=app.renderer.render(app.module.__testing.ReportFeedback,{sessionId:'s1',row,onClose(){}});
+  all(tree).find(element=>element.type==='textarea').props.onChange({target:{value:'只调整刚才那份'}});
+  tree=app.renderer.render(app.module.__testing.ReportFeedback,{sessionId:'s1',row:{...row,sourceHash:'replacement'},onClose(){}});
+  const submit=all(tree).find(element=>element.type==='button'&&element.children.includes('重新转述'));
+  assert.equal(submit.props.disabled,true);await submit.props.onClick();
+  assert.equal(app.requests.some(request=>request.url.endsWith('/feedback')),false);
 });
 
 test('a missing registry face or unsupported host keeps the official entry', async (t) => {
@@ -524,9 +534,10 @@ test('official renderer removal and re-registration use the new entry without st
     app.slots.entries(CHAT_SLOT).find((entry) => entry.registrant === CHAT_MODULE));
 });
 
-test('disabled startup and unload leave no persona renderer, timers or registry observers', async (t) => {
+test('disabled startup retains delegated report tools and unload releases all observers', async (t) => {
   const disabled = await mount(t, { enabled: false });
-  assert.equal(disabled.own(), undefined);
+  assert.ok(disabled.own());
+  assert.equal(first(disabled.render(nodeOf())).props.node.data.blocks[0].text,'original report');
   const app = await mount(t);
   app.render(nodeOf());
   assert.ok(app.subscriberCount() > 0);

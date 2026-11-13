@@ -4,7 +4,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULTS } from '../lib/config.js';
 import { mask } from '../lib/mask.js';
-import { fixture, flush } from './helpers/persona-chat-host.mjs';
+import { fixture as hostFixture, flush } from './helpers/persona-chat-host.mjs';
+const fixture = (t, options = {}) => hostFixture(t, {
+  modelInfo: async () => ({ reasoning: { efforts: [{ id: 'off' }, { id: 'low' }] } }), ...options,
+});
 
 const output = (text, finish = 'stop') => (async function* () {
   const split = Math.floor(text.length / 2);

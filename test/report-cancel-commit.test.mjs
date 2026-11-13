@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture, domain, jsonReply } from './helpers/persona-chat-host.mjs';
+import { fixture as hostFixture, domain, jsonReply } from './helpers/persona-chat-host.mjs';
+const fixture=(t,options)=>hostFixture(t,{modelInfo:async()=>({reasoning:{efforts:[{id:'off',name:'off'},{id:'low',name:'low'}]}}),...options});
 
 const original = '交接记录已整理。', old = '交接记录已经整理好了。', fresh = '交接记录现已整理妥当。';
 const read = (f, id) => f.request('report-visualization?session=' + id + '&seq=10&presentation=readable');

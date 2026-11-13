@@ -40,11 +40,16 @@ import { createModelUsage } from './lib/model-usage.js';
 import { createMemoryUsage } from './lib/memory-usage.js';
 import { CHAT_LIMITS, createPersonaChat, parseChatDecision, chatFailure, primaryChatTurn } from './lib/persona-chat.js';
 import { buildChatPrompt, publicChatExchange } from './lib/chat-prompt.js';
+import { CHAT_IMAGE_LIMITS, decodeChatImages, normalizeChatImages, sameChatImages, imageInputStatus, selectChatImages, appendChatImages } from './lib/chat-images.js';
 import { createChatTimeContext } from './lib/chat-time.js';
 import { createModelRouteResolver } from './lib/model-route.js';
 import { createChatInputQueue } from './lib/chat-input-queue.js';
 import { createChatScheduler, chatSchedulerEventKey } from './lib/chat-scheduler.js';
 import { contextSelectionFallback, explicitContextSelection } from './lib/chat-coordinator.js';
+import {supportReasonContext} from './lib/chat-support-templates.js';
+import {createChatSupport} from './lib/chat-support.js';
+import {runChatSupport} from './lib/chat-support-runner.js';
+import {createSupportPageReader} from './lib/chat-support-web.js';
 import { directorEvents,possiblePeerCall } from './lib/chat-director.js';
 import { buildDirectorRequest,parseDirectorResponse } from './lib/chat-director-wire.js';
 import { normalizeChatContribution } from './lib/chat-contribution.js';
@@ -264,6 +269,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
     provider: cfg.provider ?? '',
     model: cfg.model ?? '',
     reasoningEffort: cfg.reasoningEffort ?? '',
+    chatResearchEnabled:cfg.chatResearchEnabled===true,chatDeepReasoningEnabled:cfg.chatDeepReasoningEnabled===true,
+    chatDeepReasoningProvider:cfg.chatDeepReasoningProvider??'',chatDeepReasoningModel:cfg.chatDeepReasoningModel??'',
     chatProvider: cfg.chatProvider ?? '', chatModel: cfg.chatModel ?? '', chatThinking: cfg.chatThinking === true,
     chatReasoningEffort: cfg.chatReasoningEffort ?? '',
     visualizationProvider: cfg.visualizationProvider, visualizationModel: cfg.visualizationModel,
@@ -510,6 +517,32 @@ export function apply(ctx, rawConfig, runtime = {}) {
   let modelUsageWrites = Promise.resolve(), modelUsageTimer, modelUsageWriteFailed = false;
   let modelUsageRevision = 0, savedModelUsageRevision = 0;
   const modelUsage = createModelUsage({ changed() { modelUsageRevision++; scheduleModelUsageSave(); } });
+  const supportPageReader=runtime.supportPageReader??createSupportPageReader();
+  const chatSupport=createChatSupport({timeoutMs:runtime.supportTimeoutMs??60000,
+    save:value=>{if(!store||storeClosing)throw Error('storage-not-ready');return store.putChatSupport(value);},
+    execute:async({job,signal,update,admit})=>{
+      const options=job.template==='reason'?{provider:settings.chatDeepReasoningProvider||settings.chatProvider,
+        model:settings.chatDeepReasoningProvider?settings.chatDeepReasoningModel:settings.chatModel,thinking:true,thinkingRequired:true}
+        :{provider:settings.chatProvider,model:settings.chatModel,thinking:false};
+      const sourceRoom=chats.read(job.roomId);
+      const route=await waitWithSignal(resolveChatRouteAsync(sourceRoom?.primarySessionId??currentSessionHint(),options,signal),signal);
+      if(!route)throw Error('support-model-unavailable');
+      const web=ctx.get('web');
+      if(job.template==='research'&&(typeof web?.search!=='function'||typeof web.searchReady==='function'&&!await waitWithSignal(web.searchReady(route.provider),signal)))throw Error('support-search-unavailable');
+      return runChatSupport({job,signal,update,admit,search:(request,abort)=>web.search(request,abort),readPage:supportPageReader,
+        call:async(request,onDispatch)=>{
+          let selected;
+          const llm=expressionLlm(job.template==='research'?'chat-support-research':'chat-support-reason',()=>{onDispatch();update({model:{provider:selected.provider,model:selected.model,thinking:selected.effective??selected.mode}});},options,
+            decision=>{selected=decision;});
+          if(!llm)throw Error('support-model-unavailable');let text='',finish;
+          for await(const chunk of streamWithSignal(llm,{...request,...route})){
+            signal.throwIfAborted();if(chunk.type.startsWith('tool-call')||chunk.type==='block-start'&&chunk.blockType==='tool-call'||chunk.type==='error')throw Error('support-format');
+            if(chunk.type==='text-delta')text+=chunk.text;if(text.length>16000)throw Error('support-format');if(chunk.type==='finish')finish=chunk.reason?.kind;
+          }
+          if(finish!=='stop'||!text.trim())throw Error('support-format');return text;
+        }});
+    }});
+  const supportScope=room=>({roomId:room.id,generation:room.generation??0,scopeKey:roomScopeKey(room),referenceRevision:room.referenceRevision??0});
   /** Debounced writer for the profile row. */
   let profileTimer;
 
@@ -677,7 +710,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
   function expressionLlm(purpose, onDispatch, chatOptions, onDecision) {
     const llm = getLlm();
     return llm === undefined ? undefined : createExpressionLlm(llm, { reasoningEffort: chatOptions ? chatOptions.reasoningEffort??'' : settings.reasoningEffort,
-      thinking: chatOptions?.thinking, onDispatch,
+      thinking: chatOptions?.thinking,thinkingRequired:chatOptions?.thinkingRequired===true, onDispatch,
       onAttempt: route => modelUsage.begin({ purpose, ...route }),
       onDecision: (decision) => { if (!storeClosing) diagnostics.expressionModel = { purpose, ...decision }; onDecision?.(decision); } });
   }
@@ -722,7 +755,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
     const abort = new AbortController(), job = { abort, key, requestKey, saving: false };
     const source = current.source;
     const options = { provider: settings.visualizationProvider, model: settings.visualizationModel,
-      thinking: presentation === 'readable' ? settings.readableThinking !== false : settings.visualizationThinking === true };
+      thinking: presentation === 'readable' ? settings.readableThinking !== false : settings.visualizationThinking === true,
+      thinkingRequired:presentation==='readable'&&settings.readableThinking!==false };
     activeReportViews.set(key, job);
     const timer = setTimeout(() => abort.abort(Error('report-timeout')), cfg.timeoutMs); timer.unref?.();
     const valid = () => {
@@ -767,7 +801,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         return { ...saved, running: false };
       } catch (error) {
         const reason = abort.signal.aborted ? abort.signal.reason?.message : error?.message;
-        throw Object.assign(Error(/^report-/.test(reason ?? '') ? reason : 'report-generation-failed'),
+        throw Object.assign(Error(reason==='expression-thinking-unavailable'?'report-thinking-unavailable':/^report-/.test(reason ?? '') ? reason : 'report-generation-failed'),
           { issue: reason === 'report-invalid-output' ? reportViewIssue(error?.issue) : undefined });
       } finally {
         clearTimeout(timer); abort.abort();
@@ -902,8 +936,22 @@ export function apply(ctx, rawConfig, runtime = {}) {
     if(!row.speaker||!presets.some(p=>p.id===row.speaker.id))return 'persona-not-found';
     if(row.retrying||inFlight.has(`${sessionId}:${row.seq}`))return 'feedback-in-progress';
     if(!['ready','skipped','failed'].includes(row.status))return 'report-incomplete';
-    if(!rewriteAllowedFor(sessionId))return 'rewrite-disabled';
+    if(storeClosing||!settingsRestored||!enabledRestored)return 'rewrite-disabled';
     return null;
+  }
+
+  // A completed source captured while automatic rewriting was off has no rewrite
+  // row yet. Expose a bounded, read-only proposal; only an explicit feedback POST
+  // materializes it, and the source hash/persona/version must still match.
+  function manualReportRow(sessionId,seq) {
+    try {
+      const view=reportViews.read(sessionId,seq);
+      if(!view.available||!view.source)return undefined;
+      const persona=personaFor(sessionId);
+      return {sessionId,seq,version:1,final:true,status:'skipped',text:'',
+        reason:rewriteBlockReason(sessionId),original:view.source.text,sourceHash:view.source.hash,
+        speaker:{id:persona.id,name:persona.name,mode:persona.pack.narration?.mode??'voice'}};
+    } catch { return undefined; }
   }
 
   function chatState(key) {
@@ -921,11 +969,17 @@ export function apply(ctx, rawConfig, runtime = {}) {
     }
     for(const id of room?.memberIds??[])if(!contacts.some(p=>p.id===id))contacts.push({id,name:'已移除的人格',archived:true,avatar:null});
     const context=room?roomContexts.get(room.id):undefined;
+    const memberActivity=(room?.memberIds??[]).flatMap(id=>{
+      const typing=chatJobsFor(room.id).some(job=>job.generating&&!job.abort.signal.aborted&&room.turns.some(t=>t.attemptId===job.attemptId&&t.recipientId===id&&t.status==='pending'));
+      return typing?[{id,state:'typing'}]:round?.listeningMemberIds?.includes(id)?[{id,state:'listening'}]:[];
+    });
     const canYield=!!round&&!room.turns.some(t=>t.messageId===round.messageId&&t.phase!=='anchor'&&t.status==='pending');
     const rooms=chats.list().map(item=>({...item,running:chatStarting.has(item.id)||chatInputDraining.has(item.id)||chatInputs.list(item.id).some(b=>b.status==='pending'||b.status==='sending')||!!(chatRounds.get(item.id)&&!chatRounds.get(item.id).abort.signal.aborted)||chatJobsFor(item.id).some(job=>!job.abort.signal.aborted)}));
     return { instanceId,chatSchema:3,discussionVersion:2,localStateKey:chatLocalStateKey,roundId:round?.id,roundMessageId:round?.messageId,roundPhase:preparing?'preparing':round?.stage,
       directorFailure:room?chatDirectorFailures.get(room.id)??null:null,queuedInputs:room?chatInputs.list(room.id):[],inputRevision:chatInputs.snapshot().revision,canQueue:chatInputReady,
       roundElapsedMs:round?Math.max(0,Date.now()-round.startedAt):undefined,roundModel:round?.model,canYield,activeAttemptIds:room?chatJobsFor(room.id).filter(job=>job.started&&!job.abort.signal.aborted).map(job=>job.attemptId):[], personaId, room, scopeKey:roomScopeKey(room), rooms, activeRoomId:chats.active(), running:!!running, contacts, epoch: chats.epoch(), userProfile: publicChatProfile(), defaultPersonaId: activePresetId(),
+      supportTasks:room?chatSupport.view(supportScope(room)):[],supportCapabilities:{research:settings.chatResearchEnabled===true,reason:settings.chatDeepReasoningEnabled===true,searchService:typeof ctx.get('web')?.search==='function'},
+      memberActivity,imagesAvailable:typeof ctx.get('attachments')?.saveImages==='function'&&typeof ctx.get('attachments')?.readImage==='function',
       ready: settingsRestored && !!store && !storeClosing, modelReady: modelRoutes.canResolve(context?.snapshot().primarySessionId??currentSessionHint(),{provider:settings.chatProvider,model:settings.chatModel}) };
   }
 
@@ -1099,6 +1153,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       batch=await chatInputs.claim(roomId,first.id);if(!batch||storeClosing)return;
       const room=chats.read(roomId);
       if(!room||roomScopeKey(room)!==batch.scopeKey||(room.referenceRevision??0)!==batch.referenceRevision)throw Error('source-changed');
+      if(batch.imageGeneration!==undefined&&batch.imageGeneration!==(room.generation??0))throw Error('source-changed');
       if(batch.recipients.some(p=>!room.memberIds.includes(p.id)||!presets.some(v=>v.id===p.id)))throw Error('persona-changed');
       const source=contextForRoom(roomId),binding=chatInputBindings.get(JSON.stringify([roomId,batch.id]));
       let workContext=binding;
@@ -1216,10 +1271,22 @@ export function apply(ctx, rawConfig, runtime = {}) {
           ? memories.select({ personaId: persona.id, sessionId: room.id, text: turn.user }) : []);
         const llm = expressionLlm('chat', () => {
           if (!valid()) throw new Error('persona-changed');
+          pending.generating=true;
           memoryContext.usage?.sent();
           referenceUse?.sent();
         },chatOptions);
         if (!llm) throw new Error('chat-unavailable');
+        const userImages=selectChatImages(current,turn.messageId,turn.scopeKey??turn.contextKey??null);
+        const imageHead=current.turns.find(t=>t.messageId===turn.messageId&&t.userParts);
+        const imagesRequired=!!imageHead?.userParts?.some(p=>p.images?.length)||userImages.some(i=>imageHead?.quote?.ref?.kind==='user'&&imageHead.quote.ref.messageId===i.messageId);
+        if(userImages.length){
+          const attachments=ctx.get('attachments');
+          if(typeof attachments?.readImage!=='function')throw Error('chat-images-unavailable');
+          for(const image of userImages){
+            try{await waitWithSignal(attachments.readImage(image.attachment,abort.signal),abort.signal);}
+            catch{abort.signal.throwIfAborted();throw Error('chat-images-unavailable');}
+          }
+        }
         const history = current.turns.filter(t => t.messageId!==turn.messageId&&(t.scopeKey??t.contextKey??null) === (turn.scopeKey??turn.contextKey??null));
         const currentMemberIds=chats.read(room.id)?.memberIds??[];
         const castMembers=currentMemberIds.map(id=>presets.find(p=>p.id===id)).filter(Boolean);
@@ -1240,6 +1307,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
           scene:projectChatScene(chats.read(room.id),{messageId:turn.messageId,scopeKey:turn.scopeKey??turn.contextKey??null,referenceRevision:round.referenceRevision??0}),
           responsePlan,
           directorAssignment:round.directive?.id===persona.id?round.directive:undefined,
+          supportResult:round.supportArtifact,
           sceneDirection:round.directive?.id===persona.id&&round.directive.sceneDirection&&round.replyTarget?.ref?{
             text:round.directive.sceneDirection,roomId:room.id,generation:current.generation??0,scopeKey:turn.scopeKey??turn.contextKey??null,
             messageId:turn.messageId,actorId:persona.id,sourceRef:round.replyTarget.ref}:undefined,
@@ -1272,7 +1340,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
           return allowed;
         };
         for await (const chunk of streamWithSignal(llm, { provider: route.provider, model: route.model, system,
-          messages: requestMessages, maxTokens: chatOptions.thinking?(shortReply?4096:8192):(shortReply?768:2048), signal: abort.signal })) {
+          messages: appendChatImages(requestMessages,userImages),imageInputRequired:imagesRequired, maxTokens: chatOptions.thinking?(shortReply?4096:8192):(shortReply?768:2048), signal: abort.signal })) {
           if (!valid()) throw new Error('persona-changed');
           if (chunk.type === 'error') throw chunk.error ?? chunk.failure ?? new Error('chat-model-error');
           if (chunk.type.startsWith('tool-call')
@@ -1290,7 +1358,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
             if (finish === 'error') throw chunk.reason.failure ?? new Error('chat-model-error');
           }
         }
-        clearTimeout(progressTimer);progressTimer=undefined;
+        pending.generating=false;clearTimeout(progressTimer);progressTimer=undefined;
         abort.signal.throwIfAborted();
         if (!valid() || finish !== 'stop') throw new Error(finish === 'max-tokens' ? 'chat-length' : 'chat-incomplete');
         const decision = parseChatDecision(wire,replyBudget);
@@ -1331,6 +1399,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
             valid:()=>chats.acceptsEpoch(room.id,round.epoch) });
         } catch (error) { warn('chat result persist failed', error); }
         publish(outcome==='cancelled'?'cancelled':'failed');
+        if(failure==='vision'||failure==='image-unavailable')round.abort.abort(Error('chat-vision-unavailable'));
       } finally {
         if(actorSlot){
           if(outcome==='silent')chatScheduler.abstain(room.id,persona.id,actorSlot.token);
@@ -1514,7 +1583,10 @@ export function apply(ctx, rawConfig, runtime = {}) {
           const delay=lastDecision+chatIntervalMs-Date.now();if(delay>0){round.stage='listening';await wait(delay);continue;}
           checked.add(signature);lastDecision=Date.now();chatDirectorClocks.set(room.id,lastDecision);decisions++;
           const sources=workContext?.key&&source.active()?source.selection(workContext.key).sources:[];
-          const directorOptions={message:original.user,recipients:original.recipients,members,states,events,
+          const supportUsed=chatSupport.find({...supportScope(current),messageId});
+          const supportTemplates=!supportUsed&&chats.active()===room.id&&source.active()?[...(settings.chatResearchEnabled===true&&typeof ctx.get('web')?.search==='function'?['research']:[]),...(settings.chatDeepReasoningEnabled===true?['reason']:[])]:[];
+          const directorOptions={supportTemplates,message:original.user,recipients:original.recipients,members,states,events,
+            imageCount:original.userParts?.reduce((n,p)=>n+(p.images?.length??0),0)??0,
             contributions:directorContributions(current,events,scopeKey),
             sources,sourceIds:sources.map(s=>s.id),history:history(),quotedMessage:original.quote,referenceSelection:round.coordination,
             sceneCatalog:buildChatSceneCatalog(current,{messageId,scopeKey,referenceRevision:round.referenceRevision??0})};
@@ -1528,7 +1600,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
             const options={provider:settings.chatProvider,model:settings.chatModel,thinking:false};
             const route=await waitWithSignal(resolveChatRouteAsync(workContext?.primarySessionId??currentSessionHint(),options,controller.signal),controller.signal);
             if(!route||!valid())throw Error('chat-unavailable');round.model=route;
-            const llm=expressionLlm('chat-participation',()=>{if(!valid()||controller.signal.aborted)throw Error('chat-cancelled');},options);
+            const llm=expressionLlm('chat-participation',()=>{if(!valid()||controller.signal.aborted)throw Error('chat-cancelled');
+              round.listeningMemberIds=states.filter(s=>s.normalReady||s.peerReady).map(s=>s.id);},options);
             if(!llm)throw Error('chat-unavailable');let wire='';
             lastDecision=Date.now();chatDirectorClocks.set(room.id,lastDecision);
             for await(const chunk of streamWithSignal(llm,{...route,system,messages:[{role:'user',content:[{type:'text',text:user}]}],maxTokens:2048,signal:controller.signal})){
@@ -1540,7 +1613,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
               if(wire.length>20000){failureReason='too-long';throw Error('chat-director-invalid');}
               if(chunk.type==='finish')finish=chunk.reason?.kind;
             }
-            controller.signal.throwIfAborted();if(!valid())return;
+            round.listeningMemberIds=[];controller.signal.throwIfAborted();if(!valid())return;
             decision=finish==='stop'?parseDirectorResponse(wire,directorOptions):{basis:'invalid',reason:'non-stop'};
             if(decision.basis!=='model'){
               failureReason=DIRECTOR_REASONS.has(decision.reason)?decision.reason:'shape';throw Error('chat-director-invalid');
@@ -1563,7 +1636,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
             // never enter diagnostics, memory or the usage ledger.
             diagnostics.chatDirector={at:Date.now(),roomId:room.id,status:'failed',...issue};
           }return;}
-          finally{clearTimeout(deadline);abort.signal.removeEventListener('abort',stop);controller.abort();}
+          finally{round.listeningMemberIds=[];clearTimeout(deadline);abort.signal.removeEventListener('abort',stop);controller.abort();}
           if(!valid()||chatInputs.peek(room.id))break;
           const explicit=explicitContextSelection(original.user);
           round.coordination=explicit??(decision.context.basis==='omitted'&&round.coordination?round.coordination:decision.context);
@@ -1585,6 +1658,17 @@ export function apply(ctx, rawConfig, runtime = {}) {
               if(ids.length)await waitWithSignal(source.prepareCapture(workContext.key,{sourceIds:ids}),abort.signal);
               if(!valid())return;workContext={...source.capture(workContext.key,{sourceIds:ids}),sourceCatalog:source.selection(workContext.key).sources,scopeKey};
             }else{workContext={...workContext,sources:[],omitted:ids.length?[{name:'已接入的工作参考',reason:'inactive'}]:[]};if(ids.length)round.coordination={...contextSelectionFallback('unavailable'),request:round.coordination.request};}
+          }
+          if(action.support){
+            if(targetEvent?.author?.role!=='user')throw Error('chat-invalid');
+            round.stage='support';
+            const snapshot=chats.read(room.id),scope=supportScope(snapshot);
+            round.supportArtifact=await chatSupport.start({...scope,messageId,actorId:person.id,actorName:person.name,
+              template:action.support.template,goal:action.support.goal,question:original.user,
+              context:action.support.template==='reason'?supportReasonContext(history(),workContext?.sources):''},
+              {signal:abort.signal,valid:()=>valid()&&chats.hasMember(room.id,person.id)&&presets.some(p=>p.id===person.id&&p.pack===person.pack)
+                &&(action.support.template==='research'?settings.chatResearchEnabled:settings.chatDeepReasoningEnabled)===true});
+            if(!valid()||chatInputs.peek(room.id))break;
           }
           const state=chats.read(room.id),added=await chats.appendDirectedReply({roomId:room.id,messageId,planId:round.id+':'+decisions,
             actor:{id:person.id,name:person.name},responsePlan:{kind:action.kind,to:action.to,evidence:action.evidence.text,
@@ -1681,6 +1765,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       provider: settings.provider,
       model: settings.model,
       reasoningEffort: settings.reasoningEffort,
+      chatResearchEnabled:settings.chatResearchEnabled,chatDeepReasoningEnabled:settings.chatDeepReasoningEnabled,chatDeepReasoningProvider:settings.chatDeepReasoningProvider,chatDeepReasoningModel:settings.chatDeepReasoningModel,
       chatProvider:settings.chatProvider,chatModel:settings.chatModel,chatThinking:settings.chatThinking,
       chatReasoningEffort:settings.chatReasoningEffort,
       visualizationProvider:settings.visualizationProvider,visualizationModel:settings.visualizationModel,
@@ -2112,7 +2197,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
    * Rewrite one text. Never throws: any failure settles the row without text,
    * which the page renders as the plain report.
    */
-  async function rewrite({ sessionId, seq, text, usage, usageRevision, rowOverride, packOverride, feedback = '' }) {
+  async function rewrite({ sessionId, seq, text, usage, usageRevision, rowOverride, packOverride, feedback = '', manual = false,thinking=true }) {
     const key = `${sessionId}:${seq}`;
     if (inFlight.has(key)) return;
     inFlight.add(key);
@@ -2121,6 +2206,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     if (row === undefined) { inFlight.delete(key); return; }
     const revision = revisionFor(sessionId);
     const persona = packOverride ?? personaFor(sessionId);
+    const allowed = () => manual ? !storeClosing && settingsRestored && enabledRestored : rewriteAllowedFor(sessionId);
     const processAllowed = () => rewriteAllowedFor(sessionId) && revision === revisionFor(sessionId)
       && settings.includeToolSteps === true && settings.processToolUsage === true
       && toolUsageRestored && usageRevision === toolUsageRevision;
@@ -2135,7 +2221,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       touch(sessionId);
     };
 
-    if (!rewriteAllowedFor(sessionId)) {
+    if (!allowed()) {
       settle('skipped', rewriteBlockReason(sessionId));
       inFlight.delete(key);
       trim(sessionId);
@@ -2154,11 +2240,11 @@ export function apply(ctx, rawConfig, runtime = {}) {
       const llm = expressionLlm('rewrite', () => {
         memoryContext?.usage?.sent();
         row.memoryRefs = (memoryContext?.entries ?? []).map((e) => ({ id: e.id, version: e.version }));
-      });
+      },manual?{thinking,thinkingRequired:thinking,reasoningEffort:settings.reasoningEffort}:undefined);
       if (llm === undefined) { settle('skipped', 'no-llm'); return; }
-      const route = await waitWithSignal(resolveRouteAsync(sessionId,abort.signal), abort.signal);
+      const route = await waitWithSignal(manual?modelRoutes.resolve(sessionId,undefined,{signal:abort.signal,reportRoute:reportViews.route(sessionId,seq)}).then(routePair):resolveRouteAsync(sessionId,abort.signal), abort.signal);
       abort.signal.throwIfAborted();
-      if (!rewriteAllowedFor(sessionId)) { settle('skipped', rewriteBlockReason(sessionId)); return; }
+      if (!allowed()) { settle('skipped', rewriteBlockReason(sessionId)); return; }
       if (revision !== revisionFor(sessionId)) { settle('skipped', 'persona-changed'); return; }
       if (route === undefined) { settle('skipped', 'no-route'); return; }
 
@@ -2209,7 +2295,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         let finish;
         for await (const chunk of streamWithSignal(llm, options)) {
           abort.signal.throwIfAborted();
-          if (!rewriteAllowedFor(sessionId)) throw new Error(rewriteBlockReason(sessionId));
+          if (!allowed()) throw new Error(rewriteBlockReason(sessionId));
           if (chunk.type === 'text-delta') {
             collected += chunk.text;
             flush(false);
@@ -2221,7 +2307,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         if (finish !== 'stop') throw new Error('finish-missing');
       }
       abort.signal.throwIfAborted();
-      if (!rewriteAllowedFor(sessionId)) { settle('skipped', rewriteBlockReason(sessionId)); return; }
+      if (!allowed()) { settle('skipped', rewriteBlockReason(sessionId)); return; }
       if (revision !== revisionFor(sessionId)) { settle('skipped', 'persona-changed'); return; }
       const verdict = validateRewrite({
         ...prepared.validationOptions,
@@ -2685,6 +2771,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       storeState = 'open';
       storeError = '';
       modelUsage.restore(opened.getModelUsage());
+      chatSupport.restore(opened.getChatSupport());
       scheduleModelUsageSave();
       // Pull in whatever the previous run already wrote.
       for (const sessionId of rows.keys()) {
@@ -2787,6 +2874,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
         for (const key of ['provider', 'model', 'reasoningEffort','chatProvider','chatModel','visualizationProvider','visualizationModel']) {
           if (typeof savedSettings[key] === 'string') settings[key] = savedSettings[key];
         }
+        for(const key of ['chatResearchEnabled','chatDeepReasoningEnabled'])if(typeof savedSettings[key]==='boolean')settings[key]=savedSettings[key];
+        for(const key of ['chatDeepReasoningProvider','chatDeepReasoningModel'])if(typeof savedSettings[key]==='string'&&savedSettings[key].length<=180)settings[key]=savedSettings[key].trim();
         if(typeof savedSettings.chatThinking==='boolean')settings.chatThinking=savedSettings.chatThinking;
         if(typeof savedSettings.chatReasoningEffort==='string'&&savedSettings.chatReasoningEffort.trim().length<=128)settings.chatReasoningEffort=savedSettings.chatReasoningEffort.trim();
         if(typeof savedSettings.visualizationThinking==='boolean')settings.visualizationThinking=savedSettings.visualizationThinking;
@@ -2904,6 +2993,9 @@ export function apply(ctx, rawConfig, runtime = {}) {
     if (sessionId !== '') hydrate(sessionId);
     const own = [];
     for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
+    for(const report of settingsRestored&&enabledRestored?reportViews.list(sessionId):[])if(report.available&&!own.some(row=>row.seq===report.seq)){
+      const proposal=manualReportRow(sessionId,report.seq);if(proposal)own.push(proposal);
+    }
     own.sort((a, b) => a.seq - b.seq);
     return {
       instanceId,
@@ -2918,6 +3010,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       reports: reportViews.list(sessionId),
       rows: own.map((row) => ({
         seq: row.seq,
+        sourceHash: row.sourceHash,
         status: row.status,
         text: row.text,
         // Streaming text, still masked: the page unmasks it with the table
@@ -3276,6 +3369,23 @@ export function apply(ctx, rawConfig, runtime = {}) {
       return;
     }
 
+    if(path===ROUTE+'/chat-image'&&req.method==='GET'){
+      ensureChatRecords();
+      const room=chats.read(url.searchParams.get('room')),generation=Number(url.searchParams.get('generation'));
+      const attachmentId=url.searchParams.get('id');
+      const parts=room?[...room.turns.flatMap(t=>t.userParts??[]),...chatInputs.list(room.id).filter(b=>b.imageGeneration===(room.generation??0)).flatMap(b=>b.parts)]:[];
+      const ref=room&&generation===(room.generation??0)?parts.flatMap(p=>p.images??[]).find(r=>r.attachmentId===attachmentId):undefined;
+      const attachments=ctx.get('attachments');
+      if(!ref||typeof attachments?.readImage!=='function'){sendJson(res,404,{error:'chat-image-unavailable'});return;}
+      try{
+        const image=await waitWithSignal(attachments.readImage(ref),AbortSignal.timeout(Math.min(cfg.timeoutMs,8000)));
+        const bytes=Buffer.from(image.data);
+        if(bytes.length!==ref.bytes)throw Error('invalid-image');
+        res.writeHead(200,{'content-type':ref.mediaType,'content-length':bytes.length,'cache-control':'private, no-store','x-content-type-options':'nosniff'});
+        res.end(bytes);
+      }catch{if(!res.writableEnded)sendJson(res,404,{error:'chat-image-unavailable'});}
+      return;
+    }
     // Explicit settings inspection only: resolve the same room route without
     // opening sessions, reading message bodies or dispatching a model stream.
     if (path === `${ROUTE}/chat-model-options`) {
@@ -3299,9 +3409,9 @@ export function apply(ctx, rawConfig, runtime = {}) {
             info=Array.isArray(listed)?listed.find(model=>model?.id===route.model):undefined;
           }
           abort.signal.throwIfAborted();
-          return{...route,...reasoningOptions(info)};
+          return{...route,...reasoningOptions(info),vision:imageInputStatus(info)};
         }catch{
-          return{provider:route?.provider??null,model:route?.model??null,source:route?.source??null,...reasoningOptions(),error:'metadata-unavailable'};
+          return{provider:route?.provider??null,model:route?.model??null,source:route?.source??null,...reasoningOptions(),vision:'unknown',error:'metadata-unavailable'};
         }
       };
       try{
@@ -3436,7 +3546,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
           chatReferenceUsage.clear(body.roomId);chatRounds.get(body.roomId)?.abort.abort(Error('chat-cleared'));for(const pending of chatJobsFor(body.roomId))pending.abort.abort(Error('chat-cleared'));
           retireInvalidWorkDrafts(body.roomId,true);
           activeSuggestions.get(body.roomId)?.abort.abort(Error('chat-cleared'));
-          roomContexts.get(body.roomId)?.dispose();roomContexts.delete(body.roomId);chatLive.clearRoom(body.roomId);selected=chats.active();
+          chatSupport.cancelRoom(body.roomId,'room-deleted');roomContexts.get(body.roomId)?.dispose();roomContexts.delete(body.roomId);chatLive.clearRoom(body.roomId);selected=chats.active();
         }else throw Error('invalid-chat-room-action');
         sendJson(res,200,chatState(selected));
       }catch(error){const code=error instanceof SyntaxError?'invalid-chat-room':error.message;
@@ -3500,7 +3610,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       const instruction = typeof body?.instruction === 'string' ? body.instruction : '';
       if (!persona || instruction.length > 4000) { sendJson(res, 400, { error: 'invalid-chat-message' }); return; }
       const room = chats.read(body.roomId??persona.id);
-      if(body.roomId&&(!room||!room.memberIds.includes(persona.id)||room.targetPersonaId!==persona.id)){
+      if(body.roomId&&(!room||!room.memberIds.includes(persona.id)||(room.targetPersonaId!==null&&room.targetPersonaId!==persona.id))){
         sendJson(res,409,{error:'suggestions-context-changed'});return;
       }
       const sourceContext=roomContexts.get(room?.id)??chatContext;
@@ -3534,7 +3644,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
             if (!current()) throw new Error('suggestions-context-changed');
           },chatOptions);
           if (!route || !llm || !current()) throw new Error('suggestions-unavailable');
-          const { system, user } = buildReplySuggestions({ name:room?.targetPersonaIds.map(id=>presets.find(p=>p.id===id)?.name??id).join('、')??persona.name, history: suggestionHistory, instruction });
+          const { system, user } = buildReplySuggestions({ name:room?(room.targetPersonaIds.length?room.targetPersonaIds:room.memberIds).map(id=>presets.find(p=>p.id===id)?.name??id).join('、'):persona.name, history: suggestionHistory, instruction });
           let wire = '', finish;
           for await (const chunk of streamWithSignal(llm, { provider: route.provider, model: route.model, system,
             messages: [{ role: 'user', content: [{ type: 'text', text: user }] }], maxTokens: chatOptions.thinking?4096:768, signal: abort.signal })) {
@@ -3566,9 +3676,10 @@ export function apply(ctx, rawConfig, runtime = {}) {
       if (!settingsRestored || !store || storeClosing) { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
       ensureChatRecords();
       let raw = '';
-      for await (const piece of req) { raw += piece; if (raw.length > 24000) { sendJson(res, 413, { error: 'too-large' }); return; } }
+      for await (const piece of req) { raw += piece; if (raw.length > CHAT_IMAGE_LIMITS.request) { sendJson(res, 413, { error: 'too-large' }); return; } }
       let body;
       try { body = JSON.parse(raw); } catch { sendJson(res, 400, { error: 'invalid-chat-message' }); return; }
+      if(raw.length>24000&&(body.action!=='send'||!Array.isArray(body.images))){sendJson(res,413,{error:'too-large'});return;}
       const id = body?.personaId;
       if (typeof id !== 'string' || !id || id.length > 160) { sendJson(res, 400, { error: 'invalid-chat-message' }); return; }
       const selectedRoom=chats.read(body.roomId??id),roomKey=selectedRoom?.id??id;
@@ -3577,6 +3688,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
       const persona = presets.find((p) => p.id === recipientId);
       try {
         if (body.action === 'send' || body.action === 'retry') {
+          if(body.userParts!==undefined)throw Error('invalid-chat-message');
+          if(body.withoutImages!==undefined&&(body.withoutImages!==true||body.images!==undefined))throw Error('invalid-chat-message');
           if (!persona) { sendJson(res, 400, { error: 'persona-not-found' }); return; }
           if (chatStarting.has(roomKey)) { sendJson(res, 409, { error: 'chat-busy', state: chatState(body.roomId??id) }); return; }
           const previousRound=chatRounds.get(roomKey);
@@ -3587,6 +3700,24 @@ export function apply(ctx, rawConfig, runtime = {}) {
           chatStarting.add(roomKey);
           let result;
           try {
+            let admittedImages=[];
+            if(body.action==='send'&&body.images!==undefined){
+              if(!body.roomId||!selectedRoom||!chats.acceptsEpoch(selectedRoom.id,body.epoch))throw Error('chat-conflict');
+              if(typeof body.content!=='string'||body.content.length>CHAT_LIMITS.input)throw Error('invalid-chat-message');
+              const uploads=decodeChatImages(body.images),attachments=ctx.get('attachments');
+              if(typeof attachments?.saveImages!=='function'||typeof attachments?.readImage!=='function')throw Error('chat-images-unavailable');
+              const knownRequest=selectedRoom.turns.some(t=>t.userParts?.some(p=>p.id===body.requestId))||chatInputs.list(selectedRoom.id).some(b=>b.parts.some(p=>p.id===body.requestId));
+              if(!knownRequest){
+                const metadataSignal=AbortSignal.timeout(Math.min(cfg.timeoutMs,8000));
+                const route=await resolveChatRouteAsync(selectedRoom.primarySessionId??currentSessionHint(),{provider:settings.chatProvider,model:settings.chatModel},metadataSignal);
+                const llm=getLlm(),info=route&&typeof llm?.resolveModelInfo==='function'?await waitWithSignal(llm.resolveModelInfo(route.provider,route.model,metadataSignal),metadataSignal).catch(()=>undefined):undefined;
+                if(imageInputStatus(info)==='unsupported')throw Error('chat-vision-unavailable');
+              }
+              try{admittedImages=normalizeChatImages(await attachments.saveImages(uploads));}catch{throw Error('chat-image-upload-failed');}
+              if(admittedImages.length!==uploads.length)throw Error('chat-image-upload-failed');
+              if(!chats.acceptsEpoch(selectedRoom.id,body.epoch)||storeClosing)throw Error('chat-conflict');
+              if(!body.content.trim())body.content='（发送了 '+admittedImages.length+' 张图片）';
+            }else if(raw.length>24000)throw Error('invalid-chat-message');
             const sourceContext=body.roomId?contextForRoom(body.roomId):chatContext;
             if(body.roomId&&(!sourceContext||!body.contextKey))throw Error('context-not-open');
             // Preserve the room's range/version before saving the message. Work bodies
@@ -3603,7 +3734,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
               const prior=current.turns.find(t=>t.messageId===body.requestId||t.userParts?.some(p=>p.id===body.requestId));
               if(prior){
                 const text=prior.userParts?.find(p=>p.id===body.requestId)?.text??prior.user;
-                if(text!==body.content||(prior.scopeKey??prior.contextKey??null)!==scopeKey||(prior.recipients.length>0&&prior.recipients[0].id!==persona.id)
+                if(text!==body.content||!sameChatImages(prior.userParts?.find(p=>p.id===body.requestId)?.images,admittedImages)||!!prior.userParts?.find(p=>p.id===body.requestId)?.withoutImages!==(body.withoutImages===true)||(prior.scopeKey??prior.contextKey??null)!==scopeKey||(prior.recipients.length>0&&prior.recipients[0].id!==persona.id)
                   ||(body.recipientIds&&JSON.stringify(body.recipientIds)!==JSON.stringify(prior.recipients.map(p=>p.id)))
                   ||quoteKey(body.quote)!==quoteKey(prior.quote?.ref))throw Error('chat-id-conflict');
                 // A committed request remains an acknowledgment even if next-send
@@ -3612,7 +3743,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
               if(JSON.stringify(targetIds)!==JSON.stringify(current.targetPersonaIds))throw Error('chat-conflict');
               const quote=body.quote==null?null:resolveChatQuote(current,body.quote,scopeKey);
               if(body.quote!=null&&!quote)throw Error('chat-quote-unavailable');
-              const queued=await chatInputs.enqueue({roomId:current.id,requestId:body.requestId,content:body.content,
+              const queued=await chatInputs.enqueue({roomId:current.id,requestId:body.requestId,content:body.content,...(admittedImages.length?{images:admittedImages,imageGeneration:current.generation??0}:{}),...(body.withoutImages?{withoutImages:true}:{}),
                 recipients:targetIds.map(id=>({id,name:presets.find(p=>p.id===id).name})),memberIds:current.memberIds,
                 referenceRevision:current.referenceRevision??0,contextKey,scopeKey,quote,clientTime:body.clientTime});
               if(queued.batch){chatInputBindings.set(JSON.stringify([current.id,queued.batch.id]),workContext);publishChatUser(current,queued.batch);}
@@ -3636,6 +3767,9 @@ export function apply(ctx, rawConfig, runtime = {}) {
           const work=capturedRoomContext(selectedRoom.id,body.contextKey,{sourceIds:[]});
           if((anchor.scopeKey??anchor.contextKey??null)!==work.scopeKey)throw Error('chat-context-changed');
           launchChatRound({room:selectedRoom,turn:anchor,turns:[anchor],created:false},work,body.clientTime);
+        } else if(body.action==='cancel-support'){
+          if(!selectedRoom||!chats.acceptsEpoch(selectedRoom.id,body.epoch)||typeof body.jobId!=='string'||!chatSupport.view(supportScope(selectedRoom)).some(j=>j.id===body.jobId))throw Error('chat-conflict');
+          chatSupport.cancel(selectedRoom.id,body.jobId);
         } else if (body.action==='retry-input'||body.action==='cancel-input') {
           await chatInputRestore;
           if(!selectedRoom||!chats.acceptsEpoch(selectedRoom.id,body.epoch))throw Error('chat-conflict');
@@ -3661,7 +3795,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         } else if (body.action === 'clear') {
           const pending = chatJobsFor(roomKey);
           const suggestions = activeSuggestions.get(roomKey);
-          if (await chats.clear(body)) { await chatInputs.clear(roomKey,{forgetReceipts:true});retireChatInputRuntime(roomKey);chatDirectorFailures.delete(roomKey);chatScheduler.clearRoom(roomKey);retireInvalidWorkDrafts(roomKey,true);chatReferenceUsage.clear(roomKey);chatRounds.get(roomKey)?.abort.abort(Error('chat-cleared'));for(const job of pending)job.abort.abort(new Error('chat-cleared')); suggestions?.abort.abort(new Error('chat-cleared'));chatLive.clearRoom(roomKey); }
+          if (await chats.clear(body)) { await chatInputs.clear(roomKey,{forgetReceipts:true});retireChatInputRuntime(roomKey);chatDirectorFailures.delete(roomKey);chatScheduler.clearRoom(roomKey);retireInvalidWorkDrafts(roomKey,true);chatReferenceUsage.clear(roomKey);chatSupport.cancelRoom(roomKey,'chat-cleared');chatRounds.get(roomKey)?.abort.abort(Error('chat-cleared'));for(const job of pending)job.abort.abort(new Error('chat-cleared')); suggestions?.abort.abort(new Error('chat-cleared'));chatLive.clearRoom(roomKey); }
         } else { sendJson(res, 400, { error: 'invalid-chat-action' }); return; }
         if (storeClosing) { sendJson(res, 503, { error: 'storage-not-ready' }); return; }
         sendJson(res, 200, chatState(body.roomId??id));
@@ -3753,13 +3887,14 @@ export function apply(ctx, rawConfig, runtime = {}) {
         sendJson(res, 200, conversationState(sessionId)); return;
       }
       hydrate(sessionId);
-      const row = rows.get(`${sessionId}:${body.seq}`);
+      const existing=rows.get(`${sessionId}:${body.seq}`);
+      const row=existing??manualReportRow(sessionId,body.seq);
       const content = typeof body.content === 'string' ? body.content.trim() : '';
-      if (!row || row.version !== body.version || row.speaker?.id !== body.personaId
+      if (!row || (!existing&&body.sourceHash!==row.sourceHash) || row.version !== body.version || row.speaker?.id !== body.personaId
         || (body.scope!=='once'&&row.status!=='ready')) {
         sendJson(res, 409, { error: 'report-conflict' }); return;
       }
-      if (!content || content.length > 240 || !['once', 'persona', 'session', 'shared'].includes(body.scope)) {
+      if (!content || content.length > 240 || !['once', 'persona', 'session', 'shared'].includes(body.scope)||body.thinking!==undefined&&typeof body.thinking!=='boolean') {
         sendJson(res, 400, { error: 'invalid-feedback' }); return;
       }
       const speaker = presets.find((p) => p.id === row.speaker.id);
@@ -3782,17 +3917,20 @@ export function apply(ctx, rawConfig, runtime = {}) {
       }
       const unavailable=reportRetryUnavailable(row,sessionId);
       if(unavailable){sendJson(res,['feedback-in-progress','report-incomplete'].includes(unavailable)?409:400,{error:unavailable});return;}
+      if(!existing)rows.set(`${sessionId}:${body.seq}`,row);
       row.retrying = true; row.feedbackError = undefined; touch(sessionId);
       const draft = { ...row, status: 'pending', partial: '', processNote: undefined, processUsage: undefined };
       const retryRevision = revisionFor(sessionId);
-      await trackModelTask(rewrite({ sessionId, seq: body.seq, text: row.original, rowOverride: draft, packOverride: speaker, feedback: content }));
+      await trackModelTask(rewrite({ sessionId, seq: body.seq, text: row.original, rowOverride: draft, packOverride: speaker, feedback: content, manual:true,thinking:body.thinking!==false }));
       row.retrying = false;
       if (storeClosing) { sendJson(res, 503, { error: 'disposed' }); return; }
-      if (rows.get(`${sessionId}:${body.seq}`) !== row || row.version !== body.version) {
+      if (rows.get(`${sessionId}:${body.seq}`) !== row || row.version !== body.version
+        || (!existing&&reportViews.read(sessionId,body.seq)?.source?.hash!==body.sourceHash)) {
         sendJson(res, 409, { error: 'report-conflict' }); return;
       }
       if (draft.status !== 'ready' || retryRevision !== revisionFor(sessionId)
         || presets.find((p) => p.id === speaker.id)?.pack !== speaker.pack) {
+        if(draft.reason==='expression-thinking-unavailable'){row.feedbackError='当前模型无法启用思考，原汇报与输入已保留；可更换模型，或关闭本次思考后重试。';touch(sessionId);sendJson(res,422,{error:'feedback-thinking-unavailable'});return;}
         row.feedbackError = '这次调整没有完成，已保留原来的汇报。'; touch(sessionId);
         sendJson(res, 422, { error: 'feedback-rewrite-failed' }); return;
       }
@@ -4080,6 +4218,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
         if (typeof patch.reasoningEffort === 'string') setSetting('reasoningEffort', patch.reasoningEffort.trim());
         if(typeof patch.chatProvider==='string')setSetting('chatProvider',patch.chatProvider.trim());
         if(typeof patch.chatModel==='string')setSetting('chatModel',patch.chatModel.trim());
+        for(const key of ['chatResearchEnabled','chatDeepReasoningEnabled'])if(typeof patch[key]==='boolean'){setSetting(key,patch[key]);if(!patch[key])for(const room of chats.list())chatSupport.cancelRoom(room.id,'disabled',key==='chatResearchEnabled'?'research':'reason');}
+        for(const key of ['chatDeepReasoningProvider','chatDeepReasoningModel'])if(typeof patch[key]==='string'&&patch[key].length<=180)setSetting(key,patch[key].trim());
         if(typeof patch.chatThinking==='boolean')setSetting('chatThinking',patch.chatThinking);
         if(typeof patch.chatReasoningEffort==='string'&&patch.chatReasoningEffort.trim().length<=128)setSetting('chatReasoningEffort',patch.chatReasoningEffort.trim());
         if(typeof patch.visualizationProvider==='string')setSetting('visualizationProvider',patch.visualizationProvider.trim());
@@ -4321,10 +4461,11 @@ export function apply(ctx, rawConfig, runtime = {}) {
     // `storeClosing` branch), so awaiting these tasks is what makes "closed" mean
     // closed rather than merely "we called close".
     const tasks = [...openingTasks];
+    const supportDrain=chatSupport.dispose();
     const modelsDrain = Promise.allSettled([...modelTasks]);
     const owned = closing === undefined
       ? Promise.resolve()
-      : Promise.allSettled([...pending, modelsDrain, memoryDrain, presetWrites, settingsWrites, settingsChanges, chatProfile.drain()])
+      : Promise.allSettled([...pending, supportDrain, modelsDrain, memoryDrain, presetWrites, settingsWrites, settingsChanges, chatProfile.drain()])
         .then(async () => {
           // Abort settlement may finish after the first flush; retain its final delivery state.
           try { await closing.putMemoryUsage(memoryUsage.snapshot()); }
@@ -4336,7 +4477,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
           await closing.close();
         })
         .catch((error) => warn('store close failed', error));
-    return Promise.all([owned, memoryDrain, Promise.allSettled(tasks), modelsDrain])
+    return Promise.all([owned, supportDrain, memoryDrain, Promise.allSettled(tasks), modelsDrain])
       .catch((error) => warn('store teardown failed', error));
   }, 'persona-shell.dispose');
 }

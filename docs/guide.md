@@ -27,13 +27,13 @@ dsh plugin --profile <profile> add dsh-persona-shell
 从 [Releases](https://github.com/crisvollerei/dsh-persona-shell/releases) 下载当前版本的 `dsh-persona-shell-<version>.tgz`，然后在 **Plugins → Add plugin** 中选择 **Install a third-party plugin**，填入下载链接，例如：
 
 ```text
-https://github.com/crisvollerei/dsh-persona-shell/releases/download/v0.5.1/dsh-persona-shell-0.5.1.tgz
+https://github.com/crisvollerei/dsh-persona-shell/releases/download/v0.5.3/dsh-persona-shell-0.5.3.tgz
 ```
 
 也可以下载后通过 CLI 安装本地 tarball：
 
 ```bash
-dsh plugin --profile <profile> add ./dsh-persona-shell-0.5.1.tgz
+dsh plugin --profile <profile> add ./dsh-persona-shell-0.5.3.tgz
 ```
 
 ### Git 仓库

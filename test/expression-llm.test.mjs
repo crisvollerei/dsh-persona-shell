@@ -8,6 +8,15 @@ const options = () => ({ provider: 'p', model: 'm', signal: new AbortController(
 const answer = async function* () { yield { type: 'text-delta', text: 'rewritten' }; yield { type: 'finish', reason: { kind: 'stop' } }; };
 const collect = async (llm, opts = options()) => { const out = []; for await (const chunk of llm.stream(opts)) out.push(chunk); return out; };
 const model = (ids = ['off', 'low', 'high'], defaultEffort = 'high') => ({ reasoning: { efforts: ids.map((id) => ({ id, name: id })), defaultEffort } });
+
+test('required thinking selects a real non-off effort when the provider default is absent or off',async()=>{
+ for(const defaultEffort of [undefined,'off','high']){const info=model(['off','low','high'],defaultEffort);if(defaultEffort===undefined)delete info.reasoning.defaultEffort;const f=preparedHost(info);const policy=createExpressionLlm(f.llm,{thinking:true,thinkingRequired:true});await collect(policy);assert.equal(f.calls[0].reasoningEffort,defaultEffort==='high'?'high':'low');}
+});
+test('required thinking refuses unknown or off-only capabilities and never retries with thinking disabled',async()=>{
+ for(const info of [{},model(['off'],'off')]){const f=preparedHost(info);await assert.rejects(collect(createExpressionLlm(f.llm,{thinking:true,thinkingRequired:true})),/expression-thinking-unavailable/);assert.equal(f.calls.length,0);}
+ const f=preparedHost(model(),async function*(){yield{type:'finish',reason:{kind:'error',failure:unsupported()}};});
+ await assert.rejects(collect(createExpressionLlm(f.llm,{thinking:true,thinkingRequired:true})),/expression-thinking-unavailable/);assert.equal(f.calls.length,1);
+});
 function preparedHost(info, script = answer) {
   const calls = [], prepares = [];
   const llm = { async prepareCall(config, signal, configure) {

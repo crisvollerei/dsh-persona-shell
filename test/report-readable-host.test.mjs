@@ -8,7 +8,7 @@ const response = source => ({ schemaVersion: 3, blocks: source.blocks.map(({ ref
 const script = options => { const input = inputOf(options); return jsonReply(input.task === 'report-readable'
   ? response(input.source) : { schemaVersion: 2, annotations: [], reading: [] }); };
 async function setup(t, options = {}) {
-  const f = fixture(t, { script, ...options }); await f.ready();
+  const f = fixture(t, { script,modelInfo:thinkingInfo, ...options }); await f.ready();
   assert.equal((await f.request('settings', { enabled: false, memory: false })).status, 200);
   return f;
 }
@@ -31,7 +31,7 @@ test('readable view is lazy, authenticated, original-only and accounted as visua
   assert.deepEqual(generated.value.result.blocks.map(block => block.ref), opened.value.source.blocks.map(block => block.id));
   assert.equal(f.calls.length, 1); const input = inputOf(f.calls[0]);
   assert.equal(input.task, 'report-readable'); assert.doesNotMatch(JSON.stringify(input), /memory|persona|chatHistory/);
-  assert.equal(f.calls[0].reasoningEffort, undefined, 'unknown capabilities keep the provider default, rather than claim thinking was selected');
+  assert.equal(f.calls[0].reasoningEffort,'deep','readable generation explicitly dispatches an advertised thinking effort');
   assert.equal((await generate(f, opened.value.source, 'readable-again')).status, 200); assert.equal(f.calls.length, 1);
   const usage = (await f.request('model-usage')).value;
   assert.match(JSON.stringify(usage), /report-visualization/);
@@ -134,6 +134,14 @@ const thinkingInfo = async () => ({ reasoning: {
   efforts: [{ id: 'off' }, { id: 'low' }, { id: 'deep' }], defaultEffort: 'deep',
 } });
 
+test('readable thinking with no declared default uses a real enabled effort and preserves old prose when unavailable',async t=>{
+ let capable=true;const f=await setup(t,{modelInfo:async()=>capable?{reasoning:{efforts:[{id:'off'},{id:'low'}]}}:{}});report(f);
+ const source=(await read(f)).value.source,first=await generate(f,source);assert.equal(first.status,200);assert.equal(f.calls.at(-1).reasoningEffort,'low');
+ capable=false;const before=f.calls.length,failed=await generate(f,source,'missing-thinking',{regenerate:true});assert.equal(failed.status,503);assert.equal(failed.value.error,'report-thinking-unavailable');assert.equal(f.calls.length,before);
+ assert.deepEqual((await read(f)).value.result,first.value.result);
+ await f.request('settings',{readableThinking:false});assert.equal((await generate(f,source,'explicit-off',{regenerate:true})).status,200);
+});
+
 test('readable thinking defaults on independently of legacy visualization and report controls', () => {
   assert.equal(DEFAULTS.readableThinking, true);
   assert.equal(DEFAULTS.visualizationThinking, false);
@@ -198,7 +206,7 @@ test('an early explicit readable off survives restore and restart without overwr
   assert.equal((await restarted.request('settings')).value.settings.readableThinking, false);
 });
 
-test('old visualization off does not disable readable thinking or alter formal rewrite and restatement defaults', async t => {
+test('old visualization off does not disable readable thinking; automatic rewrite and manual adjustment are independent', async t => {
   const storage = domain();
   storage.tables.set('profile', new Map([['settings', { visualizationThinking: false }]]));
   const mixedScript = options => {
@@ -223,7 +231,7 @@ test('old visualization off does not disable readable thinking or alter formal r
   const restated = await f.request('feedback', { sessionId: 'formal', seq: row.seq, version: row.version,
     personaId: row.speaker.id, scope: 'once', content: '用完整的句子讲清楚。' });
   assert.equal(restated.status, 200);
-  assert.equal(f.calls.at(-1).reasoningEffort, 'off');
+  assert.equal(f.calls.at(-1).reasoningEffort, 'deep');
   assert.equal((await f.request('settings')).value.settings.chatThinking, settings.chatThinking);
 });
 

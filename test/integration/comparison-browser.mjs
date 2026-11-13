@@ -153,6 +153,17 @@ try {
       true, 'close restores the exact previous inline scroll styles');
     await page.setViewportSize({width:1440,height:960});
     await page.locator('#trigger').click();
+    const modal=page.locator('.persona-shell-comparison'),mountsBefore=await page.evaluate(()=>window.__mountCount());
+    const resize=await modal.locator('.dsh-floating-resize[data-edge=se]').boundingBox();
+    await page.mouse.move(resize.x+7,resize.y+7);await page.mouse.down();await page.mouse.move(resize.x-493,resize.y-173,{steps:6});await page.mouse.up();
+    await page.waitForFunction(()=>document.querySelector('.persona-shell-comparison-surface').dataset.narrow==='true');
+    const beforeDrag=await modal.boundingBox(),titleBox=await modal.locator('h2').boundingBox();
+    await page.mouse.move(titleBox.x+10,titleBox.y+10);await page.mouse.down();await page.mouse.move(titleBox.x-90,titleBox.y+60,{steps:6});await page.mouse.up();
+    const afterDrag=await modal.boundingBox();assert.ok(Math.abs(afterDrag.x-beforeDrag.x+100)<1&&Math.abs(afterDrag.y-beforeDrag.y-50)<1);
+    assert.equal(await page.evaluate(()=>window.__mountCount()),mountsBefore,'dragging and resizing preserve both rendered snapshots');
+    if(!native){const mask=await page.locator('.official-modal-root').boundingBox();assert.equal(mask.width,1440);assert.equal(mask.height,960);}
+    await modal.getByRole('button',{name:'调整原文对照窗口大小',exact:true}).focus();await page.keyboard.press('Home');
+    await page.waitForFunction(()=>!document.querySelector('.persona-shell-comparison').hasAttribute('data-floating-custom'));
     const scrollBefore = await page.evaluate(()=>scrollY);
     await page.locator('.persona-shell-comparison-header').hover();
     await page.mouse.wheel(0,500);
@@ -167,7 +178,7 @@ try {
     await page.locator('.persona-shell-comparison').waitFor({state:'detached'});
     assert.equal(await page.evaluate(() => [document.documentElement, document.body].every((node,i) => node.style.cssText === window.__styleBefore[i])),
       true, 'unmount also releases the page scroll lock');
-    console.log(JSON.stringify({browser:'passed',native,widths}));
+    console.log(JSON.stringify({browser:'passed',native,widths,floating:true}));
     await page.close();
   }
   assert.deepEqual(errors,[],'no browser runtime errors');

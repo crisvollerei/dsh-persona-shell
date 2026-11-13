@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture, domain, jsonReply } from './helpers/persona-chat-host.mjs';
+import { fixture as hostFixture, domain, jsonReply } from './helpers/persona-chat-host.mjs';
+const fixture=(t,options)=>hostFixture(t,{modelInfo:async()=>({reasoning:{efforts:[{id:'off',name:'off'},{id:'low',name:'low'}]}}),...options});
 import { makeReportSource } from '../lib/report-visualization.js';
 import { parseReportReadable } from '../lib/report-readable.js';
 

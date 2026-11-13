@@ -190,7 +190,9 @@ const host = { rev: 1, rows: [{ seq: 7, status: 'ready', text: 'persona report',
 const settings = { enabled: true };
 let plugin;
 vm.runInNewContext(readFileSync(new URL('../../client.js', import.meta.url), 'utf8'), {
-    window: { __ModuleLoader__: { load(value) { plugin = value.factory((id) => id === '@deepseek-ai/dsh-client-ui-primitives' ? primitives : reactDeps(id)); } } },
+  window:{__ModuleLoader__:{load(value){plugin=value.factory(id=>id==='@deepseek-ai/dsh-client-ui-primitives'?primitives:reactDeps(id));}},
+    addEventListener:window.addEventListener.bind(window),removeEventListener:window.removeEventListener.bind(window),
+    innerWidth:window.innerWidth,innerHeight:window.innerHeight},
   console, document, URLSearchParams, AbortController, setTimeout, clearTimeout, setInterval, clearInterval,
   fetch: async (url) => ({ ok: true, json: async () => String(url).includes('/state') ? host : { settings } }),
 });
@@ -234,7 +236,8 @@ try {
   const close = dialog.querySelector('[data-modal-autofocus]');
   close.focus();
   flushSync(() => close.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })));
-  assert.equal(document.activeElement, dialog.querySelector('[data-comparison-side="persona"]'));
+  assert.equal(document.activeElement===dialog.querySelector('button.dsh-floating-resize[data-edge="se"]'),true,
+    'the official focus trap includes the keyboard resize control');
   flushSync(() => document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
   assert.equal(document.querySelector('[role="dialog"][aria-modal="true"]'), null);
   assert.equal(document.activeElement, compareTrigger, 'official modal restores its trigger focus');
@@ -294,20 +297,13 @@ try {
   host.sessionEnabled = true; host.rev += 1;
   await plugin.__testing.refreshState('s1'); render();
   assert.match(main().textContent, /persona report/);
-  const waitForStatus = async (status) => {
-    const deadline = Date.now() + 7000;
-    while (plugin.__testing.getChatRendererState().status !== status && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.equal(plugin.__testing.getChatRendererState().status, status);
-    render();
-  };
   settings.enabled = false;
-  await waitForStatus('disabled');
-  assert.equal(slots.entriesOfSlot('conversation.chat.node')[0], originalEntry);
+  for(let i=0;i<300&&!main().textContent.includes('original report');i++){await new Promise(resolve=>setTimeout(resolve,20));render();}
+  assert.equal(plugin.__testing.getChatRendererState().status,'delegated','report tools keep the official delegate while automatic rewriting is off');
   assert.match(main().textContent, /original report/);
+  assert.ok(main().querySelector('[data-gallery="2"]'),'the original native images remain delegated while disabled');
   settings.enabled = true;
-  await waitForStatus('delegated');
+  for(let i=0;i<300&&!main().textContent.includes('persona report');i++){await new Promise(resolve=>setTimeout(resolve,20));render();}
   assert.match(main().textContent, /persona report/);
   await fiber.dispose(); await settle(); render();
   assert.equal(slots.entriesOfSlot('conversation.chat.node')[0], originalEntry);
@@ -320,7 +316,7 @@ try {
       'responsive tabs without preview remount', 'comparison/hint preserve main DOM and disclosure',
       'separate progress dock preserves assistant DOM, disclosure and other entries',
       'streaming/interruption/reasoning preserved', 'child conflict exits and recovers', 'session bypass',
-      'real settings off/on releases and restores', 'Cordis unload restores official'],
+      'real settings off/on preserves report tools and switches the delegated body', 'Cordis unload restores official'],
     limitations: 'Leaf primitives, gallery IO and domain hook data use test doubles; not a live Desktop, real model, CSS layout or image loading test.',
   }, null, 2));
 } finally {

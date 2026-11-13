@@ -37,6 +37,9 @@
 | `chatModel` | `''` · 独立聊天室模型；指定提供方但留空模型时使用该提供方默认模型。 |
 | `chatThinking` | `true` · 独立的聊天室思考开关，同时用于快捷回复与指令整理；开启时默认采用模型公布的思考强度，关闭时优先 `off`。已保存的关闭选择仍保留。 |
 | `chatReasoningEffort` | `''` · 聊天室思考强度；留空使用模型默认，非空为模型公开的档位 ID。关闭思考时保留该选择，但本次不使用。 |
+| `chatResearchEnabled` | `false` · 是否允许聊天室按需发起「调查资料」辅助任务：只匿名检索公开网页并保留来源，受调用、搜索、阅读与时间上限约束。需要宿主提供搜索服务。 |
+| `chatDeepReasoningEnabled` | `false` · 是否允许聊天室按需发起「深入推演」辅助任务：对已有资料做一次独立推理，不联网、不调用工具，单次强制开启思考。 |
+| `chatDeepReasoningProvider` / `chatDeepReasoningModel` | `''` · 深入推演单独使用的提供方和模型；提供方留空时沿用聊天室路由，指定提供方但留空模型时使用该提供方默认模型。 |
 | `visualizationProvider` / `visualizationModel` | `''` · 报告阅读默认跟随转述路由，可单独指定提供方和模型；提供方非空、模型留空时使用该提供方默认模型。 |
 | `visualizationThinking` | `false` · 仅用于报告重点分析与旧概览的思考开关，不影响顺畅阅读润色或正式转述。 |
 | `readableThinking` | `true` · 顺畅阅读润色独立的思考开关；开启时采用模型公布的默认思考强度，关闭时优先 `off`。旧的 `visualizationThinking: false` 不会关闭它。 |

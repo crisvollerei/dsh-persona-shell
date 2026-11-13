@@ -30,7 +30,7 @@ node --test 'test/*.test.mjs'
 
 ## 状态同步开发与联调
 
-`lib/remote-contract.js` 是 Host/Client 共用的严格 Remote 描述符与边界校验；`lib/client-transport.js` 管理订阅生命周期。为保持零运行时依赖，当前采用公共描述符/codec 接口，不引入 Typert TypeScript 生成工具链。浏览器副本由以下脚本嵌入现有 `client.js`，测试会检查副本与源实现逐字一致：
+`lib/remote-contract.js` 是 Host/Client 共用的严格 Remote 描述符与边界校验；`lib/client-transport.js` 管理订阅生命周期。`lib/floating-layout.js` 提供独立于聊天与报告的本地窗口几何约束。为保持零运行时依赖，当前采用公共描述符/codec 接口，不引入 Typert TypeScript 生成工具链。浏览器副本由以下脚本嵌入现有 `client.js`，测试会检查副本与源实现逐字一致：
 
 ```bash
 node scripts/build-client-sync.mjs
@@ -51,6 +51,13 @@ node scripts/build-client-sync.mjs --check
 - `report-theme-browser.mjs`：沿用相同参数，检查阅读主题、原生明暗标记、本机偏好恢复、混合外观下的文字和代码可读性，以及切换时的阅读状态保留；不调用模型。
 - `chat-rooms-browser.mjs`（`persona-chat-browser.mjs` 保留为同一套检查的入口）：沿用 React/esbuild 与 Playwright 参数，连接实际插件 Host、本地存储和确定性模型替身，检查房间与发言目标、历史署名、缩略图与组合头像、房间草稿和来源隔离、生成中换人与移除、失败保存重试、候选只填入不发送及深浅色/窄屏布局；不请求外部模型。
 - `chat-opening-browser.mjs`：沿用相同依赖参数，逐帧检查聊天室载入、重开、最小化还原与阅读页切换的显示连续性，以及草稿、选区和放大尺寸保留；不请求外部模型。
+- `chat-images-browser.mjs`：沿用相同依赖参数，连接实际插件 Host 和受控附件、模型服务，检查选图、浏览器原生剪贴板 Ctrl+V、图片条目兼容、整窗拖入与反馈、缩略图、移除、仅文字兜底、房间隔离与窄屏布局；不请求外部模型。
+- `chat-input-browser.mjs`：检查输入排队、引用、重试、流式顺序与合法沉默，另核对头像活动状态、点名顺序、减少动态效果，以及多人窄屏中「回到最新消息」的悬浮位置和点击回到底部；使用受控传输，不请求外部模型。
+- `chat-suggestions-browser.mjs`：连接实际插件 Host 与受控模型，检查广播、单人和有序多人候选、默认人格不在房间时的生成、仅填入草稿、真实上下文变化拒绝与窄屏布局；不请求外部模型。
+- `floating-windows-browser.mjs`：检查聊天室、阅读页与操作弹窗的标题拖动、边缘缩放、键盘调整、最小化及重开恢复、独立布局、阅读位置、视口变化、主题切换、窄窗口控制可达性和拖动取消；不请求外部模型。`comparison-browser.mjs` 另使用已发布的官方 Modal 与原生回退分别核对对照弹窗拖动、缩放和快照保留。
+- `report-images-browser.mjs`：在真实浏览器加载已发布的官方 Markdown 和 AssistantMarkdown，对照原报告与阅读页的图片地址、顺序、替代文字、文件路径、引用式图片、加载失败、点击放大及窄窗口适配；核对顺畅稿与原文对照的资源作用域。额外传入 `--native-deps <官方 primitives 及其依赖的 package.json>`、`--fixtures <官方 ui-chat 包目录>` 和 `--output <输出目录>`；文件接口使用受控图片，不读取用户文件或调用模型。
+- `chat-images-sdk.mjs --deps <SDK 依赖目录/package.json>`：使用已发布的 LLM SDK 和本地适配器核对原生图片块、准备后的视觉能力、未知能力与历史图片的文字降级；不请求外部模型。
+- `report-thinking-sdk.mjs --deps <SDK 依赖目录/package.json>`：使用已发布的 LLM SDK 核对顺畅阅读强制思考的档位选择、能力未知与提供方拒绝时的明确提示，以及不静默退回关闭思考的重试边界；不请求外部模型。
 
 `/persona-shell/ping` 的 `stateSync` 只公开流的数量统计与客户端状态枚举，供存活与连接排查。官方参考：[API Gateway](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/api-gateway.zh.md) · [添加 Remote API](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-remote-api.zh.md)。
 
@@ -113,6 +120,10 @@ locale/               中文与英文插件文案
 assets/avatars/       随插件提供的内置人格头像及来源说明
 test/                 离线与可选集成测试
 ```
+
+## 聊天室辅助能力验证
+
+`chat-support`、`chat-support-wire`、`chat-support-web` 和 `chat-support-host` 离线测试分别覆盖收据、有限协议、公开网络边界及真实 Host 调度入口；`test/integration/chat-support-browser.mjs` 检查等待进度、窄窗口、停止、来源与迟到结果，`chat-support-sdk.mjs` 核对已发布 SDK 的实际分派路线和物理请求预算。浏览器与适配器使用受控模型响应，不能据此判断模型正文质量。真实模型样本需固定输入与预算、保留格式失败和推演错误，分别记录路线、思考、延迟和 token；不能把任务到达等同于履行正确。
 
 ## 文档与分发
 

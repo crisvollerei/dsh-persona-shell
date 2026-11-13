@@ -6,7 +6,7 @@ const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(setIm
 const output = (text = '这份原始汇报已经重新表达。', finish = 'stop') => (async function* () {
   yield { type: 'text-delta', text }; yield { type: 'finish', reason: { kind: finish } };
 })();
-function fixture(t, { tables = new Map(), gate = Promise.resolve(), script, failWrite = () => false, beforeWrite = async () => {}, config = {} } = {}) {
+function fixture(t, { tables = new Map(), gate = Promise.resolve(), script, failWrite = () => false, beforeWrite = async () => {}, config = {},modelInfo=async()=>({reasoning:{efforts:[{id:'off',name:'off'},{id:'low',name:'low'}]}}) } = {}) {
   const bus = new EventEmitter(), routes = [], disposers = [], calls = [];
   const services = new Map([
     ['storageDomain', { async open() { await gate; return { table(name) {
@@ -18,7 +18,7 @@ function fixture(t, { tables = new Map(), gate = Promise.resolve(), script, fail
     }, close: async () => {} }; } }],
     ['webServer', { register(route) { routes.push(route); return () => {}; } }],
     ['connection', { requestRejection: ({ headers }) => headers.authorization === 'owner' ? undefined : 403 }],
-    ['llm', { listModels: async () => [{ id: 'm' }], stream(options) { calls.push(options); return script?.(options, calls.length) ?? output(); } }],
+    ['llm', { listModels: async () => [{ id: 'm' }],resolveModelInfo:modelInfo, stream(options) { calls.push(options); return script?.(options, calls.length) ?? output(); } }],
   ]);
   apply({ get: (id) => services.get(id),
     on(type, fn) { bus.on(type, fn); return () => bus.off(type, fn); },
@@ -51,8 +51,22 @@ async function choose(f, id, personaId, trigger = 'inherit') {
 async function feedback(f, extra = {}) {
   const row = (await f.state()).rows[0];
   return f.request('feedback', { sessionId: 's', seq: row.seq, version: row.version, personaId: row.speaker.id,
-    scope: 'once', content: '少一点调侃，先说结论', ...extra });
+    scope: 'once', ...(row.sourceHash?{sourceHash:row.sourceHash}:{}), content: '少一点调侃，先说结论', ...extra });
 }
+
+test('manual adjustment defaults to thinking independently of automatic rewrite and accepts an explicit one-off opt-out',async t=>{
+ const f=fixture(t);await f.ready();f.report();await flush();assert.equal(f.calls.at(-1).reasoningEffort,'off');
+ assert.equal((await feedback(f)).status,200);assert.equal(f.calls.at(-1).reasoningEffort,'low');
+ assert.equal((await feedback(f,{thinking:false})).status,200);assert.equal(f.calls.at(-1).reasoningEffort,'off');
+ const before=f.calls.length;assert.equal((await feedback(f,{thinking:'false'})).status,400);assert.equal(f.calls.length,before);
+ assert.equal((await f.request('settings')).value.settings.reasoningEffort,'');
+});
+test('manual adjustment cannot silently fall back to an unknown thinking mode and retains the old report',async t=>{
+ const f=fixture(t,{modelInfo:async()=>({})});await f.ready();f.report();await flush();const old=(await f.state()).rows[0],before=f.calls.length;
+ const failed=await feedback(f);assert.equal(failed.status,422);assert.equal(failed.value.error,'feedback-thinking-unavailable');assert.equal(f.calls.length,before);
+ const kept=(await f.state()).rows[0];assert.equal(kept.text,old.text);assert.equal(kept.version,old.version);assert.equal(kept.retrying,false);
+ assert.equal((await feedback(f,{thinking:false})).status,200);
+});
 
 test('conversation endpoints are owner-only and startup mutations are explicitly refused', async (t) => {
   let release; const f = fixture(t, { gate: new Promise((r) => { release = r; }) });
@@ -165,16 +179,55 @@ test('failed restatement from a fallback retains its original status and version
   assert.equal(after.canRetry,true);assert.equal(after.retrying,false);assert.match(after.feedbackError,/保留/);
 });
 
-test('retry availability respects disabled rewriting and never fills missing cached sources from client input',async t=>{
+test('manual retry remains available while automatic rewriting is off and never trusts client source text',async t=>{
   const f=fixture(t);await f.ready();f.report();await flush();
   await f.request('settings',{enabled:false});let row=(await f.state()).rows[0];
-  assert.equal(row.canRetry,false);assert.equal(row.retryUnavailableReason,'rewrite-disabled');
-  const count=f.calls.length;assert.equal((await feedback(f)).value.error,'rewrite-disabled');assert.equal(f.calls.length,count);
+  assert.equal(row.canRetry,true);
+  const count=f.calls.length;assert.equal((await feedback(f)).status,200);assert.equal(f.calls.length,count+1);
+  assert.equal((await f.request('settings')).value.settings.enabled,false);
   await f.request('settings',{enabled:true});await f.dispose();delete f.tables.get('sessions').get('s')[0].original;
   const next=fixture(t,{tables:f.tables});await next.ready();row=(await next.state()).rows[0];
   assert.equal(row.canRetry,false);assert.equal(row.retryUnavailableReason,'source-unavailable');
   assert.equal((await feedback(next,{original:'伪造的客户端原文',text:'伪造的当前正文'})).value.error,'source-unavailable');
   assert.equal(next.calls.length,0);
+});
+
+test('disabled startup exposes completed-source tools without creating rewrite rows or automatic requests',async t=>{
+  const seed=fixture(t);await seed.ready();await seed.request('settings',{enabled:false});await seed.dispose();
+  const f=fixture(t,{tables:seed.tables});await f.ready();f.report();
+  assert.equal((await f.state()).rows.length,0,'an unfinished report is not a manual candidate');
+  f.event('s','turn/end',11,{reason:{kind:'completed'}});await flush();
+  const before=(await f.state()).rows[0];assert.equal(before.final,true);assert.equal(before.canRetry,true);
+  assert.ok(before.sourceHash);assert.equal(f.calls.length,0);assert.equal(f.tables.get('sessions')?.get('s'),undefined);
+  assert.equal((await feedback(f)).status,200);assert.equal(f.calls.length,1);
+  assert.equal((await f.request('settings')).value.settings.enabled,false);
+  f.event('s','turn/start',12,{});f.report('s',20);f.event('s','turn/end',21,{reason:{kind:'completed'}});await flush();
+  assert.equal(f.calls.length,1,'the next completed report is still not automatically rewritten');
+  assert.equal((await f.state()).rows.find(row=>row.seq===20).status,'skipped');
+  await f.dispose();const next=fixture(t,{tables:f.tables});await next.ready();
+  const restored=(await next.state()).rows.find(row=>row.seq===10);assert.equal(restored.status,'ready');assert.equal(restored.version,2);
+  assert.equal(restored.canRetry,true);assert.equal(next.calls.length,0);
+});
+
+test('session-off manual adjustment keeps the switch off and does not resume user-memory observation',async t=>{
+  const f=fixture(t);await f.ready();await f.request('session-switch',{sessionId:'s',enabled:false});
+  f.event('s','user/message',1,{message:{role:'user',content:[{type:'text',text:'以后请先说结论。'}]}});
+  f.report();f.event('s','turn/end',11,{reason:{kind:'completed'}});await flush();
+  assert.equal(f.calls.length,0);assert.equal((await feedback(f)).status,200);assert.equal(f.calls.length,1);
+  const state=await f.state();assert.equal(state.sessionEnabled,false);
+  assert.equal((await f.request('settings')).value.settings.enabled,true);
+  assert.equal((await f.request('memory')).value.entries.length,0);
+});
+
+test('unmaterialized manual reports require the real source hash and current persona before dispatch',async t=>{
+  const f=fixture(t);await f.ready();await f.request('settings',{enabled:false});f.report();f.event('s','turn/end',11,{reason:{kind:'completed'}});await flush();
+  const row=(await f.state()).rows[0],body={sessionId:'s',seq:row.seq,version:row.version,personaId:row.speaker.id,sourceHash:row.sourceHash,scope:'once',content:'先说结论'};
+  assert.equal((await f.request('feedback',body,false)).status,403);
+  for(const patch of [{sourceHash:'forged'},{sourceHash:undefined},{version:2},{personaId:'Claude小姐'}]){
+    assert.equal((await f.request('feedback',{...body,...patch,original:'伪造原文'})).status,409);
+  }
+  assert.equal(f.calls.length,0);assert.equal(f.tables.get('sessions')?.get('s'),undefined);
+  assert.equal((await f.request('feedback',body)).status,200);assert.equal(f.calls.length,1);
 });
 
 test('an unfinished initial rewrite has no retry capability and cannot dispatch another one-off request',async t=>{

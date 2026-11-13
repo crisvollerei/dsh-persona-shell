@@ -263,7 +263,10 @@ try {
   const roomSettled=async(roomId)=>{for(let tick=0;tick<1000;tick++){const snapshot=await owner('chat?room='+encodeURIComponent(roomId));
     if(!snapshot.running&&!(snapshot.queuedInputs??[]).some(batch=>batch.status!=='failed'))return snapshot;await new Promise(resolve=>setTimeout(resolve,5));}
     throw Error('room transport and models did not settle: '+roomId);};
-  const settled=async()=>{await roomSettled((await state()).room.id);await page.waitForFunction(()=>!document.querySelector('.dsh-persona-chat-typing')&&!Array.from(document.querySelectorAll('.dsh-persona-chat-compose-row button')).some(e=>['停止回复','停止接话'].includes(e.textContent)),{},{timeout:15000});};
+  const settled=async()=>{const snapshot=await roomSettled((await state()).room.id);
+    await page.waitForFunction(()=>!document.querySelector('.dsh-persona-chat-typing')&&!Array.from(document.querySelectorAll('.dsh-persona-chat-compose-row button')).some(e=>['停止回复','停止接话'].includes(e.textContent)),{},{timeout:15000});
+    const expected=snapshot.room.turns.filter(t=>t.phase!=='anchor'&&t.status==='ready'&&t.assistant?.length).map(t=>({id:t.id,count:t.assistant.length}));
+    await page.waitForFunction(expected=>expected.every(({id,count})=>Array.from(document.querySelectorAll('[data-chat-turn]')).find(node=>node.dataset.chatTurn===id)?.querySelectorAll('[data-chat-bubble]').length===count),expected,{timeout:15000});};
   const capture=async(name,width=1100,dark=false)=>{await page.setViewportSize({width,height:850});await page.evaluate(d=>document.documentElement.dataset.theme=d?'dark':'light',dark);
     await page.evaluate(async()=>{
       await new Promise(resolve=>requestAnimationFrame(resolve));
@@ -348,7 +351,7 @@ try {
     if(await input().count())await page.getByRole('button',{name:'关闭聊天室',exact:true}).click();
     const made=await owner('chat-rooms',{action:'create',requestId:'silent-room',name:'不必每句都接',memberIds:['大肥鱼（默认）'],targetPersonaIds:['大肥鱼（默认）'],epoch:(await state()).epoch});
     await open();const beforeCalls=calls.length;await send('这句可以先听着');
-    await dialog().locator('.dsh-persona-chat-typing').waitFor();assert.equal(await dialog().locator('[data-chat-bubble]').count(),0,'an empty structured prefix has no public bubble');
+    await dialog().locator('.dsh-persona-chat-member-activity[data-state=typing]').waitFor();assert.equal(await dialog().locator('[data-chat-bubble]').count(),0,'an empty structured prefix has no public bubble');
     assert.equal(typeof gates[0],'function');gates.shift()();await settled();const current=await state();
     assert.equal(current.room.id,made.room.id);assert.equal(current.room.turns.length,1);assert.equal(current.room.turns[0].phase,'anchor');
     assert.equal(current.directorFailure,null);assert.equal(calls.length,beforeCalls+1,'silence consumes the event without another immediate body call');
@@ -428,10 +431,10 @@ try {
   assert.equal(cleared.draft.text,'');assert.equal(cleared.draft.quoteRef,null);
   // A slow real pending model remains cancellable and reveals timing/model only on request.
   await target('大肥鱼（默认）');showSlowRound=true;await send('等一下再回');
-  const slowStatus=page.getByLabel('本轮等待情况',{exact:true});await slowStatus.waitFor();
-  await slowStatus.locator('summary').click();await slowStatus.getByText(/本轮已用时.*当前调用模型：chat-model/).waitFor();
+  const slowStatus=page.getByRole('checkbox',{name:'大肥鱼（默认）',exact:true});
+  await page.waitForFunction(()=>Array.from(document.querySelectorAll('.dsh-persona-chat-recipient-option')).some(el=>el.title.includes('本轮 9 秒')&&el.title.includes('模型 chat-model')));
   if(values.output)await capture('room-waiting-details-mobile',390,true);
-  assert.doesNotMatch(await slowStatus.innerText(),/%|思考内容|SECRET_THINKING/);
+  assert.doesNotMatch(await slowStatus.getAttribute('title'),/%|思考内容|SECRET_THINKING/);
   const slowCalls=calls.length;await page.getByRole('button',{name:'切换聊天室',exact:true}).click();
   assert.match(await page.getByRole('button',{name:'打开聊天室 '+continuityRoom.room.name,exact:true}).innerText(),/正在回复/);
   assert.equal(calls.length,slowCalls);await page.getByRole('button',{name:'收起面板',exact:true}).click();
@@ -656,11 +659,11 @@ try {
   await capture('room-listener-reaction-light');await capture('room-listener-reaction-mobile',390);
 
   await target('大肥鱼（默认）');await send('等一下再回');
-  const typing=page.getByRole('status',{name:'角色输入中',exact:true});await typing.waitFor();
+  const typing=page.locator('.dsh-persona-chat-member-activity[data-state=typing]');await typing.waitFor();
   assert.match(await page.getByRole('button',{name:'关闭聊天室',exact:true}).getAttribute('title'),/已发送的回复会继续保存/);
-  assert.equal(await typing.locator('[aria-label="大肥鱼（默认）头像"]').count(),1);
+  assert.equal(await typing.getAttribute('aria-label'),'大肥鱼（默认）：输入中');
   const originalCall=calls.at(-1);await target('Claude小姐');assert.equal(originalCall.signal.aborted,false);
-  assert.equal(await typing.locator('[aria-label="大肥鱼（默认）头像"]').count(),1,'choosing another target does not relabel the original speaker');
+  assert.equal(await typing.getAttribute('aria-label'),'大肥鱼（默认）：输入中','choosing another target does not relabel the original speaker');
   await members();await page.getByRole('checkbox',{name:'成员 大肥鱼（默认）',exact:true}).uncheck();
   await page.getByRole('button',{name:'保存聊天室',exact:true}).click();
   await page.getByText('原回复对象已移出聊天室，回复已停止。',{exact:true}).waitFor();
@@ -735,8 +738,8 @@ try {
   assert.equal((await state()).room.turns.at(-1).assistant.length,0);
   assert.equal(await page.getByText('SECRET_THINKING',{exact:true}).count(),0);
   streamRelease();await page.getByText('第一段正在输入。',{exact:true}).waitFor();await typing.waitFor();
-  assert.equal(await typing.locator('.dsh-persona-chat-avatar-spacer[aria-hidden="true"]').count(),1,'typing after a visible segment continues the same speaker group');
-  assert.equal(await typing.locator('.dsh-persona-chat-avatar').count(),0);
+  assert.equal(await typing.locator('i').count(),3,'typing after a visible segment remains on the original member option');
+  assert.equal(await page.locator('.dsh-persona-chat-typing').count(),0,'no extra placeholder appears among delivered bubbles');
   assert.equal(await page.getByText('第二段接着说。',{exact:true}).count(),0);
   finishStream();await page.getByText('第三段收尾。',{exact:true}).waitFor();await settled();
 
@@ -915,7 +918,7 @@ try {
   await target('大肥鱼（默认）');await toggleTarget('大肥龙');
   await send('接一句试试');await page.getByText('设置页，就先这一页。',{exact:true}).waitFor();await settled();
   assert.deepEqual(replies((await state()).room).slice(-3).map(t=>t.responsePlan.to),['user','user','大肥龙']);
-  await send('接话时我有新想法');await page.waitForFunction(()=>Array.from(document.querySelectorAll('[data-chat-turn]')).at(-1)?.querySelector('.dsh-persona-chat-typing'));
+  await send('接话时我有新想法');await page.waitForFunction(()=>document.querySelector('.dsh-persona-chat-member-activity[data-state=typing]'));
   await input().fill('我先补一个新的想法');const sendNow=page.getByRole('button',{name:'发送',exact:true});await sendNow.waitFor();
   await sendNow.click();for(const release of gates.splice(0))release();await settled();
   assert.equal(await input().inputValue(),'');
@@ -1256,7 +1259,7 @@ try {
   const beforeWorkSelection=contextSelections.length,beforeSelectedCalls=calls.length;
   pauseContextSelection=true;const selectionEntered=new Promise(resolve=>{contextSelectionEntered=resolve;});
   await send('只参考当前工作会话，帮我看进展。');await selectionEntered;
-  await page.getByText('正在接上这句话…',{exact:true}).waitFor();
+  await page.locator('.dsh-persona-chat-member-activity[data-state=listening]').first().waitFor();
   assert.equal(await page.locator('.dsh-persona-chat-typing').count(),0,'a queued primary is not shown typing while context selection runs');
   assert.equal(calls.length,beforeSelectedCalls,'the primary waits for its bounded source selection');
   const selectorPayload=readChatInput(contextSelections.at(-1));

@@ -104,23 +104,23 @@ try {
   // A later canonical seat may be ready before an earlier persona's independent cooldown.
   // Its response is ordered by actual dispatch, while the one user head stays before both.
   await page.evaluate(() => { const state=window.inputHost.state,base={messageId:'fair',user:'先让有空的人应一声',userParts:[{id:'fair-part',text:'先让有空的人应一声',at:Date.now()}],recipients:[{id:'a',name:'甲'}],memberIdsAtSend:['a','b'],scopeKey:'scope',at:Date.now(),assistant:[],status:'pending'};
-    state.queuedInputs=[];state.inputRevision++;state.roundMessageId='fair';state.activeAttemptIds=['fair-b'];
+    state.queuedInputs=[];state.inputRevision++;state.roundMessageId='fair';state.activeAttemptIds=['fair-b'];state.memberActivity=[{id:'b',state:'typing'}];
     state.room.turns.push({...base,id:'fair-a',attemptId:'fair-a',recipientId:'a',speakerName:'甲',phase:'primary'},
       {...base,id:'fair-b',attemptId:'fair-b',recipientId:'b',speakerName:'乙',phase:'reaction',emittedOrder:0});state.room.revision++;window.refreshInputUI(); });
-  const fair=dialog.locator('[data-chat-message="fair"]');await fair.locator('[data-chat-turn="fair-b"] .dsh-persona-chat-typing').waitFor();
+  const fair=dialog.locator('[data-chat-message="fair"]');await dialog.locator('.dsh-persona-chat-member-activity[aria-label="乙：输入中"]').waitFor();
   assert.equal(await fair.locator('[data-chat-turn="fair-a"]').count(),0,'a cooling pending seat cannot block an emitted response');
   assert.equal(await fair.locator('[data-user=true]').count(),1);assert.equal(await fair.locator('[data-chat-user-head]').count(),1);
   await page.evaluate(() => { const state=window.inputHost.state;Object.assign(state.room.turns.find(turn=>turn.id==='fair-b'),{status:'ready',assistant:['乙先应上了。']});
-    Object.assign(state.room.turns.find(turn=>turn.id==='fair-a'),{emittedOrder:1});state.activeAttemptIds=['fair-a'];state.room.revision++;window.refreshInputUI(); });
-  await fair.getByText('乙先应上了。',{exact:true}).waitFor();await fair.locator('[data-chat-turn="fair-a"] .dsh-persona-chat-typing').waitFor();
+    Object.assign(state.room.turns.find(turn=>turn.id==='fair-a'),{emittedOrder:1});state.activeAttemptIds=['fair-a'];state.memberActivity=[{id:'a',state:'typing'}];state.room.revision++;window.refreshInputUI(); });
+  await fair.getByText('乙先应上了。',{exact:true}).waitFor();await dialog.locator('.dsh-persona-chat-member-activity[aria-label="甲：输入中"]').waitFor();
   assert.deepEqual(await fair.locator('[data-chat-turn]').evaluateAll(nodes=>nodes.map(node=>node.dataset.chatTurn)),['fair-b','fair-a']);
   assert.equal(await fair.evaluate(node=>node.firstElementChild.hasAttribute('data-chat-user-head')),true,'user parts are an independent fixed head');
   await page.evaluate(() => { const state=window.inputHost.state;Object.assign(state.room.turns.find(turn=>turn.id==='fair-a'),{status:'ready',assistant:['甲随后接上。']});state.activeAttemptIds=[];state.running=false;state.room.revision++;window.refreshInputUI(); });
   await fair.getByText('甲随后接上。',{exact:true}).waitFor();
   await captureMobile('chat-dispatch-order-mobile');
   await page.evaluate(()=>{const state=window.inputHost.state;Object.assign(state.room.turns.find(turn=>turn.id==='fair-b'),{status:'pending',assistant:[],attemptId:'fair-b-retry',directedPlanId:'retry-original'});
-    state.running=true;state.roundMessageId='fair';state.activeAttemptIds=['fair-b-retry'];state.room.revision++;window.refreshInputUI();});
-  await fair.locator('[data-chat-turn="fair-b"] .dsh-persona-chat-typing').waitFor();
+    state.running=true;state.roundMessageId='fair';state.activeAttemptIds=['fair-b-retry'];state.memberActivity=[{id:'b',state:'typing'}];state.room.revision++;window.refreshInputUI();});
+  await dialog.locator('.dsh-persona-chat-member-activity[aria-label="乙：输入中"]').waitFor();
   assert.equal(await fair.getByText('甲随后接上。',{exact:true}).isVisible(),true,'retrying an earlier record does not hide an already completed later reply');
   await page.evaluate(()=>{const state=window.inputHost.state;Object.assign(state.room.turns.find(turn=>turn.id==='fair-b'),{status:'ready',assistant:['乙先应上了。']});state.running=false;state.activeAttemptIds=[];state.room.revision++;window.refreshInputUI();});
   await page.evaluate(()=>{const state=window.inputHost.state,base=structuredClone(state.room.turns.find(turn=>turn.id==='fair-a'));
@@ -165,7 +165,7 @@ try {
     state.room.turns.push({...structuredClone(anchor),id:'silent-seat',attemptId:'silent-attempt',phase:'reaction',recipientId:'b',speakerName:'乙',assistant:[],status:'pending',emittedOrder:1,directedPlanId:'silent-plan'});
     host.silentFrame={instanceId:state.instanceId,roomId:'room',turnId:'silent-seat',attemptId:'silent-attempt',personaId:'b',revision:1,status:'streaming',messages:[]};
     host.pushLive({instanceId:state.instanceId,roomId:'room',status:'streaming',frames:[host.silentFrame]});state.room.revision++;window.refreshInputUI();});
-  const silentSeat=dialog.locator('[data-chat-turn="silent-seat"]');await silentSeat.locator('.dsh-persona-chat-typing').waitFor();
+  const silentSeat=dialog.locator('[data-chat-turn="silent-seat"]');await silentSeat.waitFor({state:'attached'});
   await page.evaluate(()=>{const host=window.inputHost;host.silentFrame={...host.silentFrame,revision:2,messages:[{text:'尚未提交的片段',complete:false}]};host.pushLive({instanceId:host.state.instanceId,roomId:'room',status:'streaming',frames:[host.silentFrame]});});
   await silentSeat.getByText('尚未提交的片段',{exact:true}).waitFor();
   await page.evaluate(()=>{const host=window.inputHost,frame={...host.silentFrame,revision:3,status:'silent',messages:[{text:'非法空回应替代',complete:true}]};host.pushLive({instanceId:host.state.instanceId,roomId:'room',status:'streaming',frames:[frame]});});
@@ -186,10 +186,45 @@ try {
   const readyQuote=dialog.getByRole('button',{name:'引用甲的第1条消息',exact:true});assert.equal(await readyQuote.count(),1);
   await captureMobile('chat-silent-tombstone-mobile');
   await page.evaluate(()=>{const state=window.inputHost.state;state.room.turns=state.room.turns.filter(turn=>turn.id!=='silent-seat');state.room.revision++;window.refreshInputUI();});
+  // Presence is a projection of Host activity, independent of the next @ selection and message playback.
+  await page.evaluate(()=>{
+    const state=window.inputHost.state;state.contacts=['甲','乙','丙','丁','戊'].map((name,index)=>({id:['a','b','c','d','e'][index],name}));
+    state.queuedInputs=[];state.room.memberIds=state.contacts.map(p=>p.id);state.room.targetPersonaIds=['a','b'];state.room.targetPersonaId='a';
+    state.room.turns=Array.from({length:12},(_,index)=>({id:'presence-'+index,messageId:'presence-'+index,attemptId:'presence-attempt-'+index,recipientId:'a',speakerName:'甲',recipients:[{id:'a',name:'甲'}],memberIdsAtSend:[...state.room.memberIds],scopeKey:'scope',user:'原话 '+index,at:Date.now()-300000+index*1000,status:'ready',phase:'primary',assistant:['这是已完成的公开原话。'.repeat(14)]}));
+    state.running=true;state.roundId='presence';state.roundMessageId='presence-11';state.roundPhase='listening';state.roundElapsedMs=12000;state.roundModel={provider:'local',model:'m'};
+    state.memberActivity=[{id:'a',state:'typing'},{id:'b',state:'listening'}];state.room.revision++;window.refreshInputUI();
+  });
+  const marks=dialog.locator('.dsh-persona-chat-member-activity');await marks.first().waitFor();
+  assert.equal(await marks.count(),2);assert.equal(await marks.locator('i').count(),4);
+  assert.equal(await dialog.locator('.dsh-persona-chat-typing,.dsh-persona-chat-wait').count(),0,'room status does not insert a message bubble or an extra wait banner');
+  const activeOption=dialog.getByRole('checkbox',{name:'甲',exact:true});assert.match(await activeOption.getAttribute('title'),/输入中.*12 秒.*模型 m/);
+  assert.equal(await activeOption.locator('.dsh-persona-chat-recipient-portrait').getAttribute('data-order'),'1');
+  assert.equal(await activeOption.evaluate(el=>{const portrait=el.querySelector('.dsh-persona-chat-recipient-portrait'),mark=portrait.querySelector('[data-state]'),badge=getComputedStyle(portrait,'::after');return mark.getBoundingClientRect().bottom<=portrait.getBoundingClientRect().bottom-parseFloat(badge.height)-parseFloat(badge.bottom);}),true,'activity stays above the selected-order badge');
+  for(const count of [2,3,5])for(const width of [1100,390,280]){
+    await page.evaluate(count=>{const state=window.inputHost.state;state.room.memberIds=state.contacts.slice(0,count).map(p=>p.id);state.room.revision++;window.refreshInputUI();},count);
+    await page.setViewportSize({width,height:650});
+    const thread=dialog.getByLabel('聊天消息',{exact:true});await thread.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});
+    const jump=dialog.getByRole('button',{name:/回到最新消息/});await jump.waitFor();
+    assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth),true);
+    assert.equal(await dialog.locator('.dsh-persona-chat-compose-row>button').evaluateAll(nodes=>nodes.every(el=>getComputedStyle(el).whiteSpace==='nowrap'||el.scrollHeight<=el.clientHeight)),true);
+    assert.equal(await jump.evaluate(el=>getComputedStyle(el).position==='absolute'&&!!el.closest('.dsh-persona-chat-thread-wrap')&&!el.closest('.dsh-persona-chat-compose')),true,'jump control stays floating in the message area');
+    const jumpBox=await jump.boundingBox(),threadBox=await thread.boundingBox();
+    assert.ok(jumpBox.y>=threadBox.y&&jumpBox.y+jumpBox.height<=threadBox.y+threadBox.height&&jumpBox.x>=threadBox.x&&jumpBox.x+jumpBox.width<=threadBox.x+threadBox.width,'floating jump remains within the message viewport');
+    assert.equal(await marks.count(),2);
+    if(values.output){mkdirSync(values.output,{recursive:true});await dialog.screenshot({path:path.join(values.output,'chat-member-status-'+count+'-'+width+'.png')});}
+  }
+  await dialog.getByRole('button',{name:/回到最新消息/}).click();
+  await dialog.getByRole('button',{name:/回到最新消息/}).waitFor({state:'hidden'});
+  assert.equal(await dialog.getByLabel('聊天消息',{exact:true}).evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight<2),true);
+  assert.equal(await marks.count(),2,'returning to the latest message keeps member activity');
+  await page.emulateMedia({reducedMotion:'reduce'});
+  assert.equal(await marks.locator('i').evaluateAll(nodes=>nodes.every(el=>getComputedStyle(el).animationName==='none')),true);
+  await page.evaluate(()=>{const state=window.inputHost.state;state.running=false;state.room.revision++;window.refreshInputUI();});
+  await marks.first().waitFor({state:'hidden'});
   await page.evaluate(() => window.closeInputUI()); await dialog.waitFor({ state: 'hidden' });
   await page.evaluate(()=>window.mountBlankInputUI());await input.waitFor({timeout:3000}).catch(error=>{console.error(JSON.stringify({blankMountErrors:errors}));throw error;});
   await page.waitForFunction(()=>!document.querySelector('.dsh-persona-chat-compose textarea')?.disabled);
   await page.evaluate(()=>window.closeInputUI());await dialog.waitFor({state:'hidden'});
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
-  console.log(JSON.stringify({ result: 'passed', checks: ['separate queued user bubbles and no premature typing', 'continued input while replies are pending', 'buffer observation reaches canonical committed parts', 'part ids survive quote, draft and source jump', 'failed input retry/cancel retain original words', 'late acknowledgement preserves a newer draft', 'cooling is not typing', 'dispatch order bypasses a cooling seat and preserves the fixed user head', 'no legacy cancellation fields on queued send', 'zero through eight ordered addressees without a silent default', 'user-only anchor has no fictional assistant row', 'explicit director retry retains the original message','bounded forty-frame batch retires exact silent attempts without stale snapshot ghosts or loss of other quotes','invalid nonempty or mismatched-turn silent frames cannot discard pending replies'], screenshots: values.output }));
+  console.log(JSON.stringify({ result: 'passed', checks: ['separate queued user bubbles and no premature typing', 'continued input while replies are pending', 'buffer observation reaches canonical committed parts', 'part ids survive quote, draft and source jump', 'failed input retry/cancel retain original words', 'late acknowledgement preserves a newer draft', 'cooling is not typing', 'dispatch order bypasses a cooling seat and preserves the fixed user head', 'no legacy cancellation fields on queued send', 'zero through eight ordered addressees without a silent default', 'user-only anchor has no fictional assistant row', 'explicit director retry retains the original message','bounded forty-frame batch retires exact silent attempts without stale snapshot ghosts or loss of other quotes','invalid nonempty or mismatched-turn silent frames cannot discard pending replies','one listening dot and three typing dots follow the Host member','activity and selected-order badges do not overlap','no room typing bubble or wait banner','2/3/5 members at 1100/390/280 widths without overflow','jump floats in message area and returns to latest without changing activity','reduced motion keeps static activity dots','idle ignores stale activity'], pageErrors:errors,screenshots: values.output }));
 } finally { await browser.close(); }

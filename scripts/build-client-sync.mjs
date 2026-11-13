@@ -5,6 +5,7 @@ import { createClientTransport } from '../lib/client-transport.js';
 import { createReportReadingPlan } from '../lib/report-reading.js';
 import { createReportTheme } from '../lib/report-theme.js';
 import { createChatPalette } from '../lib/chat-palette.js';
+import { createFloatingLayout } from '../lib/floating-layout.js';
 
 const file = new URL('../client.js', import.meta.url);
 const source = readFileSync(file, 'utf8');
@@ -24,7 +25,10 @@ if (!withReading.includes(themeStart) || !withReading.includes(themeEnd)) throw 
 const withTheme = withReading.replace(new RegExp(`${themeStart}[\\s\\S]*?${themeEnd}`), () => `${themeStart}\n    ${createReportTheme.toString()}\n${themeEnd}`);
 const paletteStart='    // BEGIN GENERATED CHAT PALETTE',paletteEnd='    // END GENERATED CHAT PALETTE';
 if(!withTheme.includes(paletteStart)||!withTheme.includes(paletteEnd))throw Error('Missing generated chat palette markers');
-const next=withTheme.replace(new RegExp(`${paletteStart}[\\s\\S]*?${paletteEnd}`),()=>`${paletteStart}\n    ${createChatPalette.toString()}\n${paletteEnd}`);
+const withPalette=withTheme.replace(new RegExp(`${paletteStart}[\\s\\S]*?${paletteEnd}`),()=>`${paletteStart}\n    ${createChatPalette.toString()}\n${paletteEnd}`);
+const floatingStart='    // BEGIN GENERATED FLOATING LAYOUT',floatingEnd='    // END GENERATED FLOATING LAYOUT';
+if(!withPalette.includes(floatingStart)||!withPalette.includes(floatingEnd))throw Error('Missing generated floating layout markers');
+const next=withPalette.replace(new RegExp(`${floatingStart}[\\s\\S]*?${floatingEnd}`),()=>`${floatingStart}\n    ${createFloatingLayout.toString()}\n${floatingEnd}`);
 if (process.argv.includes('--check')) {
   if (next !== source) throw new Error('Run node scripts/build-client-sync.mjs');
 } else if (next !== source) writeFileSync(file, next);

@@ -291,22 +291,14 @@ test('the chat adapter reuses official inject/locale without claiming its child 
   assert.equal(step.options.priority, -1, 'the shipped entry is shadowed by priority');
 });
 
-test('the takeover follows the global and per-session switches', async () => {
-  // Shadowing `assistant-step` hides whatever the shipped renderer drew there —
-  // reasoning, images, interrupted markers. That is acceptable only while the
-  // persona view replaces the body: disabling the plugin *or the current session*
-  // must give the shipped renderer its cell back.
-  const { chatTakeoverEnabled } = loadClient().module.__testing;
-  const off = new Map([['s-off', false]]);
-  assert.equal(chatTakeoverEnabled(true, 's-on', off), true, 'global on + session on');
-  assert.equal(chatTakeoverEnabled(true, 's-off', off), false, 'a session switch wins over the global default');
-  assert.equal(chatTakeoverEnabled(false, 's-on', off), false, 'the global switch is the master');
-  assert.equal(chatTakeoverEnabled(true, undefined, off), true, 'no active session yet follows the global switch');
-
-  const source = fs.readFileSync(SOURCE, 'utf8');
-  assert.match(source, /refreshChatTakeover = \(\) =>/, 'the controller is installed with the plugin');
-  assert.match(source, /chatTakeoverEnabled\(globalEnabled, activeSessionId, sessionOff\)/, 'the gate uses both switches');
-  assert.match(source, /releaseChatSlot\(\)/, 'the disposer is actually called');
+test('report tools wait for confirmed Host controls independently of automatic rewrite switches', () => {
+  const { reportToolsEnabled } = loadClient().module.__testing;
+  assert.equal(reportToolsEnabled(false),false);
+  assert.equal(reportToolsEnabled(undefined),false);
+  assert.equal(reportToolsEnabled(true),true);
+  const source=fs.readFileSync(SOURCE,'utf8');
+  assert.match(source,/reportToolsEnabled\(controlsReady\)/);
+  assert.match(source,/const branch = !allowed/,'the original body still follows automatic switches');
 });
 
 test('the per-session switch registers in the session header utilities', async () => {

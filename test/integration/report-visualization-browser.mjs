@@ -1,7 +1,7 @@
 // Real React/Chromium with a controlled Host and Markdown leaf. No provider/profile/work calls.
 // The leaf preserves emphasis, lists, code tokens, links and tables without HTML injection.
 import assert from 'node:assert/strict';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import path from 'node:path';
@@ -98,14 +98,60 @@ const bundle=buildSync({stdin:{contents:entry,resolveDir:path.dirname(deps.resol
 const browser=await chromium.launch({headless:true,...(values.executable?{executablePath:values.executable}:{})}),errors=[],external=[];
  const styles=`:root{--dsw-alias-label-primary:#243244;--dsw-alias-label-secondary:#697587;--dsw-alias-brand-primary:#416db5;--dsw-alias-bg-layer-1:#fff;--dsw-alias-bg-layer-2:#f5f7fa;--dsw-alias-border-l1:#dce2e9}:root[data-theme=dark]{--dsw-alias-label-primary:#e2e7ef;--dsw-alias-label-secondary:#a5b2c4;--dsw-alias-brand-primary:#8aaff1;--dsw-alias-bg-layer-1:#19212e;--dsw-alias-bg-layer-2:#222d3e;--dsw-alias-border-l1:#364459}body{font:14px/1.7 system-ui,sans-serif;margin:0;padding:24px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}article{max-width:660px;margin:80px auto}.host-code{border:1px solid #cad2df;border-radius:8px;padding:12px}.host-code button{float:right;width:60px;height:24px;min-height:0;padding:0;font-size:10px}pre{white-space:pre-wrap;font:12px/1.8 ui-monospace,Consolas,monospace}`;
 async function prepare(options={}){
- const page=await browser.newPage({viewport:{width:1200,height:900}});page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(/^https?:/.test(request.url()))external.push(request.url());});
- await page.setContent('<html><head><meta charset="utf-8"><style>'+styles+'</style></head><body><main id="app"></main></body></html>');await page.evaluate(options=>{Object.assign(window,options);if(options.noHighlights)Object.defineProperty(CSS,'highlights',{value:undefined,configurable:true});
+ const page=await browser.newPage({viewport:{width:1200,height:900},...(options.touch?{hasTouch:true,isMobile:true}:{})});page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(/^https?:/.test(request.url()))external.push(request.url());});
+ await page.setContent('<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>'+styles+'</style></head><body><main id="app"></main></body></html>');await page.evaluate(options=>{Object.assign(window,options);if(options.noHighlights)Object.defineProperty(CSS,'highlights',{value:undefined,configurable:true});
   const date=new Date(),today=date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0');
   const storage=window.noticeStorage={values:options.showReadableNotice?{}:{'dsh-persona-shell:readable-notice:v1':today},failRead:false,failWrite:false};
   Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:key=>{if(storage.failRead)throw Error('storage-read');return storage.values[key]??null;},setItem:(key,value)=>{if(storage.failWrite)throw Error('storage-write');storage.values[key]=String(value);},removeItem:key=>delete storage.values[key]}});
  },options);await page.addScriptTag({content:bundle});return page;
 }
 const ownHighlights=page=>page.evaluate(()=>[...(CSS.highlights?.keys()??[])].filter(name=>name.startsWith('dsh-report-')).length);
+async function checkQuietComparison(width,touch=false){
+ const page=await prepare({touch});await page.setViewportSize({width,height:900});
+ const source=makeReportSource({sessionId:'quiet-source',seq:40,text:'# 阅读样例\n\n整理完成，**只处理副本**。版本为 `2.0.0`，见[核对说明](https://example.invalid/check)。\n\n- **先核对副本**\n- 原始命令 `node --check draft.js`\n\n这段保持原样。'});
+ const draft={schemaVersion:3,blocks:source.blocks.map((b,i)=>({ref:b.id,text:i===1?'整理已经完成。**只处理副本**，版本为 `2.0.0`，参阅[核对说明](https://example.invalid/check)。':i===2?'- **先检查副本**\n- 原始命令 `node --check draft.js`':b.text}))};
+ await page.evaluate(({source,draft})=>{Object.assign(window.visualMock,{source,seq:40,readableCache:true,readableResult:draft});window.readingRuntime.open(source.sessionId,source.seq);},{source,draft});
+ const reader=page.getByRole('dialog',{name:'报告阅读页',exact:true});await reader.getByLabel('原始报告全文',{exact:true}).waitFor();await reader.getByRole('button',{name:'顺畅阅读',exact:true}).click();
+ const smooth=reader.getByLabel('顺畅阅读稿',{exact:true}),first=smooth.locator('[data-readable-ref=b2]'),second=smooth.locator('[data-readable-ref=b3]');
+ const toggle=first.getByLabel('核对本段原文',{exact:true}),next=second.getByLabel('核对本段原文',{exact:true});
+ await toggle.waitFor({state:'attached'});await page.mouse.move(1,1);
+ assert.equal(await first.getByRole('region',{name:'本段原文',exact:true}).count(),0,'closed source does not mount a duplicate Markdown renderer');
+ assert.equal(await page.evaluate(text=>window.markdownInputs.filter(t=>t===text).length,source.blocks[1].text),0);
+ assert.equal(await smooth.locator('[data-readable-ref=b4] summary').count(),0,'unchanged text needs no comparison control');
+ if(values.output)await reader.screenshot({path:path.join(values.output,'quiet-reading-'+width+(touch?'-touch':'')+'.png')});
+ const opacity=el=>Number(getComputedStyle(el).opacity);
+ if(touch){assert.ok(await toggle.evaluate(opacity)>.4,'touch has a quiet discoverable control');await toggle.tap();}
+ else{
+  assert.equal(await toggle.evaluate(opacity),0,'desktop has no repeated comparison labels at rest');
+  await first.hover();assert.equal(await toggle.evaluate(opacity),1);assert.equal(await next.evaluate(opacity),0,'only the hovered paragraph gains an affordance');
+  const target=await toggle.boundingBox();await page.mouse.move(target.x+target.width/2,target.y+target.height/2,{steps:16});assert.equal(await toggle.evaluate(opacity),1,'moving continuously into the margin does not lose the control');
+  await toggle.focus();await page.keyboard.press('Tab');await page.keyboard.press('Shift+Tab');assert.equal(await toggle.evaluate(opacity),1,'keyboard reveals the control');
+  await page.keyboard.press('Enter');
+ }
+ const original=first.getByRole('region',{name:'本段原文',exact:true});await original.waitFor();
+ assert.equal(await original.locator('strong').innerText(),'只处理副本');
+ assert.equal(await original.locator('code').innerText(),'2.0.0');
+ assert.equal(await original.getByRole('link',{name:'核对说明',exact:true}).getAttribute('href'),'https://example.invalid/check');
+ assert.doesNotMatch(await original.innerText(),/\*\*|\]\(https/,'Markdown source markers are not exposed as prose');
+ assert.equal(await page.evaluate(text=>window.markdownInputs.filter(t=>t===text).length,source.blocks[1].text),1);
+ await page.mouse.move(1,1);assert.equal(await toggle.evaluate(opacity),1,'open comparison stays easy to close');
+ if(values.output)await reader.screenshot({path:path.join(values.output,'quiet-comparison-'+width+(touch?'-touch':'')+'.png')});
+ if(touch)await toggle.tap();else{await toggle.focus();await page.keyboard.press('Space');}
+ await original.waitFor({state:'detached'});
+ if(values.output)writeFileSync(path.join(values.output,'comparison-input-'+width+'.json'),JSON.stringify(await next.evaluate(el=>({width:innerWidth,touch:navigator.maxTouchPoints,coarse:matchMedia('(pointer:coarse)').matches,noHover:matchMedia('(hover:none)').matches,opacity:getComputedStyle(el).opacity,pointer:getComputedStyle(el).pointerEvents,bounds:el.getBoundingClientRect().toJSON()})),null,2));
+ if(touch)await next.tap();else{await second.hover();await next.click();}
+ const list=second.getByRole('region',{name:'本段原文',exact:true});await list.waitFor();
+ assert.equal(await list.locator('li').count(),2);assert.equal(await list.locator('strong').innerText(),'先核对副本');
+ assert.equal(await list.locator('code').innerText(),'node --check draft.js');
+ assert.equal(await reader.evaluate(el=>{const pane=el.querySelector('.rr-content');return el.scrollWidth<=el.clientWidth&&pane.scrollWidth<=pane.clientWidth;}),true);
+ const box=await next.boundingBox(),bounds=await reader.boundingBox();assert.ok(box.x>=bounds.x&&box.x+box.width<=bounds.x+bounds.width,'margin control fits narrow surfaces');
+ assert.equal(await page.evaluate(()=>window.visualMock.posts.length),0,'comparison uses no model or state mutation');
+ const other=makeReportSource({sessionId:'other-quiet',seq:50,text:'另一份报告未生成顺畅稿。'});
+ await page.evaluate(source=>{Object.assign(window.visualMock,{source,seq:50,readableCache:false});window.readingRuntime.open(source.sessionId,source.seq);},other);
+ await reader.getByLabel('原始报告全文',{exact:true}).getByText('另一份报告未生成顺畅稿。',{exact:true}).waitFor();
+ assert.equal(await reader.getByRole('region',{name:'本段原文',exact:true}).count(),0,'old comparison cannot survive a source switch');
+ await page.close();
+}
 async function assertQuiet(page){
  assert.equal(await ownHighlights(page),0,'quiet reading never installs sentence highlights');
  assert.equal(await page.locator('.rr-legend,.rr-document mark').count(),0,'no persistent annotation legend or sentence wrappers');
@@ -193,8 +239,8 @@ async function checkReadableReviewLinks(width,height){
   const writes=()=>page.evaluate(()=>window.visualMock.posts.length);assert.equal(await writes(),0);
   await btn('查看第一处').focus();await page.keyboard.press('Enter');await checkFocus('b12');
   assert.equal(await paragraph('b12').locator('details[open]').count(),0,'jumping does not force disclosure');
-  await paragraph('b12').getByText('核对原文',{exact:true}).click();
-  assert.equal(await paragraph('b12').locator('details[open] pre').textContent(),source.blocks[11].text,'wording review discloses the corresponding exact source');
+  await paragraph('b12').hover();await paragraph('b12').getByLabel('核对本段原文',{exact:true}).click();
+  assert.equal((await paragraph('b12').getByRole('region',{name:'本段原文',exact:true}).innerText()).replace(/^原文\s*/u,''),source.blocks[11].text.trim(),'wording review renders the corresponding source');
   await paragraph('b12').getByRole('button',{name:'下一处',exact:true}).click();await checkFocus('b40');
   assert.ok((await paragraph('b40').innerText()).includes(source.blocks[39].text.trim()),'retained original is directly readable without a second copy');
   assert.equal(await reader.evaluate(el=>el.scrollWidth<=el.clientWidth&&el.querySelector('.rr-content').scrollWidth<=el.querySelector('.rr-content').clientWidth),true,'warning controls fit the reading surface');
@@ -259,8 +305,8 @@ try{
  assert.equal(await readableDialog.getByLabel('原始报告全文',{exact:true}).isVisible(),false,'the retained original tree does not duplicate visible smooth content');
  assert.equal(await readableDocument.locator('.host-code button').count(),1,'exact code keeps the native Markdown toolbar');
  assert.equal(await readableDocument.locator('.rr-fold-toggle').count(),0,'smooth reading never folds conditions or risk paragraphs');
- const originalDisclosure=readableDocument.locator('[data-readable-ref=b5]').getByText('核对原文',{exact:true});await originalDisclosure.click();
- assert.equal(await readableDocument.locator('[data-readable-ref=b5] .rr-readable-source pre').innerText(),reportSource.blocks.find(block=>block.id==='b5').text);
+ const originalPassage=readableDocument.locator('[data-readable-ref=b5]');await originalPassage.hover();const originalDisclosure=originalPassage.getByLabel('核对本段原文',{exact:true});await originalDisclosure.click();
+ assert.equal((await originalPassage.getByRole('region',{name:'本段原文',exact:true}).innerText()).replace(/^原文\s*/u,''),reportSource.blocks.find(block=>block.id==='b5').text.trim());
  await readableDialog.getByRole('button',{name:'复制完整原文',exact:true}).click();assert.equal(await readablePage.evaluate(()=>window.copiedText),reportSource.text,'the header copy always copies the complete original');
  await readableDialog.getByRole('button',{name:'复制顺畅稿',exact:true}).click();assert.equal(await readablePage.evaluate(()=>window.copiedText),reportReadable.blocks.map(block=>block.text.trim()).join('\n\n'));
  await readableDialog.locator('.rr-content').evaluate(element=>element.scrollTop=120);await readableDialog.getByRole('button',{name:'完整原文',exact:true}).click();
@@ -445,5 +491,7 @@ try{
  }
  checks.push('refresh retries a transient readable GET without generation','same-source refresh updates copy, model and marked paragraphs','failed refresh retains the marked draft; late reads cannot cross reports','stop during save displays the actual success or write failure on desktop and mobile');
  checks.push('45-block warning anchors cycle and focus on desktop and mobile','deduplicated source-bound review marks distinguish retained originals and wording','unbound warnings and reused refs never create false jumps','exact copy, modes and source disclosure stay local while inspecting warnings','all-original regeneration visibly retains the previous readable draft');
+ await checkQuietComparison(1200);await checkQuietComparison(390,true);
+ checks.push('quiet margin controls reveal only on hover, keyboard focus or open comparison','touch comparison remains discoverable without repeated text rows','source Markdown renders emphasis, code, links and lists lazily in place','comparison controls fit narrow surfaces and never generate');
  assert.deepEqual(errors,[]);assert.deepEqual(external,[]);console.log(JSON.stringify({result:'passed',checks,reading:{fullHeight,focusedHeight,foldedParagraphs:foldable.length,localModelCalls:await readingPage.evaluate(()=>window.visualMock.generations)},notice:{confirmedGenerations:await noticePage.evaluate(()=>window.visualMock.generations),dailyStorage:'controlled localStorage',calendar:'fixed browser Date'},generations,pageErrors:errors,screenshots:values.output}));
 }finally{await browser.close();}

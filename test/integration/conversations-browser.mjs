@@ -4,6 +4,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import path from 'node:path';
+import {makeReportSource} from '../../lib/report-visualization.js';
 const { values } = parseArgs({ options: { deps: { type: 'string' }, 'browser-deps': { type: 'string' },
   executable: { type: 'string' }, output: { type: 'string' } } });
 const deps = createRequire(path.resolve(values.deps));
@@ -17,13 +18,14 @@ const seed = {
     presets: [{ id: '大肥鱼（默认）', name: '大肥鱼（默认）' }, { id: 'Claude小姐', name: 'Claude小姐' }, { id: '鲸鲸（实验性）', name: '小肥鱼（实验性）' }] },
   row: { seq: 10, version: 1, final: true, status: 'ready', text: '原来已经可读的汇报。', canRetry: true,
     speaker: { id: '大肥鱼（默认）', name: '大肥鱼（默认）', mode: 'voice' }, memories: [{ id: 'm', scope: 'persona', content: '先说结论' }] },
+  reportSource:makeReportSource({sessionId:'s',seq:10,text:'原始工作汇报，保留必要条件和风险。'}),
   posts: [], failNext: null, delayed: false,
 };
 const entry = `
 import * as React from ${JSON.stringify(deps.resolve('react'))};
 import { createRoot } from ${JSON.stringify(deps.resolve('react-dom/client'))};
 const h=React.createElement; let plugin;
-window.__ModuleLoader__={load(d){plugin=d.factory(id=>{if(id==='react')return React;throw Error(id)})}};
+window.__ModuleLoader__={load(d){plugin=d.factory(id=>{if(id==='react')return React;if(id==='react-dom/client')return{createRoot};throw Error(id)})}};
 ${source}
 const host=window.conversationMock=${JSON.stringify(seed)};
 const reply=(body,status=200)=>({ok:status<300,status,json:async()=>structuredClone(body)});
@@ -42,13 +44,14 @@ window.fetch=async(url,options)=>{
  }
  if(route.endsWith('/feedback')){
   const b=JSON.parse(options.body);host.posts.push(b);
-  if(b.version!==host.row.version||b.personaId!==host.row.speaker?.id)return reply({error:'report-conflict'},409);
+  if(b.version!==host.row.version||b.personaId!==host.row.speaker?.id||(host.row.sourceHash&&b.sourceHash!==host.row.sourceHash))return reply({error:'report-conflict'},409);
   if(host.delayed)await new Promise(resolve=>window.releaseFeedback=resolve);
   if(host.failNext){const reason=host.failNext;host.failNext=null;return reply({error:reason},422)}
   host.conversation.stateRev++;
     if(b.scope==='once'){host.row.text='新的可读汇报。';host.row.status='ready';host.row.version++;window.repaint()}
   return reply({ok:true,version:host.row.version,personaId:host.row.speaker?.id});
  }
+ if(route.endsWith('/report-visualization'))return reply({available:true,source:host.reportSource,cached:false});
  if(route.endsWith('/state'))return reply({instanceId:host.conversation.instanceId,rev:host.conversation.stateRev,rows:[host.row],conversation:host.conversation,settings:{enabled:host.settingsEnabled!==false},sessionEnabled:host.sessionEnabled!==false,switchesReady:true});
  return reply({});
 };
@@ -147,6 +150,7 @@ try {
   assert.match(await page.evaluate(() => document.activeElement.textContent), /设置/);
   await page.getByRole('button', { name: '调整表达', exact: true }).click();
   const beforeQuick=await page.evaluate(()=>window.conversationMock.posts.length);
+  const thinkingToggle=page.getByRole('checkbox',{name:'本次调整开启思考',exact:true});assert.equal(await thinkingToggle.isChecked(),true);
   await page.getByRole('button',{name:'短一点',exact:true}).click();
   assert.match(await page.getByLabel('表达反馈').inputValue(),/短一点.*条件和风险/);
   assert.equal(await page.evaluate(()=>window.conversationMock.posts.length),beforeQuick,'a shortcut only fills the request');
@@ -158,12 +162,17 @@ try {
   await page.evaluate(() => { window.conversationMock.failNext = 'feedback-rewrite-failed'; });
   await page.getByRole('button', { name: '重新转述', exact: true }).click();
   await visible('这次调整没有完成，已保留原来的汇报和你的输入。');
+  assert.equal(await page.evaluate(()=>window.conversationMock.posts.at(-1).thinking),true);assert.equal(await thinkingToggle.isChecked(),true);
+  await page.evaluate(()=>{window.conversationMock.failNext='feedback-thinking-unavailable';});await page.getByRole('button',{name:'重新转述',exact:true}).click();
+  await visible('当前模型无法启用思考，原汇报与输入已保留；可更换模型，或关闭本次思考后重试。');assert.equal(await thinkingToggle.isChecked(),true);assert.equal(await page.getByLabel('表达反馈').inputValue(),'少一点调侃，先给结论。');
+  await thinkingToggle.click();assert.equal(await thinkingToggle.isChecked(),false);
   assert.equal(await page.locator('[data-preview-report]').textContent(), '原来已经可读的汇报。');
   assert.equal(await page.getByLabel('反馈作用范围').count(), 0);
   assert.equal(await page.getByText('本次参考的偏好（1）', { exact: true }).count(), 0);
   await capture('feedback-light', 1100); await capture('feedback-mobile', 390); await capture('feedback-dark', 1100, true);
   await page.getByRole('button', { name: '重新转述', exact: true }).click();
   await visible('已按这次偏好重新转述。');
+  assert.equal(await page.evaluate(()=>window.conversationMock.posts.at(-1).thinking),false);
   assert.equal(await page.locator('[data-preview-report]').textContent(), '新的可读汇报。');
   assert.equal(await page.getByLabel('表达反馈').inputValue(), '', 'a reopened submitted draft is cleared');
   // Closing during a one-off rewrite preserves a newer reopened draft.
@@ -196,7 +205,29 @@ try {
     assert.equal(await page.evaluate(()=>window.conversationMock.posts.length),beforeUnavailable,'unavailable actions explain rather than dispatch');
     await close('调整这份汇报的表达');
   }
-  await page.evaluate(async()=>{const h=window.conversationMock;h.sessionEnabled=true;h.row.status='ready';h.row.canRetry=true;delete h.row.retryUnavailableReason;h.row.version++;h.conversation.stateRev++;await window.refreshConversation()});
+  for(const mode of ['global','session']){
+    await page.evaluate(async mode=>{const h=window.conversationMock;h.settingsEnabled=mode!=='global';h.sessionEnabled=mode!=='session';
+      h.row.status='skipped';h.row.text='';h.row.sourceHash=h.reportSource.hash;h.row.canRetry=true;delete h.row.retryUnavailableReason;
+      h.row.version++;h.conversation.stateRev++;await window.refreshConversation();
+      Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAdjustment=text}});
+    },mode);
+    await visible('原始工作汇报，保留必要条件和风险。');
+    await page.getByRole('button',{name:'阅读报告',exact:true}).click();
+    await page.getByRole('dialog',{name:'报告阅读页',exact:true}).waitFor();
+    await page.getByLabel('原始报告全文',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'关闭报告阅读页',exact:true}).click();
+    await page.getByRole('button',{name:'调整表达',exact:true}).click();await page.getByLabel('表达反馈').fill('这次先说结论');
+    const count=await page.evaluate(()=>window.conversationMock.posts.length);
+    await page.getByRole('button',{name:'重新转述',exact:true}).click();await visible('已按这次偏好重新转述，可在下方查看。');
+    const result=page.getByRole('region',{name:'表达结果',exact:true});await result.getByText('新的可读汇报。',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'复制调整结果',exact:true}).click();assert.equal(await page.evaluate(()=>window.copiedAdjustment),'新的可读汇报。');
+    assert.equal(await page.evaluate(()=>window.conversationMock.posts.length),count+1);
+    assert.equal(await page.locator('[data-preview-report]').innerText(),'原始工作汇报，保留必要条件和风险。');
+    assert.equal(await page.evaluate(mode=>mode==='global'?window.conversationMock.settingsEnabled:window.conversationMock.sessionEnabled,mode),false);
+    if(values.output)await page.screenshot({path:path.join(values.output,'disabled-'+mode+'-report-feedback.png'),fullPage:true});
+    await close('调整这份汇报的表达');await page.getByRole('button',{name:'调整表达',exact:true}).click();await result.waitFor();await close('调整这份汇报的表达');
+  }
+  await page.evaluate(async()=>{const h=window.conversationMock;h.settingsEnabled=true;h.sessionEnabled=true;h.row.status='ready';h.row.canRetry=true;delete h.row.retryUnavailableReason;h.row.version++;h.conversation.stateRev++;await window.refreshConversation()});
   for(const mutation of ['version','speaker']){
     await page.getByRole('button',{name:'调整表达',exact:true}).click();await page.getByLabel('表达反馈').fill('目标变化时仍保留的表达草稿');
     const beforeStale=await page.evaluate(()=>window.conversationMock.posts.length);
@@ -212,5 +243,5 @@ try {
   assert.equal(await page.evaluate(()=>window.officialReportMounts),1,'the delegated official body remains continuously mounted');
   assert.equal(await page.evaluate(()=>window.officialReportUnmounts??0),0);
   assert.deepEqual(errors, []); assert.deepEqual(requests, []);
-  console.log(JSON.stringify({ ok: true, checks: ['real PersonaStep action entry','settled fallback retry','shortcut fill without request','unavailable reason without dispatch','version and speaker target pinning','continuously mounted official delegate','late-opening-readiness', 'drafts', 'conflicts', 'relay-cancel', 'raw-report-preservation', 'retry', 'memory-controls-settings-only', 'late-response-draft', 'mobile', 'dark', 'focus', 'escape'], screenshots: values.output ?? null }));
+  console.log(JSON.stringify({ ok: true, checks: ['real PersonaStep action entry','settled fallback retry','shortcut fill without request','unavailable reason without dispatch','version and speaker target pinning','continuously mounted official delegate','late-opening-readiness', 'drafts', 'conflicts', 'relay-cancel', 'raw-report-preservation','disabled global and session controls','source-bound manual preview and copy without enabling automation', 'retry', 'memory-controls-settings-only', 'late-response-draft', 'mobile', 'dark', 'focus', 'escape','adjustment thinking starts checked','thinking choice retained on failure and close','thinking unavailable is explicit with draft retained','one-off opt-out is sent without altering global switches'], screenshots: values.output ?? null }));
 } finally { await browser.close(); }

@@ -1,7 +1,8 @@
 // Controlled real Host streams: delivery/author boundaries, not model semantics.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fixture,flush} from './helpers/persona-chat-host.mjs';
+import {fixture as hostFixture,flush} from './helpers/persona-chat-host.mjs';
+const fixture=(t,options={})=>hostFixture(t,{modelInfo:async()=>({reasoning:{efforts:[{id:'off'},{id:'low'}]}}),...options});
 const stream=text=>(async function*(){yield{type:'text-delta',text:text.slice(0,3)};yield{type:'text-delta',text:text.slice(3)};yield{type:'finish',reason:{kind:'stop'}};})();
 const report=(f,text,{id='expression-context',seq=1,child=false}={})=>f.bus.emit('session/event',{
   id,header:child?{delegationDepth:1,origin:'subagent'}:{},append(){assert.fail('report cannot write working history');}},

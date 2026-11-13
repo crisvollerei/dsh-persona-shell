@@ -18,7 +18,7 @@ function fixture(t, { storage = domain(), config = {}, prepare } = {}) {
   const bus = new EventEmitter(), disposers = [], calls = [], routes = [];
   const session = { id: 's', header: {}, append() { assert.fail('memory observation never enters the working conversation'); } };
   const agent = { session, status: 'running' };
-  const llm = { ...(prepare ? { resolveModelInfo: prepare } : {}), stream(options) {
+  const llm = { resolveModelInfo: prepare ?? (async () => ({ reasoning: { efforts: [{ id: 'off' }, { id: 'low' }] } })), stream(options) {
     calls.push(options);
     if (options.tools) return (async function* () {
       yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'usage', name: 'get_tool_usage', arguments: '{}' } };

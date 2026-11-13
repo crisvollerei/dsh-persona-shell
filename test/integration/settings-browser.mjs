@@ -755,6 +755,15 @@ try {
   await page.getByRole('combobox',{name:'改写所用模型',exact:true}).selectOption('local');
   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('rewrite-small');
   await tab('聊天室');
+  const researchToggle=page.getByRole('checkbox',{name:'允许调查资料',exact:true}),reasonToggle=page.getByRole('checkbox',{name:'允许深入推演',exact:true});
+  assert.equal(await researchToggle.isChecked(),false);assert.equal(await reasonToggle.isChecked(),false);
+  assert.equal(await page.getByRole('combobox',{name:'深入推演提供方',exact:true}).count(),0);
+  await researchToggle.check();await reasonToggle.check();await page.getByRole('combobox',{name:'深入推演提供方',exact:true}).selectOption('local');
+  await page.getByRole('combobox',{name:'深入推演模型名称',exact:true}).selectOption('rewrite-small');
+  await page.waitForFunction(()=>window.settingsMock.settings.chatResearchEnabled===true&&window.settingsMock.settings.chatDeepReasoningModel==='rewrite-small');
+  await tab('人格');await tab('聊天室');assert.equal(await reasonToggle.isChecked(),true);
+  assert.equal(await page.getByRole('combobox',{name:'深入推演模型名称',exact:true}).inputValue(),'rewrite-small');
+  await researchToggle.uncheck();await reasonToggle.uncheck();await page.waitForFunction(()=>window.settingsMock.settings.chatDeepReasoningEnabled===false);
   assert.equal(await page.getByRole('combobox',{name:'聊天室模型',exact:true}).inputValue(),'');
   assert.equal(await page.getByRole('checkbox',{name:'开启聊天室思考',exact:true}).isChecked(),true);
   assert.equal(await page.getByRole('combobox',{name:'聊天室思考强度',exact:true}).inputValue(),'');
@@ -881,6 +890,7 @@ try {
       'postponed review survives navigation and generation failure without repeated opening',
       'mobile review scrolls independently to its footer and gender styles are not inferred from appearance',
       'conditional quiet timing', 'narration relationship', 'default report scope', 'keyboard disclosure', 'model selection', 'memory draft retention', 'no message gate', 'desktop/mobile themes',
-      'lazy usage statistics', 'usage coverage and model details', 'empty, stale and failed usage queries'],
+      'lazy usage statistics', 'usage coverage and model details', 'empty, stale and failed usage queries',
+      'auxiliary capabilities default off', 'research and reasoning enable independently', 'reasoning separate model persists across navigation', 'disabled helper model selection is retained'],
     pageErrors: errors, externalRequests: external }));
 } finally { await browser.close(); }

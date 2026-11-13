@@ -49,7 +49,7 @@ test('chat metadata is authenticated, read only, sanitized and queried only on d
   assert.equal((await f.request('chat-model-options',undefined,false)).status,403);assert.equal(queried.length,0);
   assert.equal((await f.request('chat-model-options',{})).status,405);assert.equal(queried.length,0);
   const result=await f.request('chat-model-options');assert.equal(result.status,200);
-  assert.deepEqual(result.value,{provider:'p',model:'m',source:'rewrite',status:'available',efforts:info().reasoning.efforts,defaultEffort:'high'});
+  assert.deepEqual(result.value,{provider:'p',model:'m',source:'rewrite',status:'available',efforts:info().reasoning.efforts,defaultEffort:'high',vision:'unknown'});
   assert.equal(queried.length,1);assert.equal(queried[0][0],'p');assert.equal(queried[0][1],'m');assert.ok(queried[0][2] instanceof AbortSignal);
   assert.equal(f.requests.length,0);assert.doesNotMatch(JSON.stringify(result.value),/SECRET|apiKey|credentials/);
   assert.equal((await f.request('chat-model-options?room=absent')).status,409);assert.equal(queried.length,1);

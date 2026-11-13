@@ -517,6 +517,7 @@ const CLIENT_BUILD = 2026111201;
       branchHistory.clear();
       sessionSwitchRev = -1;
       controlRevision = -1;
+      controlsReady = false;
       switchReady = false;
       sessionOff.clear();
       return true;
@@ -575,6 +576,7 @@ const CLIENT_BUILD = 2026111201;
     const switchListeners = new Set();
     /** Last confirmed value of the global switch; false until the Host answers. */
     let globalEnabled = false;
+    let controlsReady = false;
     let progressEnabled = false;
     const PROGRESS_WATCH = -1;
     const PROGRESS_PREFIX = '◈';
@@ -801,20 +803,12 @@ const CLIENT_BUILD = 2026111201;
     /** Installed by apply(); recomputes the chat takeover from both switches. */
     let refreshChatTakeover = () => {};
 
-    function refreshTakeover() {
-      refreshChatTakeover();
+    function refreshTakeover(recover = false) {
+      refreshChatTakeover(recover);
     }
 
-    /**
-     * Whether the page-level chat takeover should be installed.
-     *
-     * Registration is page-wide because `conversation.chat.node` is a keyed slot;
-     * the Web UI shows one Session at a time, so gating on the active Session is
-     * what makes "off" mean the official renderer comes back in full.
-     */
-    function chatTakeoverEnabled(global, sessionId, off) {
-      return global === true && (sessionId === undefined || off.get(sessionId) !== false);
-    }
+    /** Keep report tools once the Host has answered; PersonaStep gates body replacement separately. */
+    function reportToolsEnabled(ready) { return ready === true; }
 
     /** The Session whose header switch is currently mounted. */
     let activeSessionId;
@@ -892,10 +886,11 @@ const CLIENT_BUILD = 2026111201;
     }
 
     function setGlobalEnabled(value) {
-      if (globalEnabled === value) return;
-      globalEnabled = value;
+      const changed=!controlsReady||globalEnabled!==value;
+      controlsReady=true;globalEnabled=value;
+      if(!changed)return;
       for (const listener of globalListeners) listener();
-      refreshTakeover();
+      refreshTakeover(true);
     }
 
     function setProgressEnabled(value) {
@@ -1066,6 +1061,153 @@ const CLIENT_BUILD = 2026111201;
       useLayoutEffect(notifyWorkInput,[state,title]);
       return null;
     }
+    // BEGIN GENERATED FLOATING LAYOUT
+    function createFloatingLayout() {
+  const number=(value,fallback)=>Number.isFinite(value)?value:fallback;
+  const clamp=(value,min,max)=>Math.max(min,Math.min(value,max));
+  const area=value=>({left:number(value?.left,8),top:number(value?.top,52),
+    width:Math.max(1,number(value?.width,800)),height:Math.max(1,number(value?.height,600))});
+  const limits=(bounds,options)=>({width:Math.min(bounds.width,Math.max(1,number(options?.minWidth,280))),
+    height:Math.min(bounds.height,Math.max(1,number(options?.minHeight,240)))});
+  function fit(rect,view,options){
+    const b=area(view),min=limits(b,options);
+    const width=clamp(number(rect?.width,min.width),min.width,b.width),height=clamp(number(rect?.height,min.height),min.height,b.height);
+    return {left:clamp(number(rect?.left,b.left),b.left,b.left+b.width-width),
+      top:clamp(number(rect?.top,b.top),b.top,b.top+b.height-height),width,height};
+  }
+  function move(rect,dx,dy,view,options){
+    const start=fit(rect,view,options);
+    return fit({...start,left:start.left+number(dx,0),top:start.top+number(dy,0)},view,options);
+  }
+  function resize(rect,direction,dx,dy,view,options){
+    const b=area(view),min=limits(b,options),start=fit(rect,b,options),next={...start};
+    if(!['n','ne','e','se','s','sw','w','nw'].includes(direction))return next;
+    dx=number(dx,0);dy=number(dy,0);
+    if(direction.includes('e'))next.width=clamp(start.width+dx,min.width,b.left+b.width-start.left);
+    if(direction.includes('s'))next.height=clamp(start.height+dy,min.height,b.top+b.height-start.top);
+    if(direction.includes('w')){next.width=clamp(start.width-dx,min.width,start.left+start.width-b.left);next.left=start.left+start.width-next.width;}
+    if(direction.includes('n')){next.height=clamp(start.height-dy,min.height,start.top+start.height-b.top);next.top=start.top+start.height-next.height;}
+    return fit(next,b,options);
+  }
+  return {fit,move,resize};
+}
+    // END GENERATED FLOATING LAYOUT
+    const floatingLayout=createFloatingLayout(),floatingRects=new Map();
+    const keepFloatingRect=(id,value)=>{floatingRects.set(id,{...value});while(floatingRects.size>32)floatingRects.delete(floatingRects.keys().next().value);};
+    let floatingInteraction;
+    const floatingGeometryKeys=['position','inset','left','top','right','bottom','width','height','max-width','max-height','min-width','min-height','margin','transform'];
+    const floatingSnapshot=node=>floatingGeometryKeys.map(key=>[key,node.style.getPropertyValue(key),node.style.getPropertyPriority(key)]);
+    const restoreFloatingStyle=(node,saved)=>{for(const [key,value,priority] of saved)value?node.style.setProperty(key,value,priority):node.style.removeProperty(key);};
+    const applyFloatingRect=(node,rect)=>{Object.assign(node.style,{position:'fixed',inset:'auto',left:rect.left+'px',top:rect.top+'px',right:'auto',bottom:'auto',width:rect.width+'px',height:rect.height+'px',maxWidth:'none',maxHeight:'none',minWidth:0,minHeight:0,margin:0,transform:'none'});node.dataset.floatingCustom='true';};
+    const floatingView=topGap=>{const v=window.visualViewport,width=v?.width??window.innerWidth,height=v?.height??window.innerHeight;
+      const top=Math.min(topGap,Math.max(8,height-100));return{left:(v?.offsetLeft??0)+8,top:(v?.offsetTop??0)+top,width:Math.max(1,width-16),height:Math.max(1,height-top-8)};};
+    function useFloatingWindow({id,ref,getNode,active=true,wide=false,onWideChange,minWidth=280,minHeight=300,topGap=52}){
+      const [rect,setRect]=React.useState(()=>floatingRects.get(id)??null),[,refresh]=React.useState(0);
+      const owner=React.useRef({}),base=React.useRef(null),options=React.useRef(null);
+      options.current={id,ref,getNode,active,wide,onWideChange,minWidth,minHeight,topGap,rect};
+      const nodeOf=()=>options.current.getNode?.()??options.current.ref?.current;
+      const commit=value=>{keepFloatingRect(id,value);setRect(value);};
+      const reset=()=>{floatingInteraction?.owner===owner.current&&floatingInteraction.finish(true);floatingRects.delete(id);setRect(null);onWideChange?.(false);
+        const node=nodeOf();if(node&&base.current?.node===node){restoreFloatingStyle(node,base.current.style);delete node.dataset.floatingCustom;}};
+      useLayoutEffect(()=>setRect(floatingRects.get(id)??null),[id]);
+      useLayoutEffect(()=>{
+        const node=nodeOf();if(!active||!node)return;
+        base.current={node,style:floatingSnapshot(node)};node.dataset.floatingWindow=id;
+        const resize=()=>refresh(value=>value+1);
+        window.addEventListener('resize',resize);window.visualViewport?.addEventListener('resize',resize);window.visualViewport?.addEventListener('scroll',resize);
+        return()=>{if(floatingInteraction?.owner===owner.current)floatingInteraction.finish(false,true);
+          window.removeEventListener('resize',resize);window.visualViewport?.removeEventListener('resize',resize);window.visualViewport?.removeEventListener('scroll',resize);
+          restoreFloatingStyle(node,base.current.style);delete node.dataset.floatingWindow;delete node.dataset.floatingCustom;};
+      },[id,active]);
+      useLayoutEffect(()=>{
+        const node=nodeOf();if(!active||!node||base.current?.node!==node)return;
+        if(floatingInteraction?.owner===owner.current){applyFloatingRect(node,floatingLayout.fit(floatingInteraction.rect,floatingView(topGap),{minWidth,minHeight}));return;}
+        if(rect)applyFloatingRect(node,wide?floatingView(topGap):floatingLayout.fit(rect,floatingView(topGap),{minWidth,minHeight}));
+        else{restoreFloatingStyle(node,base.current.style);delete node.dataset.floatingCustom;}
+      });
+      const begin=(event,direction='move')=>{
+        if(!active||event.button!==0||event.isPrimary===false)return;
+        if(direction==='move'&&event.target.closest?.('button,input,textarea,select,a,summary,[role=button],[role=checkbox]'))return;
+        const node=nodeOf();if(!node)return;
+        event.preventDefault();event.stopPropagation();cancelChatMotion();floatingInteraction?.finish(true);
+        if(!node.isConnected||node!==nodeOf())return;
+        for(const animation of node.getAnimations?.()??[])if(animation.effect?.target===node)animation.cancel();
+        const origin=node.getBoundingClientRect(),before=floatingSnapshot(node),custom=node.dataset.floatingCustom;
+        let start={left:origin.left,top:origin.top,width:origin.width,height:origin.height};
+        if(wide&&rect&&direction==='move')start=floatingLayout.fit({...rect,left:event.clientX-(event.clientX-origin.left)/origin.width*rect.width,
+          top:event.clientY-Math.min(60,event.clientY-origin.top)},floatingView(topGap),{minWidth,minHeight});
+        const previous=rect,wasWide=wide,pointer=event.pointerId,target=event.currentTarget,doc=node.ownerDocument,view=doc.defaultView??window;
+        const x=event.clientX,y=event.clientY,body=doc.body.style,bodyStyle=['user-select','-webkit-user-select','cursor'].map(key=>[key,body.getPropertyValue(key),body.getPropertyPriority(key)]);
+        let moved=false;
+        const current={owner:owner.current,rect:start,finish};floatingInteraction=current;
+        node.dataset.floatingInteracting='true';
+        function finish(cancel,quiet=false){
+          if(floatingInteraction!==current)return;floatingInteraction=null;
+          delete node.dataset.floatingInteracting;
+          view.removeEventListener('pointermove',move,true);view.removeEventListener('pointerup',up,true);view.removeEventListener('pointercancel',cancelPointer,true);
+          view.removeEventListener('blur',cancelBlur);view.removeEventListener('keydown',key,true);target.removeEventListener('lostpointercapture',cancelBlur);
+          try{if(target.hasPointerCapture?.(pointer))target.releasePointerCapture(pointer);}catch{/* The surface may have been retired. */}
+          for(const [name,value,priority] of bodyStyle)value?body.setProperty(name,value,priority):body.removeProperty(name);
+          if(cancel){restoreFloatingStyle(node,before);if(custom)node.dataset.floatingCustom=custom;else delete node.dataset.floatingCustom;
+            if(moved&&!quiet){setRect(previous);options.current.onWideChange?.(wasWide);}}
+          else if(moved){if(quiet)keepFloatingRect(id,current.rect);else commit(current.rect);}
+        }
+        function move(e){if(e.pointerId!==pointer)return;const dx=e.clientX-x,dy=e.clientY-y;if(!moved&&direction==='move'&&Math.abs(dx)+Math.abs(dy)<2)return;
+          const o=options.current,bounds=floatingView(o.topGap),limits={minWidth:o.minWidth,minHeight:o.minHeight};
+          current.rect=direction==='move'?floatingLayout.move(start,dx,dy,bounds,limits):floatingLayout.resize(start,direction,dx,dy,bounds,limits);
+          if(!moved){moved=true;setRect(current.rect);o.onWideChange?.(false);}applyFloatingRect(node,current.rect);e.preventDefault();}
+        function up(e){if(e.pointerId===pointer)finish(false);}
+        function cancelPointer(e){if(e.pointerId===pointer)finish(true);}
+        function cancelBlur(){finish(true);}
+        function key(e){if(e.key==='Escape'&&!e.isComposing){e.preventDefault();e.stopPropagation();finish(true);}}
+        body.setProperty('user-select','none');body.setProperty('-webkit-user-select','none');body.setProperty('cursor',direction==='move'?'grabbing':direction+'-resize');
+        view.addEventListener('pointermove',move,true);view.addEventListener('pointerup',up,true);view.addEventListener('pointercancel',cancelPointer,true);
+        view.addEventListener('blur',cancelBlur);view.addEventListener('keydown',key,true);target.addEventListener('lostpointercapture',cancelBlur);
+        try{target.setPointerCapture?.(pointer);}catch{/* Window listeners also cover older pointer implementations. */}
+      };
+      const keyboard=event=>{
+        if(event.isComposing)return;
+        if(event.key==='Home'){event.preventDefault();event.stopPropagation();reset();return;}
+        if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)||floatingInteraction)return;
+        event.preventDefault();event.stopPropagation();cancelChatMotion();const node=nodeOf();if(!node)return;
+        for(const animation of node.getAnimations?.()??[])if(animation.effect?.target===node)animation.cancel();
+        const r=node.getBoundingClientRect(),start={left:r.left,top:r.top,width:r.width,height:r.height},step=event.shiftKey?1:10;
+        const dx=event.key==='ArrowRight'?step:event.key==='ArrowLeft'?-step:0,dy=event.key==='ArrowDown'?step:event.key==='ArrowUp'?-step:0;
+        const next=(event.ctrlKey?floatingLayout.move:floatingLayout.resize)(start,...(event.ctrlKey?[dx,dy]:['se',dx,dy]),floatingView(topGap),{minWidth,minHeight});
+        onWideChange?.(false);commit(next);applyFloatingRect(node,next);
+      };
+      return {begin,keyboard,reset,dragProps:{'data-floating-drag':'',title:'拖动标题栏移动窗口；拖动边缘调整大小；双击空白标题栏恢复默认',
+        onPointerDown:event=>begin(event),onDoubleClick:event=>{if(!event.target.closest?.('button,input,textarea,select,a,summary'))reset();}}};
+    }
+    function FloatingWindowHandles({controls,label}){
+      return h(React.Fragment,null,...['n','ne','e','se','s','sw','w','nw'].map(edge=>h(edge==='se'?'button':'span',{key:edge,
+        type:edge==='se'?'button':undefined,className:'dsh-floating-resize','data-edge':edge,'aria-hidden':edge!=='se'||undefined,
+        'aria-label':edge==='se'?'调整'+label+'窗口大小':undefined,title:edge==='se'?'拖动调整大小；方向键调整，Ctrl+方向键移动，Home恢复默认':undefined,
+        onPointerDown:event=>controls.begin(event,edge),onKeyDown:edge==='se'?controls.keyboard:undefined})));
+    }
+    const FLOATING_WINDOW_CSS=`
+      [data-floating-custom],[data-floating-interacting]{transition:none!important}
+      .dsh-persona-chat[data-floating-custom]{container-type:inline-size;container-name:dsh-floating-chat}.dsh-report-reading[data-floating-custom]{container-type:inline-size;container-name:dsh-floating-report}
+      @container dsh-floating-chat (max-width:364px){
+        .dsh-persona-chat .dsh-persona-chat-top[data-room=true]{grid-template-columns:40px minmax(0,1fr) repeat(3,30px);gap:2px 4px;padding:8px 10px 7px}
+        .dsh-persona-chat-top[data-room=true] .dsh-persona-room-avatar-display{grid-column:1;grid-row:1/span 2}.dsh-persona-chat-top[data-room=true] :is(.dsh-persona-chat-room-heading,.dsh-persona-chat-actions){display:contents}
+        .dsh-persona-chat-top[data-room=true] .dsh-persona-chat-room-title{grid-column:2;grid-row:1}.dsh-persona-chat-top[data-room=true] .dsh-persona-chat-room-tools{grid-column:2;grid-row:2}
+        .dsh-persona-chat-top[data-room=true] .dsh-persona-chat-actions button{padding:1px;min-height:24px;font-size:11px;grid-row:1}.dsh-persona-chat-top[data-room=true] .dsh-persona-chat-actions button:nth-child(-n+2){grid-row:2;min-height:20px;border:none;color:var(--chat-muted)}
+        .dsh-persona-chat-actions button:nth-child(3){grid-column:3}.dsh-persona-chat-actions button:is(:nth-child(1),:nth-child(4)){grid-column:4}.dsh-persona-chat-actions button:is(:nth-child(2),:nth-child(5)){grid-column:5}
+        .dsh-persona-chat-compose-row small{display:none}.dsh-persona-chat-compose-row button.dsh-persona-chat-compose-expand{margin-left:auto}
+      }
+      @container dsh-floating-chat (max-width:324px){.dsh-persona-chat-compose-row{gap:5px}.dsh-persona-chat-compose-row>button{flex-shrink:0;padding:3px 6px;white-space:nowrap}.dsh-persona-chat-compose-row>label{font-size:10px;gap:3px}.dsh-persona-chat-compose-row .dsh-persona-chat-compose-expand{width:24px;min-width:24px}}
+      @container dsh-floating-report (max-width:586px){.rr-head{padding:10px!important;gap:5px!important}.rr-head-title h2{font-size:13px!important}.rr-head-title small{font-size:9px!important}.rr-head-actions{gap:3px!important}.rr-head-actions button{font-size:10px!important;padding:4px 6px!important}.rr-toolbar{padding:9px 10px!important;gap:4px!important}.rr-content{padding:23px 17px 30px!important}.rr-footer{padding:8px 10px!important}}
+      [data-floating-drag]{cursor:grab;touch-action:none}[data-floating-drag] :is(button,input,select,a,summary){touch-action:auto}
+      .dsh-floating-resize{position:absolute;display:block;margin:0!important;padding:0!important;min-width:0!important;min-height:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;z-index:5;touch-action:none}
+      .dsh-floating-resize[data-edge=n],.dsh-floating-resize[data-edge=s]{left:14px;right:14px;height:5px;cursor:ns-resize}.dsh-floating-resize[data-edge=n]{top:0}.dsh-floating-resize[data-edge=s]{bottom:0}
+      .dsh-floating-resize[data-edge=e],.dsh-floating-resize[data-edge=w]{top:14px;bottom:14px;width:5px;cursor:ew-resize}.dsh-floating-resize[data-edge=e]{right:0}.dsh-floating-resize[data-edge=w]{left:0}
+      .dsh-floating-resize:is([data-edge=ne],[data-edge=se],[data-edge=sw],[data-edge=nw]){width:14px;height:14px}.dsh-floating-resize[data-edge=ne]{top:0;right:0;cursor:nesw-resize}.dsh-floating-resize[data-edge=nw]{top:0;left:0;cursor:nwse-resize}.dsh-floating-resize[data-edge=sw]{bottom:0;left:0;cursor:nesw-resize}.dsh-floating-resize[data-edge=se]{right:0;bottom:0;cursor:nwse-resize}
+      .dsh-floating-resize[data-edge=se]:after{content:'';position:absolute;right:3px;bottom:3px;width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;opacity:.3}.dsh-floating-resize[data-edge=se]:focus-visible{outline:2px solid var(--chat-brand,var(--rr-accent,var(--dsw-alias-brand-primary,#4f6cdb)))!important;outline-offset:-2px}
+      .dsh-persona-chat[data-floating-custom] .dsh-persona-chat-thread-wrap{min-height:0}
+      .dsh-persona-action[data-floating-custom]>.dsh-persona-action-surface{height:100%;max-height:100%;min-height:0}
+      [data-floating-custom]>.persona-shell-comparison-surface{width:100%;height:100%;max-height:100%;min-height:0}
+    `;
     const chatRoomLayout = { wide:false, composeExpanded:false };
     const chatRetryIds = new Map();
     const chatAnimatedAttempts = new Set();
@@ -1185,6 +1327,18 @@ const CLIENT_BUILD = 2026111201;
     };
     const chatNonce = () => window.crypto?.randomUUID?.() ?? `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     const emptyChatDraft = () => ({ text: '', requestId: chatNonce() });
+    // Unsent bytes stay in this client session; committed messages hold Host attachment references.
+    const chatImageDrafts=new Map(),chatImageSends=new Map();
+    const rememberChatImages=(key,items)=>{if(items.length)chatImageDrafts.set(key,items);else chatImageDrafts.delete(key);
+      while(chatImageDrafts.size>8)chatImageDrafts.delete(chatImageDrafts.keys().next().value);};
+    const chatImageType=file=>file?.type&&file.type!=='application/octet-stream'?file.type:
+      ({png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',gif:'image/gif'}[file?.name?.split('.').at(-1)?.toLowerCase()]??'');
+    const chatTransferImages=transfer=>{
+      const files=Array.from(transfer?.files??[]);
+      return (files.length?files:Array.from(transfer?.items??[]).filter(item=>item.kind==='file').map(item=>item.getAsFile?.()).filter(Boolean))
+        .filter(file=>chatImageType(file).startsWith('image/'));
+    };
+    const chatTransferHasFiles=transfer=>Array.from(transfer?.types??[]).includes('Files')||Array.from(transfer?.items??[]).some(item=>item.kind==='file')||!!transfer?.files?.length;
     const chatUi = new Map(),chatUiListeners=new Set(),chatUiDurableDrafts=new Map(),chatUiDirtyDrafts=new Map(),chatUiIssues=new Map(),chatUiFlushers=new Map();
     let chatUiNamespace,chatUiInstance,chatUiScope,chatUiReadFailed=false;
     const chatUiIssue=(id,text)=>{if((chatUiIssues.get(id)??'')===text)return;if(text)chatUiIssues.set(id,text);else chatUiIssues.delete(id);
@@ -1302,6 +1456,10 @@ const CLIENT_BUILD = 2026111201;
       return chatDrafts.get(room.id);
     }
     const chatErrorText = (code) => ({
+      'invalid-chat-images':'图片格式或大小不符合要求。每条最多 3 张，单张 4 MiB、合计 8 MiB，支持 PNG、JPEG、WebP 和 GIF。',
+      'chat-image-upload-failed':'图片未保存成功，图片和输入已保留，请更换图片或重试。',
+      'chat-images-unavailable':'当前宿主未提供可用的图片附件服务，请升级宿主，或仅发送文字。图片仍保留。',
+      'chat-vision-unavailable':'当前模型明确不支持图片。请换用视觉模型，或仅发送文字；图片仍保留。',
       'storage-not-ready': '聊天记录暂时无法保存，请稍后重试。输入仍保留。',
       'chat-save-failed': '保存没有完成，请重试。输入仍保留。',
       'chat-conflict': '聊天记录刚有更新，已重新读取，请核对后再操作。',
@@ -1334,6 +1492,8 @@ const CLIENT_BUILD = 2026111201;
       return typeof issue?.code==='string'&&Object.hasOwn(defaults,issue.code)?defaults[issue.code]:'调度未完成';
     };
     const chatReplyStateText = (turn, running) => turn.status === 'pending' && running ? '输入中…' : ({
+      vision:'这次模型没有成功接收图片。请换用支持视觉的模型后重试；图片仍在本条消息中。',
+      'image-unavailable':'本条图片暂时无法读取，原消息已保留。请恢复附件服务后重试。',
       format: '回复格式暂未识别，消息已保留，可以重试。',
       'too-long': '回复过长，未保存不完整内容，可以重试。',
       length: '模型回复达到长度限制，消息已保留，可以重试。',
@@ -1434,6 +1594,15 @@ const CLIENT_BUILD = 2026111201;
       .dsh-persona-chat-settings-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;box-sizing:border-box;padding:4px 14px 14px;background:var(--chat-bg,var(--dsw-alias-bg-layer-1,#fff))}
     `;
     const ROOM_CHAT_CSS = `
+      .dsh-persona-chat-compose{position:relative}
+      .dsh-persona-chat-compose[data-image-dragging=true]{outline:2px dashed var(--chat-brand);outline-offset:-4px;background:color-mix(in srgb,var(--chat-brand) 7%,var(--chat-bg))}.dsh-persona-chat-drop-hint{position:absolute;inset:0;z-index:1;display:grid;place-items:center;pointer-events:none;background:color-mix(in srgb,var(--chat-bg) 90%,transparent);border-radius:8px;font-size:13px;color:var(--chat-brand)}
+      .dsh-persona-room-avatar-display{position:relative}.dsh-persona-chat-member-activity{position:absolute;right:-2px;top:-2px;display:flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:var(--chat-bg);pointer-events:none}.dsh-persona-chat-member-activity i{display:block;width:6px;height:6px;border-radius:50%;background:#299b66}.dsh-persona-chat-member-activity[data-state=listening] i{animation:dsh-chat-listening 1.8s ease-in-out infinite}.dsh-persona-chat-member-activity[data-state=typing]{right:-6px}.dsh-persona-chat-member-activity[data-state=typing] i{width:3px;height:3px;opacity:.25;animation:dsh-chat-member-typing 1.2s ease-in-out infinite}.dsh-persona-chat-member-activity[data-state=typing] i:nth-child(2){animation-delay:.18s}.dsh-persona-chat-member-activity[data-state=typing] i:nth-child(3){animation-delay:.36s}
+      @keyframes dsh-chat-listening{0%,100%{opacity:.4}50%{opacity:1}}@keyframes dsh-chat-member-typing{0%,65%,100%{opacity:.25}20%,45%{opacity:1}}
+      @media(prefers-reduced-motion:reduce){.dsh-persona-chat-member-activity i{animation:none!important;opacity:1!important}}
+      @media(max-width:340px){.dsh-persona-chat-compose-row{gap:5px}.dsh-persona-chat-compose-row>button{flex-shrink:0;padding:3px 6px;white-space:nowrap}.dsh-persona-chat-compose-row>label{font-size:10px;gap:3px}.dsh-persona-chat-compose-row .dsh-persona-chat-compose-expand{width:24px;min-width:24px}}
+      .dsh-persona-chat-images{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;max-width:100%}.dsh-persona-chat-images a{display:block;max-width:min(210px,100%);line-height:0}.dsh-persona-chat-images img{display:block;max-width:100%;max-height:150px;object-fit:contain;border-radius:7px}.dsh-persona-chat-images>span{font-size:11px;color:var(--chat-muted)}
+      .dsh-persona-chat-image-drafts{display:flex;gap:7px;flex:none;overflow-x:auto;padding:3px 3px 5px}.dsh-persona-chat-image-drafts>div{position:relative;flex:none;width:68px;height:60px}.dsh-persona-chat-image-drafts img{width:68px;height:60px;object-fit:cover;border-radius:7px;border:1px solid var(--chat-border)}.dsh-persona-chat-image-drafts button{position:absolute;top:-3px;right:-3px;min-height:22px!important;width:22px;padding:0!important;border-radius:50%!important;font-size:15px!important}
+      .dsh-persona-chat-image-note{flex:none;font-size:11px;color:var(--chat-muted);line-height:1.7;overflow-wrap:anywhere}.dsh-persona-chat-image-note button{margin-left:6px;min-height:25px;font-size:11px}
       .dsh-persona-chat-dock{--chat-bg:var(--dsw-alias-bg-layer-1,#fff);--chat-border:var(--dsw-alias-border-l1,#d6dfe9);--chat-soft:var(--dsw-alias-bg-layer-2,#f3f5f8);--chat-muted:var(--dsw-alias-label-secondary,#65758a);--chat-text:var(--dsw-alias-label-primary,#203044);--chat-brand:var(--dsw-alias-brand-primary,#3976c3);position:fixed;z-index:1100;right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));display:flex;align-items:center;gap:2px;max-width:calc(100vw - 32px);padding:3px 4px 3px 3px;border:1px solid var(--chat-border);border-radius:18px;background:var(--chat-bg);box-shadow:0 3px 16px #0002;color:var(--chat-text);font:12px/1.35 system-ui,sans-serif}
       .dsh-persona-chat-dock button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:2px 6px;border:0;border-radius:12px;background:transparent;color:inherit;cursor:pointer;font:inherit}.dsh-persona-chat-dock button:hover{background:var(--chat-soft)}.dsh-persona-chat-dock button:focus-visible{outline:2px solid var(--chat-brand);outline-offset:1px}.dsh-persona-chat-dock button:first-of-type{padding-left:2px;min-height:36px}.dsh-persona-chat-dock button:last-of-type{color:var(--chat-muted);width:24px;height:28px;font-size:16px}.dsh-persona-chat-dock .dsh-persona-room-avatar{width:30px;height:30px}
       .dsh-persona-chat-dock-count{min-width:16px;box-sizing:border-box;padding:2px 4px;border-radius:10px;text-align:center;background:var(--chat-brand);color:#fff;font:600 10px/1.2 system-ui,sans-serif;font-variant-numeric:tabular-nums}.dsh-persona-chat-dock-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
@@ -1752,7 +1921,7 @@ const CLIENT_BUILD = 2026111201;
         h('div',{className:'dsh-persona-chat-quote-actions'},onJump?h('button',{type:'button',disabled:!available,'aria-label':'查看引用原消息',title:available?'定位到原消息':'原消息暂不可用',onClick:onJump},'↗'):null,
           draft?h('button',{type:'button','aria-label':'取消引用',title:'取消引用 · Esc',onClick:onCancel},'×'):null));
     }
-    function ChatReplyBubbles({turn,frame,avatar,colorStyle,onProgress,onPresented,latest=true,running=false,showSpeaker=false,onQuote}) {
+    function ChatReplyBubbles({turn,frame,avatar,colorStyle,onProgress,onPresented,latest=true,running=false,showSpeaker=false,showTyping=true,onQuote}) {
       const animate=latest&&(chatAnimatedAttempts.has(turn.attemptId)||turn.status==='pending');
       const [entrance]=React.useState(()=>animate&&!chatSurfaceMotion);
       const messages=turn.status==='ready'?turn.assistant.map(text=>({text,complete:true}))
@@ -1780,7 +1949,7 @@ const CLIENT_BUILD = 2026111201;
           showSpeaker&&position===0?h('small',{className:'dsh-persona-chat-speaker'},turn.speakerName):null,
           h('div',{className:'dsh-persona-chat-body'},renderMarkdown(message.text,turn.status==='pending'&&!message.complete,{margin:0}))),
           onQuote&&turn.status==='ready'?h('button',{type:'button',className:'dsh-persona-chat-quote-action','aria-label':'引用'+turn.speakerName+'的第'+(index+1)+'条消息',title:'引用这句；回复对象仍按 @ 选择',onClick:()=>onQuote(turn,index,message.text)},'↩'):null)),
-        typing ? h('div', { key:visible.length, className:'dsh-persona-chat-message dsh-persona-chat-typing', 'data-user':'false',
+        typing&&showTyping ? h('div', { key:visible.length, className:'dsh-persona-chat-message dsh-persona-chat-typing', 'data-user':'false',
           'data-chat-persona':turn.recipientId,style:colorStyle,
           'data-chat-continuation':displayed.length>0||undefined,role:'status','aria-label':turn.status==='pending'?'角色输入中':'还有后续消息','aria-live':'polite','aria-atomic':true }, portrait(displayed.length>0),
           h('div',{className:'dsh-persona-chat-bubble'},turn.status==='pending'?'输入中':'',h('span',{className:'dsh-persona-chat-typing-dots','aria-hidden':true},h('span',null,'...')))) : null);
@@ -1805,12 +1974,67 @@ const CLIENT_BUILD = 2026111201;
       try{const zone=Intl.DateTimeFormat().resolvedOptions().timeZone;if(typeof zone==='string'&&zone.length>0&&zone.length<=80&&!/[\s\u0000-\u001f\u007f]/u.test(zone))value.timeZone=zone;}catch{}
       return Object.keys(value).length?value:undefined;
     }
+    function ChatImages({images,roomId,generation=0}){
+      const [failed,setFailed]=React.useState({});
+      if(!Array.isArray(images)||!images.length||!roomId)return null;
+      return h('div',{className:'dsh-persona-chat-images','aria-label':'用户附图'},...images.map((image,index)=>{
+        const src=ROUTE+'/chat-image?room='+encodeURIComponent(roomId)+'&generation='+generation+'&id='+encodeURIComponent(image.attachmentId);
+        return failed[image.attachmentId]?h('span',{key:image.attachmentId+':'+index,role:'status'},'图片暂时无法读取'):
+          h('a',{key:image.attachmentId+':'+index,href:src,target:'_blank',rel:'noopener noreferrer','aria-label':'查看图片 '+(index+1)},
+            h('img',{src,alt:image.name||'用户图片 '+(index+1),loading:'lazy',onError:()=>setFailed(old=>({...old,[image.attachmentId]:true}))}));
+      }));
+    }
     function chatUserParts(turn){
       const parts=turn?.userParts;
       if(Array.isArray(parts)&&!parts.length)return[];
       return Array.isArray(parts)&&parts.length&&parts.every(part=>part&&chatUiId(part.id)&&typeof part.text==='string'&&part.text.length<=4000&&Number.isFinite(part.at))
         ?parts:[{id:turn?.messageId,text:turn?.user??'',at:turn?.at}];
     }
+    const chatSupportRequestPrefixes={research:'请先调查公开资料，附上来源，再回答下面的问题：\n',reason:'请使用深入推演，分析下面的问题与关键条件：\n'};
+    function ChatSupportMenu({id,capabilities,disabled,busy,notice,onToggle,onInsert,onClose}){
+      const known=typeof capabilities?.research==='boolean'&&typeof capabilities?.reason==='boolean';
+      return h('section',{id,'aria-label':'聊天室子代理能力','aria-busy':busy,style:{padding:'8px 10px',marginBottom:7,border:'1px solid var(--chat-border)',borderRadius:8,background:'var(--chat-soft)',fontSize:12,maxHeight:'min(240px,30vh)',overflowY:'auto',overflowWrap:'anywhere'}},
+        h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}},h('strong',null,'子代理辅助'),h('button',{type:'button','aria-label':'收起子代理入口',onClick:onClose},'收起')),
+        h('p',{style:{margin:'4px 0 7px',fontSize:11,color:'var(--chat-muted)'}},'让成员先查资料或深入分析。请求填入草稿，可修改后发送；打开这里不会调用模型。'),
+        h('div',{style:{display:'flex',flexWrap:'wrap',gap:8}},...['research','reason'].map(template=>{
+          const name=template==='research'?'调查资料':'深入推演',enabled=capabilities?.[template]===true,available=template!=='research'||capabilities?.searchService===true;
+          return h('div',{key:template,style:{flex:'1 1 180px',minWidth:0,padding:7,border:'1px solid var(--chat-border)',borderRadius:6}},
+            h('strong',null,name),h('p',{style:{margin:'3px 0',fontSize:11}},template==='research'?'联网查公开网页，带回来源。':'用思考模式分析条件与取舍，不联网。'),
+            h('label',{style:{display:'flex',alignItems:'center',gap:5,fontSize:11,margin:'5px 0'}},h('input',{type:'checkbox',checked:enabled,disabled:disabled||busy||!known||!available&&!enabled,'aria-label':'允许按需'+name,onChange:e=>void onToggle(template,e.target.checked)}),'允许按需调用'),
+            !available?h('p',{style:{margin:'3px 0',fontSize:11}},'当前宿主没有搜索服务，暂不能调查资料。'):null,
+            h('button',{type:'button',disabled:disabled||busy||!known||!available,onClick:()=>void onInsert(template)},(enabled?'填入':'启用并填入')+(template==='research'?'调查请求':'推演请求')));
+        })),
+        h('p',{style:{margin:'6px 0 0',fontSize:11,color:'var(--chat-muted)'}},'开关对所有聊天室生效，开启后也可由判断线程按需使用。更多模型配置见插件设置 → 聊天室。'),
+        !known?h('p',{role:'status',style:{margin:'5px 0 0'}},'辅助能力状态暂未就绪，请稍后重试。'):null,
+        busy?h('p',{role:'status',style:{margin:'5px 0 0'}},'正在保存辅助设置…'):null,
+        notice?h('p',{role:'status',style:{margin:'5px 0 0'}},notice):null);
+    }
+    function ChatSupportStatus({tasks=[],onStop,minimized=false}){
+      const task=tasks.find(t=>t.status==='running')??tasks.at(-1),[,tick]=React.useState(0);
+      const received=React.useRef({id:null,elapsed:0,at:0});
+      if(task&&(received.current.id!==task.id||received.current.elapsed!==task.elapsedMs))received.current={id:task.id,elapsed:task.elapsedMs??0,at:Date.now()};
+      React.useEffect(()=>{if(!task||task.status!=='running'||minimized)return;const timer=setInterval(()=>tick(v=>v+1),1000);return()=>clearInterval(timer);},[task?.id,task?.status,minimized]);
+      if(!task)return null;
+      const name=task.template==='research'?'调查资料':'深入推演',running=task.status==='running';
+      const stages={preparing:'准备任务',thinking:'整理检索方向',searching:'正在搜索',reading:'正在阅读网页',reasoning:'正在深入推演'};
+      const terminal={completed:'已完成',partial:'部分完成',failed:'未完成',cancelled:'已停止',interrupted:'上次任务已中断'};
+      const errors={timeout:'已到时间上限',budget:'已到调用上限',format:'结果格式未通过检查',capacity:'其他辅助任务正在运行',unavailable:'模型、搜索或网络暂不可用',
+        stale:'原话或参考已变化',cancelled:'已停止',interrupted:'没有自动重跑', 'save-failed':'任务记录暂未保存','thinking-unavailable':'当前模型无法启用已声明的思考模式，请在设置中选择支持思考的推演模型。'};
+      const elapsed=Math.max(0,(received.current.elapsed??0)+(running?Date.now()-received.current.at:0));
+      return h('section',{className:'dsh-persona-support', 'aria-label':'聊天室辅助任务',style:{flex:'none',margin:'4px 12px',padding:'7px 9px',border:'1px solid var(--chat-border,#dce3eb)',borderRadius:8,fontSize:11,color:'var(--chat-muted)',overflowWrap:'anywhere'}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:'4px 8px',flexWrap:'wrap'}},
+          h('span',{role:'status','aria-live':'polite'},(task.actorName?task.actorName+' · ':'')+name+' · '+(running?stages[task.stage]??'进行中':terminal[task.status]??'未完成')),
+          h('span',{'aria-hidden':true},Math.floor(elapsed/1000)+' 秒'),
+          running?h('button',{type:'button',onClick:()=>onStop(task.id),'aria-label':'停止'+name,style:{marginInlineStart:'auto',font:'inherit',padding:'2px 7px',cursor:'pointer'}},'停止'):null),
+        task.error?h('p',{style:{margin:'3px 0 0'}},errors[task.error]??'本次任务未完整完成；不会当作已经查明。'):null,
+        h('details',null,h('summary',{style:{cursor:'pointer',marginTop:3}},'任务详情'),
+          h('p',{style:{margin:'4px 0'}},task.goal),
+          h('p',{style:{margin:'4px 0'}},task.countsIncomplete?'上次任务中断，计数可能未完整保存；不会自动重跑。':'模型请求 '+(task.counts?.calls??0)+' / '+(task.limits?.calls??4)
+            +(task.template==='research'?' · 搜索 '+(task.counts?.searches??0)+' / 3 · 阅读 '+(task.counts?.reads??0)+' / 5':' · 未联网')),
+          task.model?h('p',{style:{margin:'4px 0'}},'模型：'+task.model.model+(task.model.provider?' · '+task.model.provider:'')+(task.model.thinking?' · 思考：'+task.model.thinking:'')):null,
+          ...(task.sources??[]).filter(s=>typeof s.url==='string'&&/^https:\/\//u.test(s.url)).map((source,i)=>h('p',{key:i,style:{margin:'4px 0'}},h('a',{href:source.url,target:'_blank',rel:'noopener noreferrer'},source.title||source.url)))));
+    }
+
     function SlowChatStatus({data,minimized}){
       const [clock,setClock]=React.useState(Date.now()),[visible,setVisible]=React.useState(document.visibilityState!=='hidden');
       const anchor=React.useRef({id:null,elapsed:0,at:Date.now()});
@@ -1835,7 +2059,18 @@ const CLIENT_BUILD = 2026111201;
       const live=useChatLive(turn.recipientId,turn,instance,onFinish,roomId);
       const silent=live.frame?.attemptId===turn.attemptId&&live.frame.status==='silent';
       useLayoutEffect(()=>{if(silent)onSilent?.(turn);},[silent,turn.attemptId]);
-      return held||silent?null:h(ChatReplyBubbles,{...props,turn,running:running&&(live.frame?live.frame.status==='streaming':started),frame:live.frame});
+      return held||silent?null:h(ChatReplyBubbles,{...props,turn,showTyping:!roomId,running:running&&(live.frame?live.frame.status==='streaming':started),frame:live.frame});
+    }
+    function chatMemberStatus(data,id){
+      const state=data?.running&&data.memberActivity?.find(item=>item.id===id)?.state;
+      if(!['listening','typing'].includes(state))return null;
+      const text=state==='typing'?'输入中':'在听',elapsed=Number.isFinite(data.roundElapsedMs)?' · 本轮 '+Math.floor(Math.max(0,data.roundElapsedMs)/1000)+' 秒':'';
+      const model=typeof data.roundModel?.model==='string'?' · 模型 '+data.roundModel.model:'';
+      return {state,text,detail:text+elapsed+model};
+    }
+    function ChatMemberActivity({status,name}){
+      return status?h('span',{className:'dsh-persona-chat-member-activity','data-state':status.state,role:'status','aria-live':'polite','aria-label':name+'：'+status.text,title:status.detail},
+        ...Array.from({length:status.state==='typing'?3:1},(_,index)=>h('i',{key:index,'aria-hidden':true}))):null;
     }
     function RoomAvatar({ memberIds = [], contacts = [] }) {
       const count=memberIds.length,visible=memberIds.slice(0,count>4?3:4);
@@ -1852,7 +2087,7 @@ const CLIENT_BUILD = 2026111201;
               color:'var(--chat-text)',fontSize:'var(--room-avatar-letter)'}}));}),
         count>4?h('span',{className:'dsh-persona-room-avatar-tile dsh-persona-room-avatar-more','aria-hidden':true,style:position(3)},'+'+(count-3)):null);
     }
-    function RoomRecipient({ contacts, memberIds, value, disabled, onChange }) {
+    function RoomRecipient({ contacts, memberIds, value, disabled, onChange,activityData }) {
       const root=React.useRef(null);
       if(memberIds.length<2)return null;
       const targets=value.filter(id=>memberIds.includes(id)&&contacts.some(p=>p.id===id&&!p.archived));
@@ -1865,13 +2100,13 @@ const CLIENT_BUILD = 2026111201;
       }},
         !targets.length?h('small',{style:{fontSize:11,color:'var(--chat-muted)',whiteSpace:'nowrap'}},'发给房间'):null,
         ...memberIds.map(id=>{const person=contacts.find(p=>p.id===id),selected=targets.includes(id);
-        const order=selected&&targets.length>1?targets.indexOf(id)+1:undefined;
+        const order=selected&&targets.length>1?targets.indexOf(id)+1:undefined,status=chatMemberStatus(activityData,id);
         const hint=person?.archived?'这位角色已移除':selected?targets.indexOf(id)===0?'优先回应，点击取消 @'+person.name:'第 '+order+' 位关注对象，点击取消 @'+person.name:'同时 @'+(person?.name??'角色');
         return h('button',{
         key:id,type:'button',role:'checkbox',className:'dsh-persona-chat-recipient-option','aria-label':person?.name??'已移除的人格',
-        'aria-checked':selected,'aria-description':hint,disabled:disabled||!person||person.archived,
-        title:(person?.name??'已移除的人格')+' · '+hint,onClick:()=>{const next=selected?targets.filter(p=>p!==id):[...targets,id];void onChange(next);}},
-        h('span',{className:'dsh-persona-chat-recipient-portrait','data-order':order},h(PersonaAvatar,{id,name:person?.name??'已移除的人格',src:person?.avatar,className:'dsh-persona-chat-avatar'})),
+        'aria-checked':selected,'aria-description':hint+(status?' · '+status.text:''),disabled:disabled||!person||person.archived,
+        title:(person?.name??'已移除的人格')+' · '+hint+(status?' · '+status.detail:''),onClick:()=>{const next=selected?targets.filter(p=>p!==id):[...targets,id];void onChange(next);}},
+        h('span',{className:'dsh-persona-chat-recipient-portrait','data-order':order},h(PersonaAvatar,{id,name:person?.name??'已移除的人格',src:person?.avatar,className:'dsh-persona-chat-avatar'}),h(ChatMemberActivity,{status,name:person?.name??'角色'})),
         h('span',null,((id==='大肥鱼（默认）'&&person?.name==='大肥鱼（默认）')?'大肥鱼':(id==='鲸鲸（实验性）'&&person?.name==='小肥鱼（实验性）')?'小肥鱼':person?.name??'已移除的人格')+(person?.archived?'（已移除）':'')));}));
     }
     function roomReferenceHint(context, foreground) {
@@ -2081,6 +2316,7 @@ const CLIENT_BUILD = 2026111201;
       const [notice,setNotice]=React.useState(''),[busy,setBusy]=React.useState(false),[name,setName]=React.useState(''),[members,setMembers]=React.useState([]),[deleting,setDeleting]=React.useState(false);
       const [search,setSearch]=React.useState('');
       const openingSurface=React.useRef(null);
+      const openingFloating=useFloatingWindow({id:'chat',ref:openingSurface,active:!(roomId&&data?.room&&data.chatSchema===3&&data.discussionVersion===2),wide:chatRoomLayout.wide,onWideChange:value=>{chatRoomLayout.wide=value;},minHeight:360});
       // The loading surface already represents this opening. Replacing its content must not restart the fade.
       useLayoutEffect(()=>enterChatSurface(openingSurface.current),[]);
       const lifetime=React.useRef({live:true,sequence:0,busy:false,readAbort:null,needsFirstRoom:true}),selected=React.useRef(null),creation=React.useRef(chatNonce()),editVersion=React.useRef(0);
@@ -2166,8 +2402,9 @@ const CLIENT_BUILD = 2026111201;
       if(roomId&&room&&data.chatSchema===3&&data.discussionVersion===2)return h(PersonaChatWindow,{key:roomId,roomId,initialState:data,roomBusy:busy,sessionId:chatForegroundSession??sessionId,conversation,onClose,animateEntrance:false,
         roomPanel:panelView,onDismissPanel:()=>setPanel(null),onOpenRooms:openRooms,onOpenMembers:openEdit,
         onRoomState:value=>{if(lifetime.current.live&&value.room?.id===selected.current)setData(value);},onRoomMissing:()=>{selected.current=null;setRoomId(null);setPanel('rooms');void load(false);}});
-      return h('section',{ref:openingSurface,className:'dsh-persona-chat','data-wide':String(chatRoomLayout.wide),role:'dialog','aria-label':'聊天室',onKeyDown:e=>{if(e.key==='Escape'&&!e.nativeEvent?.isComposing){e.stopPropagation();if(panel)setPanel(null);else onClose();}}},h('style',null,CHAT_CSS,ROOM_CHAT_CSS),
-        h('header',{style:{display:'flex',justifyContent:'space-between',padding:'12px'}},h('strong',null,'聊天室'),h('button',{type:'button','aria-label':'关闭聊天室',onClick:onClose},'关闭')),
+      return h('section',{ref:openingSurface,className:'dsh-persona-chat','data-wide':String(chatRoomLayout.wide),role:'dialog','aria-label':'聊天室',onKeyDown:e=>{if(e.key==='Escape'&&!e.nativeEvent?.isComposing){e.stopPropagation();if(panel)setPanel(null);else onClose();}}},h('style',null,CHAT_CSS,ROOM_CHAT_CSS,FLOATING_WINDOW_CSS),
+        h(FloatingWindowHandles,{controls:openingFloating,label:'聊天室'}),
+        h('header',{...openingFloating.dragProps,style:{display:'flex',justifyContent:'space-between',padding:'12px'}},h('strong',null,'聊天室'),h('button',{type:'button','aria-label':'关闭聊天室',onClick:onClose},'关闭')),
         h('div',{className:'dsh-persona-chat-room-loading'},h('p',{role:'status'},notice||(!data?'正在读取聊天室…':!data.ready?'聊天存储正在准备，稍后可重新读取。':'选择一个聊天室，或新建一段讨论。')),
           h('button',{type:'button',onClick:()=>void load(lifetime.current.needsFirstRoom)},'重新读取'),data?.chatSchema===3&&data.ready&&!panel?h('button',{type:'button',onClick:openCreate},'新建聊天室'):null),panelView);
     }
@@ -2195,11 +2432,22 @@ const CLIENT_BUILD = 2026111201;
       const personaRef = React.useRef(persona); personaRef.current = persona;
       const draftScope=explicitRoomId??persona;
       const [draft, setDraft] = React.useState(() => chatDrafts.get(explicitRoomId??persona) ?? emptyChatDraft());
+      const imageScope=(explicitRoomId??persona)+':'+(data?.room?.generation??0),imageScopeRef=React.useRef(imageScope);imageScopeRef.current=imageScope;
+      const [images,setImages]=React.useState(()=>chatImageDrafts.get(imageScope)??[]),[imageBusy,setImageBusy]=React.useState(false),[imageInfo,setImageInfo]=React.useState('');
+      const imageInput=React.useRef(null),imageSending=React.useRef(false);
+      const [imageDragging,setImageDragging]=React.useState(false),imageDragDepth=React.useRef(0);
+      React.useEffect(()=>{setImages(chatImageDrafts.get(imageScope)??[]);setImageInfo('');setImageBusy(false);imageSending.current=false;imageDragDepth.current=0;setImageDragging(false);},[imageScope]);
       const [busy, setBusy] = React.useState(false);
       const busyRef = React.useRef(false);
       const [info, setInfo] = React.useState('');
+      const [supportOpen,setSupportOpen]=React.useState(false),[supportSaving,setSupportSaving]=React.useState(false),[supportNotice,setSupportNotice]=React.useState('');
+      const supportButton=React.useRef(null),supportWrite=React.useRef(null),supportMenuId=React.useRef('dsh-chat-support-'+chatNonce());
+      React.useEffect(()=>()=>supportWrite.current?.abort(),[]);
+      React.useEffect(()=>{supportWrite.current?.abort();supportWrite.current=null;setSupportSaving(false);setSupportNotice('');setSupportOpen(false);},[imageScope]);
       const [syncDelayed,setSyncDelayed]=React.useState(false);
+      const activityData=syncDelayed?null:data;
       const [wide, setWide] = React.useState(()=>explicitRoomId?chatRoomLayout.wide:false);
+      const floating=useFloatingWindow({id:'chat',ref:surface,active:!minimized,wide,onWideChange:value=>{if(explicitRoomId)chatRoomLayout.wide=value;setWide(value);},minHeight:360});
       const [composeExpanded, setComposeExpanded] = React.useState(()=>explicitRoomId?chatRoomLayout.composeExpanded:false);
       const firstSurface=React.useRef(true);
       useLayoutEffect(()=>{const initial=firstSurface.current;firstSurface.current=false;
@@ -2304,7 +2552,7 @@ const CLIENT_BUILD = 2026111201;
       const pending = ready && data.running;
       const stopMessageId=pending && data.roundId && (data.roundMessageId??latestMessage);
       const pendingTurn=stopMessageId?turns.find(t=>t.messageId===stopMessageId && t.status==='pending'):undefined;
-      const stopTurn=pendingTurn??(stopMessageId && ['preparing','listening'].includes(data.roundPhase)?turns.find(t=>t.messageId===stopMessageId):undefined);
+      const stopTurn=pendingTurn??(stopMessageId && ['preparing','listening','support'].includes(data.roundPhase)?turns.find(t=>t.messageId===stopMessageId):undefined);
       const currentContextKey = context?.id ? context.id + ':' + context.revision : null;
       const quoteScope=context?.scopeKey??data?.scopeKey??null;
       useLayoutEffect(()=>{
@@ -2366,6 +2614,13 @@ const CLIENT_BUILD = 2026111201;
         setData((previous) => previous?.instanceId === value.instanceId && (previous.userProfile?.revision ?? -1) > (value.userProfile?.revision ?? -1)
           ? { ...value, userProfile: previous.userProfile } : value);
         const key=explicitRoomId??value.personaId;
+        const imageKey=key+':'+(value.room?.generation??0),submitted=chatImageSends.get(imageKey);
+        const imageParts=[...(value.queuedInputs??[]).flatMap(b=>b.parts??[]),...(value.room?.turns??[]).flatMap(t=>chatUserParts(t))];
+        if(submitted&&imageParts.some(p=>p.id===submitted.requestId&&(p.images?.length??0)>0)){
+          const remaining=(chatImageDrafts.get(imageKey)??[]).filter(image=>!submitted.ids.includes(image.id));
+          rememberChatImages(imageKey,remaining);chatImageSends.delete(imageKey);
+          if(imageScopeRef.current===imageKey)setImages(remaining);
+        }
         for(const turn of value.room?.turns??[])if(chatRetryIds.get(key+':'+turn.id)===turn.attemptId)chatRetryIds.delete(key+':'+turn.id);
         const current = chatDrafts.get(key);
         const acknowledged=current&&((value.queuedInputs??[]).some(batch=>batch.parts?.some(part=>part.id===current.requestId&&part.text===current.text))
@@ -2474,6 +2729,32 @@ const CLIENT_BUILD = 2026111201;
         resetSuggestions();
         const next = { ...draft,text, requestId: chatNonce() }; saveChatDraft(draftScope, next); setDraft(next);
       };
+      const toggleSupport=async(template,enabled)=>{
+        if(!['research','reason'].includes(template)||supportWrite.current)return false;
+        const owner=imageScope,field=template==='research'?'chatResearchEnabled':'chatDeepReasoningEnabled',abort=new AbortController();
+        supportWrite.current=abort;setSupportSaving(true);setSupportNotice('');const timeout=setTimeout(()=>abort.abort(),10000);
+        try{
+          const response=await fetch(ROUTE+'/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({[field]:enabled}),signal:abort.signal}),value=await response.json();
+          if(!live.current||imageScopeRef.current!==owner||abort.signal.aborted)return false;
+          if(!response.ok||value.settings?.[field]!==enabled)throw Error('support-settings-save');
+          const current=latestData.current;if(!current)return false;
+          reading.current?.abort();readRevision.current++;
+          const next={...current,supportCapabilities:{...current.supportCapabilities,[template]:enabled}};latestData.current=next;setData(next);void currentLoad.current(undefined,true);return true;
+        }catch{if(live.current&&imageScopeRef.current===owner)setSupportNotice('辅助设置暂未保存，草稿保持原样；请重试。');return false;}
+        finally{clearTimeout(timeout);if(supportWrite.current===abort)supportWrite.current=null;if(live.current&&imageScopeRef.current===owner)setSupportSaving(false);}
+      };
+      const insertSupportRequest=async template=>{
+        const prefix=chatSupportRequestPrefixes[template];if(!prefix||supportWrite.current)return;
+        const owner=imageScope;
+        const build=current=>{const existing=Object.values(chatSupportRequestPrefixes).find(value=>current.text.startsWith(value));return prefix+(existing?current.text.slice(existing.length):current.text);};
+        if(build(chatDrafts.get(draftScope)??draft).length>4000){setSupportNotice('当前草稿较长，请先缩短后再填入辅助请求。');return;}
+        if(!latestData.current?.supportCapabilities?.[template]&&!await toggleSupport(template,true))return;
+        if(!live.current||imageScopeRef.current!==owner)return;
+        const current=chatDrafts.get(draftScope)??draft,text=build(current);
+        if(text.length>4000){setSupportNotice('草稿已更新，请先缩短后再填入辅助请求。');return;}
+        resetSuggestions();const next={...current,text,requestId:chatNonce()};saveChatDraft(draftScope,next);setDraft(next);setSupportOpen(false);
+        setInfo('已填入'+(template==='research'?'调查':'推演')+'请求，可修改后发送。');input.current?.focus();
+      };
       const chooseQuote=(turn,index,text,partId)=>{
         resetSuggestions();
         const ref={roomId:explicitRoomId,generation:data.room.generation??0,...(index===null?{kind:'user',messageId:partId??turn.messageId}
@@ -2493,12 +2774,14 @@ const CLIENT_BUILD = 2026111201;
       };
       const generateSuggestions = async () => {
         if (!ready || !suggestMode || suggestRequest.current.busy || pending || queueWaiting || contact?.archived) return;
+        const suggestionPersona=explicitRoomId?(data.room.targetPersonaIds[0]??data.room.memberIds.find(id=>data.contacts.some(p=>p.id===id&&!p.archived))):persona;
+        if(!suggestionPersona)return;
         const abort = new AbortController(), token = ++suggestRequest.current.revision;
         suggestRequest.current.abort = abort; suggestRequest.current.busy = true;
         setSuggestBusy(true); setSuggestInfo(''); setSuggestions([]);
         try {
           const response = await fetch(ROUTE + '/chat/suggestions', { method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ personaId: persona, roomId: data.room?.id ?? null, revision: data.room?.revision ?? 0, epoch: data.epoch, instruction: draft.text,
+            body: JSON.stringify({ personaId: suggestionPersona, roomId: data.room?.id ?? null, revision: data.room?.revision ?? 0, epoch: data.epoch, instruction: draft.text,
               contextKey:context?.id?context.id+':'+context.revision:undefined }), signal: abort.signal });
           const value = await response.json();
           if (!live.current || token !== suggestRequest.current.revision || abort.signal.aborted) return;
@@ -2533,15 +2816,64 @@ const CLIENT_BUILD = 2026111201;
           for (const update of chatUpdates) update(explicitRoomId??id, windowOwner.current);
         }
       };
-      const send = () => {
-        if (!draft.text.trim() || !quoteAvailable || (pending&&!data?.canQueue&&!data?.canYield) || roomBusy || contact?.archived || !data?.modelReady || contextState.busy) return;
+      const inspectImageModel=async(owner)=>{
+        try{
+          const response=await fetch(ROUTE+'/chat-model-options?room='+encodeURIComponent(explicitRoomId),{signal:AbortSignal.timeout(8500)});
+          const value=await response.json();
+          if(!live.current||imageScopeRef.current!==owner)return null;
+          const status=value.vision??'unknown';
+          setImageInfo(status==='unsupported'?'当前模型只支持文字。可切换视觉模型，或仅发送文字；图片会保留。':status==='unknown'?'当前模型未声明视觉能力，将尝试发送；若不支持，可换模型重试。':'');
+          return status;
+        }catch{return live.current&&imageScopeRef.current===owner?'unknown':null;}
+      };
+      const addImages=async(files)=>{
+        if(!explicitRoomId||!ready||imageSending.current||imageBusy)return;
+        if(data?.imagesAvailable===false){setImageInfo(chatErrorText('chat-images-unavailable'));return;}
+        if(busyRef.current){setImageInfo('正在发送，请稍候再添加图片。');return;}
+        const owner=imageScopeRef.current,old=chatImageDrafts.get(owner)??[],chosen=Array.from(files??[]);
+        if(!chosen.length)return;
+        if(old.length+chosen.length>3||chosen.some(f=>!['image/png','image/jpeg','image/webp','image/gif'].includes(chatImageType(f))||!f.size||f.size>4*1024*1024)
+          ||old.reduce((n,i)=>n+i.bytes,0)+chosen.reduce((n,f)=>n+f.size,0)>8*1024*1024){setImageInfo(chatErrorText('invalid-chat-images'));return;}
+        imageSending.current=owner;setImageBusy(true);setImageInfo('');
+        try{
+          const selected=await Promise.all(chosen.map(file=>new Promise((resolve,reject)=>{
+            const reader=new FileReader();reader.onerror=reject;reader.onload=()=>resolve({id:chatNonce(),mediaType:chatImageType(file),data:String(reader.result).split(',')[1],name:file.name,bytes:file.size});
+            reader.readAsDataURL(file);
+          })));
+          if(!live.current||imageScopeRef.current!==owner)return;
+          const next=[...(chatImageDrafts.get(owner)??[]),...selected];
+          rememberChatImages(owner,next);setImages(next);
+          const changed={...(chatDrafts.get(draftScope)??draft),requestId:chatNonce()};saveChatDraft(draftScope,changed);setDraft(changed);
+          void inspectImageModel(owner);
+        }catch{if(live.current&&imageScopeRef.current===owner)setImageInfo('图片暂时无法读取，原输入保留。');}
+        finally{if(imageSending.current===owner)imageSending.current=false;if(live.current&&imageScopeRef.current===owner)setImageBusy(false);}
+      };
+      const removeImage=id=>{
+        const next=(chatImageDrafts.get(imageScope)??[]).filter(i=>i.id!==id);rememberChatImages(imageScope,next);setImages(next);setImageInfo('');
+        const changed={...draft,requestId:chatNonce()};saveChatDraft(draftScope,changed);setDraft(changed);
+      };
+      const send = async (textOnly=false) => {
+        const selected=textOnly===true?[]:[...(chatImageDrafts.get(imageScope)??[])];
+        if ((!draft.text.trim()&&!selected.length) || imageBusy || imageSending.current || !quoteAvailable || (pending&&!data?.canQueue&&!data?.canYield) || roomBusy || contact?.archived || !data?.modelReady || contextState.busy) return;
+        const owner=imageScope;imageSending.current=owner;setImageBusy(true);
+        try{
+        if(selected.length&&await inspectImageModel(owner)==='unsupported')return;
+        if(!live.current||imageScopeRef.current!==owner)return;
         resetSuggestions();
-        saveChatDraft(draftScope, draft); atBottom.current = true; setScrolledUp(false);
-        markChatAnimation(draft.requestId);
-        return act({ action: 'send', requestId: draft.requestId, content: draft.text, revision: data.room?.revision ?? 0,clientTime:chatClientTime(),
+        const current={...draft,text:draft.text.trim()?draft.text:'（发送了 '+selected.length+' 张图片）',...(textOnly===true&&images.length?{requestId:chatNonce()}:{})};
+        if(selected.length)chatImageSends.set(owner,{requestId:current.requestId,ids:selected.map(i=>i.id)});
+        else chatImageSends.delete(owner);
+        while(chatImageSends.size>32)chatImageSends.delete(chatImageSends.keys().next().value);
+        if((chatDrafts.get(draftScope)?.requestId??draft.requestId)===draft.requestId){saveChatDraft(draftScope, current);setDraft(current);}
+        atBottom.current = true; setScrolledUp(false);
+        markChatAnimation(current.requestId);
+        return await act({ action: 'send', requestId: current.requestId, content: current.text, revision: data.room?.revision ?? 0,clientTime:chatClientTime(),
+          ...(selected.length?{images:selected.map(({mediaType,data,name})=>({mediaType,data,name}))}:{}),
+          ...(textOnly===true?{withoutImages:true}:{}),
           ...(draft.quote?{quote:draft.quote.ref}:{}),
           ...(explicitRoomId?{recipientIds:data.room.targetPersonaIds}:{}),
           ...(data.canYield&&!data.canQueue?{afterMessageId:data.roundMessageId,configRevision:data.room.configRevision}:{}) });
+        }finally{if(imageSending.current===owner)imageSending.current=false;if(live.current&&imageScopeRef.current===owner)setImageBusy(false);}
       };
       const retry = (turn, confirmed = false) => {
         if (!ready || busyRef.current || roomBusy || contextState.busy || pending || !data.modelReady) return;
@@ -2555,6 +2887,11 @@ const CLIENT_BUILD = 2026111201;
       };
       const unread=dockSession.current?.count??0;
       const sourceHint = roomReferenceHint(context, foreground);
+      const resetImageDrag=()=>{imageDragDepth.current=0;setImageDragging(false);};
+      const dragImages=event=>{
+        if(!explicitRoomId||!chatTransferHasFiles(event.dataTransfer))return;
+        event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='copy';setImageDragging(true);
+      };
       const view = minimized?h('aside',{ref:surface,className:'dsh-persona-chat-dock','data-dock-order':0,'aria-label':'已最小化的聊天室'},
         h('style',null,ROOM_CHAT_CSS),
         h('button',{type:'button',ref:dockButton,'aria-label':'还原聊天室'+(unread?'，'+unread+' 条新回复':''),title:'还原 · '+(data?.room?.name??'聊天室'),onClick:()=>chatRuntime.setMinimized(false)},
@@ -2563,12 +2900,18 @@ const CLIENT_BUILD = 2026111201;
         h('button',{type:'button','aria-label':'关闭聊天室',title:pending?'关闭窗口，已发送的回复会继续保存；需要中止请先停止回复。':'关闭聊天室',onClick:onClose},'×'),
         h('span',{className:'dsh-persona-chat-dock-status',role:'status','aria-live':'polite','aria-atomic':true},unread?'聊天室收到 '+unread+' 条新回复':'')):
         h('section', { ref:surface,className: 'dsh-persona-chat', 'data-wide': String(wide), 'data-compose-expanded':String(composeExpanded), role: 'dialog', 'aria-modal': false,
+        onDragEnterCapture:event=>{if(explicitRoomId&&chatTransferHasFiles(event.dataTransfer)){imageDragDepth.current++;dragImages(event);}},
+        onDragOverCapture:dragImages,onDragEndCapture:resetImageDrag,
+        onDragLeaveCapture:()=>{if(imageDragDepth.current>0&&!--imageDragDepth.current)setImageDragging(false);},
+        onDropCapture:event=>{if(!explicitRoomId||!chatTransferHasFiles(event.dataTransfer))return;event.preventDefault();event.stopPropagation();resetImageDrag();
+          const files=chatTransferImages(event.dataTransfer);if(files.length)void addImages(files);else setImageInfo('这里只支持图片；文字草稿已保留。');},
         'aria-label': '聊天室', onKeyDown: (event) => { if (event.key === 'Escape' && !event.nativeEvent?.isComposing) {
-          event.stopPropagation(); if(workOpen){event.preventDefault();closeWorkDraft();}else if (roomPanel) onDismissPanel?.(); else if (appearance) closeAppearance(); else if(draft.quote){event.preventDefault();cancelQuote();}else onClose();
+          event.stopPropagation(); if(workOpen){event.preventDefault();closeWorkDraft();}else if(supportOpen){event.preventDefault();setSupportOpen(false);supportButton.current?.focus();}else if (roomPanel) onDismissPanel?.(); else if (appearance) closeAppearance(); else if(draft.quote){event.preventDefault();cancelQuote();}else onClose();
         } } },
-        h('style', null, CHAT_CSS, CHAT_APPEARANCE_CSS,ROOM_CHAT_CSS),
-        h('header', { className: 'dsh-persona-chat-top','data-room':String(!!explicitRoomId) }, explicitRoomId?h('span',{className:'dsh-persona-room-avatar-display'},
-          h(RoomAvatar,{memberIds:data?.room?.memberIds,contacts:data?.contacts})):avatar(persona, contact?.name),
+        h('style', null, CHAT_CSS, CHAT_APPEARANCE_CSS,ROOM_CHAT_CSS,FLOATING_WINDOW_CSS),
+        h(FloatingWindowHandles,{controls:floating,label:'聊天室'}),
+        h('header', { ...floating.dragProps,className: 'dsh-persona-chat-top','data-room':String(!!explicitRoomId) }, explicitRoomId?h('span',{className:'dsh-persona-room-avatar-display',title:data?.room?.memberIds.length===1?chatMemberStatus(activityData,data.room.memberIds[0])?.detail:undefined},
+          h(RoomAvatar,{memberIds:data?.room?.memberIds,contacts:data?.contacts}),data?.room?.memberIds.length===1?h(ChatMemberActivity,{status:chatMemberStatus(activityData,data.room.memberIds[0]),name:data.contacts.find(p=>p.id===data.room.memberIds[0])?.name??'角色'}):null):avatar(persona, contact?.name),
           explicitRoomId?h('div',{className:'dsh-persona-chat-room-heading'},
             h('button',{type:'button',className:'dsh-persona-chat-room-title','aria-label':'切换聊天室',disabled:roomBusy,title:'切换聊天室 · '+(data?.room?.name??'聊天室'),onClick:()=>{setWorkOpen(false);onOpenRooms?.();}},
               h('span',null,data?.room?.name??'聊天室'),h('span',{'aria-hidden':true},'⌄')),
@@ -2655,7 +2998,8 @@ const CLIENT_BUILD = 2026111201;
               'data-arriving':group.id===latestMessage&&(group.head.status==='pending'||chatAnimatedAttempts.has(group.head.attemptId))||undefined },
               h(UserChatAvatar, { profile: data.userProfile, accountUrl: accountAvatar, className: 'dsh-persona-chat-avatar' }), h('div', { className: 'dsh-persona-chat-bubble' },
                 explicitRoomId&&(group.head.memberIdsAtSend?.length>1||group.head.recipients.length>1)?h('small',{className:'dsh-persona-chat-mentions'},group.head.recipients.map(p=>'@'+p.name).join(' ')):null,
-                partIndex===0&&group.head.quote?h(ChatQuotedMessage,{quote:group.head.quote,available:!!chatQuotedSource(data.room,group.head.quote.ref,quoteScope),onJump:()=>jumpQuote(group.head.quote.ref)}):null,part.text),
+                partIndex===0&&group.head.quote?h(ChatQuotedMessage,{quote:group.head.quote,available:!!chatQuotedSource(data.room,group.head.quote.ref,quoteScope),onJump:()=>jumpQuote(group.head.quote.ref)}):null,part.text,
+                h(ChatImages,{images:part.images,roomId:data.room?.id,generation:data.room?.generation??0})),
               explicitRoomId&&(group.head.scopeKey??group.head.contextKey??null)===quoteScope?h('button',{type:'button',className:'dsh-persona-chat-quote-action','aria-label':'引用我的消息',title:'引用这句',onClick:()=>chooseQuote(group.head,null,part.text,part.id)},'↩'):null))),
             ...group.responses.map(turn=>h('div',{key:turn.id,'data-chat-turn':turn.id},
             h(ChatTurnReply,{key:turn.attemptId,turn,instance:data.instanceId,roomId:explicitRoomId,running:data.running,
@@ -2680,28 +3024,39 @@ const CLIENT_BUILD = 2026111201;
             ...batch.parts.map((part,partIndex)=>h('div',{key:part.id,className:'dsh-persona-chat-message','data-user':'true','data-chat-user-part':part.id},
               h(UserChatAvatar,{profile:data.userProfile,accountUrl:accountAvatar,className:'dsh-persona-chat-avatar'}),
               h('div',{className:'dsh-persona-chat-bubble'},batch.recipients?.length?h('small',{className:'dsh-persona-chat-mentions'},batch.recipients.map(person=>'@'+person.name).join(' ')):null,
-                partIndex===0&&batch.quote?.ref&&typeof batch.quote.text==='string'?h(ChatQuotedMessage,{quote:batch.quote,available:!!chatQuotedSource(data.room,batch.quote.ref,quoteScope),onJump:()=>jumpQuote(batch.quote.ref)}):null,part.text))),
+                partIndex===0&&batch.quote?.ref&&typeof batch.quote.text==='string'?h(ChatQuotedMessage,{quote:batch.quote,available:!!chatQuotedSource(data.room,batch.quote.ref,quoteScope),onJump:()=>jumpQuote(batch.quote.ref)}):null,part.text,
+                h(ChatImages,{images:part.images,roomId:data.room?.id,generation:data.room?.generation??0})))),
             h('div',{className:'dsh-persona-chat-input-state',role:'status','aria-live':'polite'},batch.status==='failed'
               ?h(React.Fragment,null,h('span',null,'这几条暂时没接上，原话已保留。'),
                 h('button',{type:'button',disabled:busy||roomBusy||!ready,'aria-label':'重试这组消息',onClick:()=>act({action:'retry-input',requestId:batch.id})},'重试'),
                 h('button',{type:'button',disabled:busy||roomBusy||!ready,'aria-label':'取消这组消息',onClick:()=>act({action:'cancel-input',requestId:batch.id})},'取消'))
               :batch.status==='sending'?'正在接上这几句…':'等待回应')))),
-        scrolledUp && (turns.length || queuedInputs.length) ? h('button', { type: 'button', className:'dsh-persona-chat-jump', onClick: () => {
-          atBottom.current = true; setScrolledUp(false);noteReadyReplies(latestData.current);if (thread.current) thread.current.scrollTop = thread.current.scrollHeight;saveReading();
-        } }, newReplies?newReplies+' 条新回复 · 回到最新消息':'回到最新消息') : null),
-        pending&&(data.roundPhase==='preparing'||barrier<0)?h('div',{role:'status',style:{fontSize:11,color:'var(--chat-muted)',padding:'0 12px 6px'}},data.roundPhase==='preparing'?'正在接上这句话…':data.roundPhase==='listening'?'大家在听…':'等待回应'):null,
+        scrolledUp&&(turns.length||queuedInputs.length)?h('button',{type:'button',className:'dsh-persona-chat-jump',onClick:()=>{
+          atBottom.current=true;setScrolledUp(false);noteReadyReplies(latestData.current);if(thread.current)thread.current.scrollTop=thread.current.scrollHeight;saveReading();
+        }},newReplies?newReplies+' 条新回复 · 回到最新消息':'回到最新消息'):null),
+        !explicitRoomId&&pending&&(data.roundPhase==='preparing'||barrier<0)?h('div',{role:'status',style:{fontSize:11,color:'var(--chat-muted)',padding:'0 12px 6px'}},data.roundPhase==='preparing'?'正在接上这句话…':data.roundPhase==='listening'?'大家在听…':'等待回应'):null,
+        h(ChatSupportStatus,{tasks:(data?.supportTasks??[]).filter(t=>t.messageId===(data?.roundMessageId??turns.at(-1)?.messageId)),minimized,onStop:jobId=>act({action:'cancel-support',jobId})}),
         directorIssue&&!data?.activeAttemptIds?.length?h('div',{className:'dsh-persona-chat-info',role:'status','aria-live':'polite',style:{display:'flex',alignItems:'center',flexWrap:'wrap',gap:'4px 8px'}},
           h('span',null,directorAnswered?'后续接话暂未继续':'暂时没接上，原话已保留'),h('small',{style:{color:'var(--chat-muted)'}},directorIssueReason),
           h('button',{type:'button',disabled:busy||roomBusy||contextState.busy||!ready||!data.modelReady,title:'重新判断接话安排',
             onClick:()=>act({action:'retry-director',messageId:directorIssue.messageId})},directorAnswered?'继续接话':'重试回应')):null,
-        h(SlowChatStatus,{data,minimized}),
+        !explicitRoomId?h(SlowChatStatus,{data,minimized}):null,
         retryConfirm ? h('div', { className: 'dsh-persona-chat-info', role: 'status' },
           '参考来源与这条消息发送时不同。按当前来源重试同一句话？旧范围的聊天不会带入，用户消息不会重复。',
           h('button', { type: 'button', disabled: busy || contextState.busy, onClick: () => void retry(retryConfirm, true) }, '按当前来源重试'),
           h('button', { type: 'button', onClick: () => setRetryConfirm(null) }, '暂不重试')) : null,
-        h('div', { className: 'dsh-persona-chat-compose' },
+        h('div', { className: 'dsh-persona-chat-compose','data-image-dragging':imageDragging||undefined,style:supportOpen?{maxHeight:'calc(100% - 100px)',overflowY:'auto'}:undefined,
+          onPasteCapture:event=>{const files=chatTransferImages(event.clipboardData);if(files.length){event.stopPropagation();if(!event.clipboardData.getData('text/plain'))event.preventDefault();void addImages(files);}} },
+          imageDragging?h('span',{className:'dsh-persona-chat-drop-hint',role:'status'},'松开以添加图片'):null,
+          h('input',{ref:imageInput,type:'file',hidden:true,multiple:true,accept:'image/png,image/jpeg,image/webp,image/gif','aria-label':'选择聊天图片',
+            onChange:event=>{const files=Array.from(event.target.files??[]);event.target.value='';void addImages(files);}}),
+          images.length?h('div',{className:'dsh-persona-chat-image-drafts','aria-label':'待发送图片'},...images.map((image,index)=>
+            h('div',{key:image.id},h('img',{src:'data:'+image.mediaType+';base64,'+image.data,alt:image.name||'待发图片 '+(index+1)}),
+              h('button',{type:'button',disabled:imageBusy||busy,'aria-label':'移除图片 '+(index+1),title:'移除图片',onClick:()=>removeImage(image.id)},'×')))):null,
+          imageInfo?h('div',{className:'dsh-persona-chat-image-note',role:'status'},imageInfo,
+            images.length&&draft.text.trim()?h('button',{type:'button',disabled:imageBusy||busy,onClick:()=>void send(true)},'仅发送文字'):null):null,
           explicitRoomId&&data?.room?.memberIds.length>1?h('div',{className:'dsh-persona-chat-participants'},
-            h(RoomRecipient,{contacts:data?.contacts??[],memberIds:data?.room?.memberIds??[],value:data.room.targetPersonaIds,disabled:busy||roomBusy||!data,
+            h(RoomRecipient,{contacts:data?.contacts??[],memberIds:data?.room?.memberIds??[],value:data.room.targetPersonaIds,disabled:busy||roomBusy||!data,activityData,
               onChange:ids=>act({action:'update',targetPersonaIds:ids,configRevision:data.room.configRevision},'chat-rooms')})):null,
           draft.quote?h(ChatQuotedMessage,{quote:draft.quote,available:quoteAvailable,draft:true,onCancel:cancelQuote,onJump:()=>jumpQuote(draft.quote.ref)}):null,
           suggestMode ? h('div', { className: 'dsh-persona-chat-suggest' }, h('div', { className: 'dsh-persona-chat-suggest-head' },
@@ -2713,6 +3068,7 @@ const CLIENT_BUILD = 2026111201;
               h('button', { type: 'button', key: index, onClick: () => {
                 const next = { ...draft,text, requestId: chatNonce() }; saveChatDraft(draftScope, next); setDraft(next); input.current?.focus(); setSuggestInfo('已填入，可修改后发送。');
               } }, text)))) : null,
+          supportOpen?h(ChatSupportMenu,{id:supportMenuId.current,capabilities:data?.supportCapabilities,disabled:busy||roomBusy||!ready,busy:supportSaving,notice:supportNotice,onToggle:toggleSupport,onInsert:insertSupportRequest,onClose:()=>{setSupportOpen(false);supportButton.current?.focus();}}):null,
           h('textarea', { id:'dsh-persona-chat-input', ref: input, value: draft.text, maxLength: 4000, rows:2,
           'aria-label': '发送给角色的消息', title:'Enter 发送 · Shift+Enter 换行', placeholder: contact?.archived ? '这位角色已移除' : '说点什么…', disabled: !ready, readOnly: contact?.archived === true,
           onSelect:()=>{if(explicitRoomId)updateChatUi(explicitRoomId,{selection:{start:input.current?.selectionStart??0,end:input.current?.selectionEnd??0}});},
@@ -2721,17 +3077,19 @@ const CLIENT_BUILD = 2026111201;
           } }),
           !data?.modelReady && ready ? h('p', { style: { fontSize: '11px', margin: '0 0 7px' } }, '请先在插件设置中选择聊天室或转述模型。') : null,
           h('div', { className: 'dsh-persona-chat-compose-row' },
+            explicitRoomId?h('button',{type:'button',disabled:!ready||busy||imageBusy||data?.imagesAvailable===false||images.length>=3,title:data?.imagesAvailable===false?'当前宿主没有图片附件服务':'添加图片，也可粘贴截图或拖入','aria-label':'添加图片',onClick:()=>imageInput.current?.click()},'图片'):null,
+            explicitRoomId?h('button',{type:'button',ref:supportButton,'aria-label':'聊天室子代理','aria-expanded':supportOpen,'aria-controls':supportMenuId.current,title:'调查资料或深入推演；先填入草稿，不自动发送',onClick:()=>{setSupportOpen(!supportOpen);setSupportNotice('');}},'子代理'):null,
             h('label', null, h('input', { type: 'checkbox', checked: suggestMode, 'aria-label': '快捷回复参考', onChange: (event) => setSuggestMode(event.target.checked) }), '快捷回复参考'),
             h('small', {title:'Enter 发送 · Shift+Enter 换行'}, 'Enter 发送'),
             h('button', {type:'button',className:'dsh-persona-chat-compose-expand','aria-label':composeExpanded?'收起输入框':'展开输入框',
               title:composeExpanded?'收起输入框':'展开输入框','aria-expanded':composeExpanded,'aria-controls':'dsh-persona-chat-input',
               onClick:()=>{if(explicitRoomId)chatRoomLayout.composeExpanded=!composeExpanded;setComposeExpanded(!composeExpanded);input.current?.focus({preventScroll:true});}},h(ChatExpandIcon,{expanded:composeExpanded})),
-            stopTurn && !((data.canQueue||data.canYield)&&draft.text.trim()) ? h('button', { type: 'button', disabled: busy, onClick: () => {
+            stopTurn && !((data.canQueue||data.canYield)&&(draft.text.trim()||images.length)) ? h('button', { type: 'button', disabled: busy, onClick: () => {
               void act({ action: 'cancel', id: stopTurn.id, attemptId: stopTurn.attemptId,messageId:stopTurn.messageId,roundId:data.roundId,
                 attempts:turns.filter(t=>t.messageId===stopTurn.messageId&&t.status==='pending').map(t=>({id:t.id,attemptId:t.attemptId})) });
-            } }, data.roundPhase==='listening'?'停止接话':'停止回复') : h('button', { type: 'button', 'data-primary': '', disabled: !quoteAvailable || (pending&&!data.canQueue&&!data.canYield) || busy || roomBusy || contextState.busy || !ready || !draft.text.trim() || contact?.archived || !data?.modelReady,
+            } }, data.roundPhase==='listening'?'停止接话':'停止回复') : h('button', { type: 'button', 'data-primary': '', disabled: !quoteAvailable || (pending&&!data.canQueue&&!data.canYield) || busy || imageBusy || roomBusy || contextState.busy || !ready || (!draft.text.trim()&&!images.length) || contact?.archived || !data?.modelReady,
               title:data?.canQueue&&draft.text.trim()?'发送后先保留这几句，再一起回应':data?.canYield&&draft.text.trim()?'发送新消息，结束本轮接话':undefined,
-              onClick: send }, pending&&!data.canQueue&&!data.canYield ? (data.roundPhase==='preparing'?'正在确认…':'同步中…') : busy ? '发送中…' : '发送'))));
+              onClick:()=>void send() }, pending&&!data.canQueue&&!data.canYield ? (data.roundPhase==='preparing'?'正在确认…':'同步中…') : busy||imageBusy ? '发送中…' : '发送'))));
       // The workspace already has a dedicated body root; another portal would remount the loaded window.
       return view;
     }
@@ -2762,12 +3120,13 @@ const CLIENT_BUILD = 2026111201;
     `;
     function ActionDialog({ title, onClose, children }) {
       const surface = React.useRef(null);
+      const floating=useFloatingWindow({id:'action:'+title,getNode:()=>surface.current?.closest?.('dialog'),minHeight:180,topGap:16});
       useLayoutEffect(() => lockComparisonScroll(surface.current.ownerDocument), []);
       // Native top-layer geometry is independent of the header container and host Modal sizing.
       return h(NativeComparisonModal, { onClose, title, className: 'dsh-persona-action' },
-        h('style', null, ACTION_CSS), h('div', { ref: surface, className: 'dsh-persona-action-surface' },
-          h('div', { className: 'dsh-persona-action-top' }, h('h2', null, title),
-            h('button', { type: 'button', onClick: onClose, 'aria-label': `关闭${title}` }, '关闭')), children));
+        h('style', null, ACTION_CSS,FLOATING_WINDOW_CSS), h('div', { ref: surface, className: 'dsh-persona-action-surface' },
+          h('div', { ...floating.dragProps,className: 'dsh-persona-action-top' }, h('h2', null, title),
+            h('button', { type: 'button', onClick: onClose, 'aria-label': `关闭${title}` }, '关闭')), children,h(FloatingWindowHandles,{controls:floating,label:title})));
     }
     const actionError = (error) => ({
       'conversation-conflict': '会话选择已在别处更新。已读入最新状态，请核对后重新保存。',
@@ -2787,6 +3146,7 @@ const CLIENT_BUILD = 2026111201;
       'report-incomplete': '这份汇报还没有完成，请等正文稳定后再调整。',
       'report-no-prose': '这份汇报没有可调整的文字，代码等原样保留。',
       'feedback-rewrite-failed': '这次调整没有完成，已保留原来的汇报和你的输入。',
+      'feedback-thinking-unavailable':'当前模型无法启用思考，原汇报与输入已保留；可更换模型，或关闭本次思考后重试。',
     }[error] ?? '没有保存成功，请重试。你的输入已经保留。');
     async function actionRequest(path, body) {
       const response = await fetch(`${ROUTE}/${path}`, body === undefined ? undefined
@@ -2848,6 +3208,7 @@ const CLIENT_BUILD = 2026111201;
       return{preference,theme,change,notice};
     }
     const REPORT_READING_CSS = `
+      [role=dialog][aria-label="报告图片预览"]{z-index:1160}
       .dsh-report-reading,.dsh-report-reading-dock{--rr-bg:var(--dsw-alias-bg-layer-1,#fff);--rr-soft:var(--dsw-alias-bg-layer-2,#f5f7fa);--rr-ink:var(--dsw-alias-label-primary,#243244);--rr-muted:var(--dsw-alias-label-secondary,#687788);--rr-border:var(--dsw-alias-border-l1,#dce3eb);--rr-accent:var(--dsw-alias-brand-primary,#436cba);--rr-risk:color-mix(in srgb,#b47a24 78%,var(--rr-ink));--rr-support:color-mix(in srgb,#398b91 73%,var(--rr-ink));box-sizing:border-box;color:var(--rr-ink);font:13px/1.65 system-ui,'Microsoft YaHei',sans-serif;-webkit-app-region:no-drag}
       .dsh-report-reading{position:fixed;z-index:1150;right:max(16px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));width:min(860px,calc(100vw - 32px));height:min(820px,calc(100dvh - 72px));max-height:calc(100dvh - 72px);display:flex;flex-direction:column;overflow:hidden;background:var(--rr-bg);border:1px solid var(--rr-border);border-radius:15px;box-shadow:0 18px 70px #0003;animation:rr-enter 180ms ease-out both}
       .dsh-report-reading[data-wide=true]{width:min(1120px,calc(100vw - 32px));height:calc(100dvh - 72px)}
@@ -2862,7 +3223,15 @@ const CLIENT_BUILD = 2026111201;
       .dsh-report-reading-dock{position:fixed;z-index:1100;right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));display:flex;align-items:center;gap:2px;max-width:calc(100vw - 32px);padding:3px 4px 3px 3px;background:var(--rr-bg);border:1px solid var(--rr-border);border-radius:18px;box-shadow:0 3px 16px #0002;animation:rr-enter 150ms ease-out both;font:12px/1.35 system-ui,sans-serif}.dsh-report-reading-dock button{border:0;background:transparent;border-radius:12px;min-height:28px;padding:2px 6px}.dsh-report-reading-dock button:first-child{display:flex;gap:7px;align-items:center;min-height:36px;padding-left:4px}.dsh-report-reading-dock .rr-dock-icon{display:inline-flex;align-items:center;justify-content:center;width:24px;height:26px;font-size:18px;color:var(--rr-accent)}.dsh-report-reading-dock button:last-child{width:24px;height:28px;color:var(--rr-muted);font-size:16px}.dsh-report-reading-dock[data-busy=true] .rr-dock-icon{opacity:.6}
       .dsh-report-reading .rr-document>div{color:var(--rr-ink)}.dsh-report-reading .rr-document h1{color:var(--rr-heading-1,var(--rr-accent))}.dsh-report-reading .rr-document h2{color:var(--rr-heading-2,var(--rr-accent))}.dsh-report-reading .rr-document :is(h3,h4,h5,h6){color:var(--rr-ink)}.dsh-report-reading .rr-document li::marker{color:var(--rr-muted)}.dsh-report-reading .rr-document a:not(:where(pre *,code *)){color:var(--rr-link,var(--rr-accent))}.dsh-report-reading .rr-document :not(pre)>code{color:var(--dsw-alias-label-primary,var(--rr-ink))}
       .dsh-report-reading .rr-theme-fields{display:grid;gap:8px}.dsh-report-reading .rr-theme-field{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;color:var(--rr-ink)}.dsh-report-reading .rr-theme-field select{font:inherit;color:var(--rr-ink);background:var(--rr-bg);border:1px solid var(--rr-border);border-radius:6px;padding:4px 7px;min-height:29px;min-width:145px;max-width:190px}.dsh-report-reading .rr-theme-field select:disabled{opacity:.65}.dsh-report-reading .rr-theme-current,.dsh-report-reading .rr-theme-notice{margin:0;font-size:10px;color:var(--rr-muted);line-height:1.7;max-width:290px}.dsh-report-reading .rr-theme-notice{padding-top:3px}
-      .dsh-report-reading .rr-appearance{margin-inline-start:auto}.dsh-report-reading .rr-readable-note{max-width:740px;margin:0 auto 24px;display:flex;align-items:flex-start;gap:12px;color:var(--rr-muted);font-size:11px}.dsh-report-reading .rr-readable-note p{flex:1;margin:0}.dsh-report-reading .rr-readable-note button{flex:none;font-size:10px}.dsh-report-reading .rr-readable-passage{margin-bottom:1.15em;min-width:0}.dsh-report-reading .rr-readable-source{margin:-.45em 0 1.1em;font-size:10px;color:var(--rr-muted)}.dsh-report-reading .rr-readable-source summary{cursor:pointer;width:fit-content;padding:2px 0;list-style-position:inside}.dsh-report-reading .rr-readable-source summary:focus-visible{outline:2px solid var(--rr-accent);outline-offset:3px}.dsh-report-reading .rr-readable-source pre{font:11px/1.9 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;border-left:2px solid var(--rr-border);border-radius:0;margin:8px 0 14px;padding:2px 0 2px 12px;color:var(--rr-muted);background:transparent}
+      .dsh-report-reading .rr-appearance{margin-inline-start:auto}.dsh-report-reading .rr-readable-note{max-width:740px;margin:0 auto 24px;display:flex;align-items:flex-start;gap:12px;color:var(--rr-muted);font-size:11px}.dsh-report-reading .rr-readable-note p{flex:1;margin:0}.dsh-report-reading .rr-readable-note button{flex:none;font-size:10px}
+      .dsh-report-reading .rr-readable-passage{position:relative;margin-bottom:1.15em;min-width:0}.dsh-report-reading .rr-readable-source{margin:0;color:var(--rr-muted)}
+      .dsh-report-reading .rr-source-toggle{position:absolute;inset-inline-start:-28px;top:0;display:flex;align-items:center;justify-content:center;width:28px;height:28px;box-sizing:border-box;padding:0;border-radius:5px;list-style:none;cursor:pointer;color:var(--rr-muted);font:17px/1 system-ui,sans-serif;opacity:0;pointer-events:none;-webkit-tap-highlight-color:transparent}
+      .dsh-report-reading .rr-source-toggle::-webkit-details-marker{display:none}.dsh-report-reading .rr-readable-passage:hover .rr-source-toggle,.dsh-report-reading .rr-readable-passage:focus-within .rr-source-toggle,.dsh-report-reading .rr-readable-source[open]>.rr-source-toggle{opacity:1;pointer-events:auto}
+      .dsh-report-reading .rr-source-toggle:hover{color:var(--rr-accent);background:var(--rr-soft)}.dsh-report-reading .rr-source-toggle:focus-visible{opacity:1;outline:2px solid var(--rr-accent);outline-offset:1px}
+      .dsh-report-reading .rr-readable-original{border-inline-start:2px solid var(--rr-border);padding:3px 0 1px 12px;margin:.35em 0 1em;font-size:.94em;line-height:1.85}
+      .dsh-report-reading .rr-source-caption{font-size:10px;color:var(--rr-muted);margin-bottom:5px}.dsh-report-reading .rr-readable-original :last-child{margin-bottom:0}
+      @media(hover:none),(pointer:coarse){.dsh-report-reading .rr-source-toggle{opacity:.55;pointer-events:auto}}
+      @media(max-width:600px){.dsh-report-reading .rr-readable-document{padding-inline-start:13px;box-sizing:border-box}}
       @keyframes rr-enter{from{opacity:0;transform:translateY(7px) scale(.99)}to{opacity:1;transform:none}}@keyframes rr-locate{0%,70%{opacity:.9}100%{opacity:0}}@media(prefers-reduced-motion:reduce){.dsh-report-reading,.dsh-report-reading-dock{animation:none;scroll-behavior:auto}.dsh-report-reading .rr-document p[data-rr-locate]:before{animation:none;opacity:.9}}
       .dsh-report-reading .rr-review-nav,.dsh-report-reading .rr-review-marker{display:flex;align-items:center;gap:4px 10px;flex-wrap:wrap;font-size:12px;color:var(--rr-muted)}
       .dsh-report-reading .rr-review-nav{max-width:740px;margin:0 auto 18px;padding-bottom:8px;border-bottom:1px solid var(--rr-border)}
@@ -2874,12 +3243,12 @@ const CLIENT_BUILD = 2026111201;
     `;
     const reportReadingListeners=new Set();
     const reportReadingRuntime={root:null,container:null,target:null,minimized:false,previousFocus:null,
-      open(sessionId,seq){
+      open(sessionId,seq,markdownOwner){
         if(typeof createChatRoot!=='function')throw Error('当前客户端暂不支持独立阅读页，请升级 DSH。');
         if(chatRuntime.opened&&!chatRuntime.minimized)chatRuntime.setMinimized(true);
         if(!this.root){this.container=document.createElement('div');this.container.dataset.personaShell='report-reading-runtime';document.body.appendChild(this.container);this.root=createChatRoot(this.container);}
         this.previousFocus=document.activeElement;this.minimized=false;this.target={sessionId,seq};
-        this.root.render(h(ReportVisualizationWindow,{key:rowKey(sessionId,seq),sessionId,seq,onClose:()=>this.close()}));
+        this.root.render(h(ReportVisualizationWindow,{key:rowKey(sessionId,seq),sessionId,seq,markdownOwner,onClose:()=>this.close()}));
         for(const notify of reportReadingListeners)notify(false);
       },
       minimize(){if(!this.target||this.minimized)return;this.minimized=true;for(const notify of reportReadingListeners)notify(true);},
@@ -2903,6 +3272,7 @@ const CLIENT_BUILD = 2026111201;
       'report-request-conflict':'本次整理请求已变化，请重新读取后再试。',
       'report-capacity':'同时整理的报告较多，请等已有任务完成后再试。',
       'report-model-unavailable':'暂时没有可用模型，请在设置中选择转述或报告阅读模型。',
+      'report-thinking-unavailable':'当前报告阅读模型无法启用思考，原文和已有顺畅稿均保留；请更换模型，或在插件设置中关闭顺畅阅读思考后重试。',
       'report-save-failed':'这次阅读页没有保存成功，原报告和已有阅读页均保留，可以重新整理。',
       'report-timeout':'这次整理等待超时，原报告和已有阅读页均保留，可以手动重试。',
       'report-cancelled':'这次整理已停止，原报告和已有阅读页均保留。',
@@ -2998,9 +3368,9 @@ const CLIENT_BUILD = 2026111201;
         return()=>{live=false;observer?.disconnect();if(frame!==undefined)view.cancelAnimationFrame(frame);clearLocator();continuity.current=activeView.current?visibleAnchor():null;clear();};
       },[source.hash,source.text,source.blocks,plan,focused,jump]);
     }
-    function ReportOriginalDocument({source,readingPlan,focused,jump,onReadingStatus,active}){
+    function ReportOriginalDocument({source,readingPlan,focused,jump,onReadingStatus,active,media}){
       const root=React.useRef(null);
-      const markdown=React.useMemo(()=>renderMarkdown(source.text,false,{margin:0}),[source.text]);
+      const markdown=React.useMemo(()=>renderMarkdown(source.text,false,{margin:0},media),[source.text,media]);
       useReportReadingLayout(root,source,readingPlan,focused,jump,onReadingStatus,active);
       return h('div',{ref:root,className:'rr-document','data-source-hash':source.hash,'aria-label':'原始报告全文'},markdown);
     }
@@ -3020,10 +3390,18 @@ const CLIENT_BUILD = 2026111201;
       }
       return {marked,ordered:[...marked.keys()].sort((a,b)=>a-b),unlocated};
     }
-    function ReportReadableDocument({source,result,warnings}){
+    function ReportReadableSource({text,media,references}){
+      const [expanded,setExpanded]=React.useState(false);
+      const original=React.useMemo(()=>expanded?renderMarkdown(text,false,{margin:0},media,references):null,[expanded,text,media,references]);
+      return h('details',{className:'rr-readable-source',onToggle:event=>setExpanded(event.currentTarget.open)},
+        h('summary',{className:'rr-source-toggle',title:expanded?'收起本段原文':'核对本段原文','aria-label':'核对本段原文'},
+          h('span',{'aria-hidden':true},'↔'),h('span',{className:'rr-sr-only'},'核对原文')),
+        expanded?h('div',{className:'rr-readable-original',role:'region','aria-label':'本段原文'},h('div',{className:'rr-source-caption'},'原文'),original):null);
+    }
+    function ReportReadableDocument({source,result,warnings,media}){
       const root=React.useRef(null);
       const passages=React.useMemo(()=>result.blocks.map((block,index)=>({ref:block.ref,text:block.text,
-        original:source.blocks[index].text,content:renderMarkdown(block.text,false,{margin:0})})),[source,result]);
+        original:source.blocks[index].text,references:source.blocks[index].kind!=='code',content:renderMarkdown(block.text,false,{margin:0},media,source.blocks[index].kind!=='code')})),[source,result,media]);
       const {marked,ordered,unlocated}=React.useMemo(()=>readableReviewLocations(warnings,passages.length),[warnings,passages.length]);
       const locate=index=>{
         const section=root.current?.children[index],pane=root.current?.closest('.rr-content');
@@ -3041,8 +3419,7 @@ const CLIENT_BUILD = 2026111201;
           return h('section',{key:block.ref,className:'rr-readable-passage','data-readable-ref':block.ref,
             ...(code?{tabIndex:-1,'aria-label':'第 '+(index+1)+' 段：'+label}:{})},
           code?h('div',{className:'rr-review-marker'},h('span',null,label),ordered.length>1?h('button',{type:'button',onClick:()=>locate(ordered[(ordered.indexOf(index)+1)%ordered.length])},'下一处'):null):null,block.content,
-          block.text.trim()!==block.original.trim()?h('details',{className:'rr-readable-source'},h('summary',null,'核对原文'),
-            h('pre',null,block.original)):null);
+          block.text.trim()!==block.original.trim()?h(ReportReadableSource,{text:block.original,media,references:block.references}):null);
         })));
     }
     const READABLE_NOTICE_KEY='dsh-persona-shell:readable-notice:v1';
@@ -3061,7 +3438,7 @@ const CLIENT_BUILD = 2026111201;
         h('div',{className:'dsh-persona-action-buttons'},h('button',{ref:cancel,type:'button',onClick:onClose},'取消'),
           h('button',{type:'button','data-primary':'',onClick:()=>onConfirm(today)},'确认生成'))));
     }
-    function ReportVisualizationWindow({sessionId,seq,onClose}){
+    function ReportVisualizationWindow({sessionId,seq,onClose,markdownOwner}){
       const readingTheme=useReportTheme(),themeStyle={...readingTheme.theme.vars,colorScheme:readingTheme.theme.appearance};
       const [data,setData]=React.useState(null),[loading,setLoading]=React.useState(true),[busy,setBusy]=React.useState(false),[info,setInfo]=React.useState(''),[issue,setIssue]=React.useState(null);
       const [wide,setWide]=React.useState(false),[minimized,setMinimized]=React.useState(reportReadingRuntime.minimized);
@@ -3072,6 +3449,7 @@ const CLIENT_BUILD = 2026111201;
       const guideCursors=React.useRef(new Map()),jumpSequence=React.useRef(0);
       const lifetime=React.useRef({live:true,revision:0,abort:null,task:null}),heading=React.useRef(null),surface=React.useRef(null),dock=React.useRef(null),dockSurface=React.useRef(null),readingPosition=React.useRef(0);
       const modePositions=React.useRef({original:0,readable:0});
+      const floating=useFloatingWindow({id:'report-reading',ref:surface,active:!minimized,wide,onWideChange:setWide,minWidth:320,minHeight:300});
       useFloatingDock(dockSurface,minimized);
       const latest=React.useRef(data);latest.current=data;
       const clearReadableNotice=()=>{readableNoticeRef.current=null;setReadableNotice(null);};
@@ -3144,6 +3522,10 @@ const CLIENT_BUILD = 2026111201;
         finally{if(own.live&&token===own.revision){setBusy(false);own.abort=null;own.task=null;}}
       };
       const source=data?.source,result=data?.result;
+      // The opener owns this report's resource scope, even after the main session changes.
+      // A changed report must never inherit another source's cwd or callbacks.
+      const media=React.useMemo(()=>reportMarkdownMedia(markdownOwner?.sessionId===sessionId&&markdownOwner?.seq===seq
+        &&markdownOwner?.text===source?.text?markdownOwner:undefined,source),[markdownOwner,sessionId,seq,source?.text]);
       const readableResult=source&&readableData?.source?.hash===source.hash&&readableReportMatches(readableData.result,source)?readableData.result:null;
       const readingPlan=React.useMemo(()=>source?createReportReadingPlan(source,result):null,[source,result]);
       React.useEffect(()=>{setFocused(false);setJump(null);setGuidePosition(null);guideCursors.current.clear();stopReadable();readableLifetime.current.loadedHash=null;setReadableData(null);setReadableLoading(false);setReadableBusy(false);setReadableInfo('');setReadableIssue(null);modePositions.current={original:0,readable:0};setReadable(false);},[source?.hash]);
@@ -3171,12 +3553,13 @@ const CLIENT_BUILD = 2026111201;
       const selectReadable=value=>{if(!value)clearReadableNotice();if(value!==readable){modePositions.current[readable?'readable':'original']=surface.current?.querySelector('.rr-content')?.scrollTop??0;setReadable(value);}if(value)void loadReadable();};
       const visibleInfo=readable?readableInfo:info,visibleIssue=readable?readableIssue:issue,visibleModel=readable?readableData?.model:data?.model,anyBusy=busy||readableBusy;
       const readingChanged=value=>setReadingStatus(previous=>previous.foldable===value.foldable&&previous.folded===value.folded&&previous.targets.join('|')===value.targets.join('|')?previous:value);
-      return h(React.Fragment,null,h('style',null,REPORT_READING_CSS),readableNotice&&!minimized?h(ReadableGenerationNotice,{onClose:clearReadableNotice,onConfirm:confirmReadable}):null,minimized?h('div',{ref:dockSurface,className:'dsh-report-reading-dock','data-dock-order':1,'data-busy':anyBusy,style:themeStyle,role:'region','aria-label':'已最小化的报告阅读页'},
+      return h(React.Fragment,null,h('style',null,REPORT_READING_CSS,FLOATING_WINDOW_CSS),readableNotice&&!minimized?h(ReadableGenerationNotice,{onClose:clearReadableNotice,onConfirm:confirmReadable}):null,minimized?h('div',{ref:dockSurface,className:'dsh-report-reading-dock','data-dock-order':1,'data-busy':anyBusy,style:themeStyle,role:'region','aria-label':'已最小化的报告阅读页'},
         h('button',{ref:dock,type:'button','aria-label':'恢复报告阅读页',title:anyBusy?'正在整理报告':'原始报告与阅读导览',onClick:()=>reportReadingRuntime.restore()},h('span',{className:'rr-dock-icon','aria-hidden':true},'▤'),h('span',null,anyBusy?'整理中':'阅读页')),
         h('button',{type:'button','aria-label':'关闭报告阅读页',title:anyBusy?'关闭并停止本页未完成的生成':'关闭报告阅读页',onClick:close},'×')):null,
         h('section',{ref:surface,className:'dsh-report-reading',role:'dialog','aria-label':'报告阅读页','aria-modal':false,'data-wide':wide,'data-reading-theme':readingTheme.theme.id,'data-reading-appearance':readingTheme.theme.appearance,style:minimized?{...themeStyle,display:'none'}:themeStyle,onKeyDown:event=>{
           if(event.key==='Escape'&&!event.nativeEvent?.isComposing){event.preventDefault();event.stopPropagation();close();}}},
-          h('header',{className:'rr-head'},h('div',{className:'rr-head-title'},h('h2',{ref:heading,tabIndex:-1},'报告阅读页'),h('small',null,'保留原文 · 按需展开')),
+          h(FloatingWindowHandles,{controls:floating,label:'报告阅读页'}),
+          h('header',{...floating.dragProps,className:'rr-head'},h('div',{className:'rr-head-title'},h('h2',{ref:heading,tabIndex:-1},'报告阅读页'),h('small',null,'保留原文 · 按需展开')),
             h('div',{className:'rr-head-actions'},h('button',{type:'button','aria-label':'复制完整原文',disabled:!source,onClick:()=>void copy()},'复制'),
               h('button',{type:'button','aria-label':'最小化报告阅读页',title:'最小化',onClick:()=>reportReadingRuntime.minimize()},'—'),
               h('button',{type:'button','aria-label':wide?'还原报告阅读页':'放大报告阅读页',onClick:()=>setWide(!wide)},wide?'还原':'放大'),h('button',{type:'button','aria-label':'关闭报告阅读页',title:anyBusy?'关闭并停止本页未完成的生成':'关闭报告阅读页',onClick:close},'关闭'))),
@@ -3191,10 +3574,10 @@ const CLIENT_BUILD = 2026111201;
             !readable&&focused?h('p',{className:'rr-reading-status',role:'status'},readingStatus.folded?'已收起 '+readingStatus.folded+' 段补充说明；结论、条件与风险仍保留，可逐段展开。':readingStatus.foldable?'补充说明已全部展开，原文顺序保持不变。':!result?'完整原文保持可读。分析阅读重点后，可收起能可靠定位的补充说明。':!Array.isArray(result.reading)?'这份分析没有段落分类，原文保持完整；可按需重新分析。':'没有可安全收起的说明，原文保持完整。'):null,
             !readable&&!result?h('div',{className:'rr-intro'},h('p',null,'原文已完整载入。按需分析阅读重点，生成段落导览和可展开的补充说明。'),h('button',{type:'button','data-primary':'',disabled:anyBusy||loading||data?.running,onClick:()=>void generate()},busy?'正在分析…':'分析阅读重点')):null,
             !readable&&warnings.length?h('details',{className:'rr-explanation','aria-label':'本次分析说明'},h('summary',null,contentWarnings.length?'部分结果未采用，原文保持完整':'已规范化分析格式'),h('p',null,'只有能与原文可靠对应的段落才会加入导览或收起。无法核对的结果会被忽略，原文保持完整。')):null,
-            readable?h(React.Fragment,null,h('div',{className:'rr-readable-note'},h('p',null,'按原文顺序润色表达，重要事实、条件与风险请对照原文核对。'),
+            readable?h(React.Fragment,null,h('div',{className:'rr-readable-note'},h('p',null,'段旁 ↔ 可对照原文；重要事实、条件与风险请核对。'),
               readableResult?h('button',{type:'button',onClick:()=>void copyReadable()},'复制顺畅稿'):null),
-              readableResult?h(ReportReadableDocument,{source,result:readableResult,warnings:readableData.warnings}):h('div',{className:'rr-intro'},h('p',null,readableLoading?'正在读取已有顺畅稿…':'首次生成会调用一次模型，原始报告保持不变。'),h('button',{type:'button','data-primary':'',disabled:anyBusy||loading||readableLoading||data?.running,onClick:()=>requestReadable()},readableBusy?'正在整理…':'生成顺畅稿'))):null,
-            h('div',{hidden:readable,'aria-hidden':readable||undefined},h(ReportOriginalDocument,{source,readingPlan,focused,jump,onReadingStatus:readingChanged,active:!minimized&&!readable}))):
+              readableResult?h(ReportReadableDocument,{source,result:readableResult,warnings:readableData.warnings,media}):h('div',{className:'rr-intro'},h('p',null,readableLoading?'正在读取已有顺畅稿…':'首次生成会调用一次模型，原始报告保持不变。'),h('button',{type:'button','data-primary':'',disabled:anyBusy||loading||readableLoading||data?.running,onClick:()=>requestReadable()},readableBusy?'正在整理…':'生成顺畅稿'))):null,
+            h('div',{hidden:readable,'aria-hidden':readable||undefined},h(ReportOriginalDocument,{source,readingPlan,focused,jump,onReadingStatus:readingChanged,active:!minimized&&!readable,media}))):
             h('div',{className:'rr-unavailable'},loading?h('p',{role:'status'},'正在读取原始报告…'):h(React.Fragment,null,h('h3',null,'这份报告暂时无法读取'),h('p',null,reportReadingError(data?.reason)),h('button',{type:'button',onClick:()=>void load()},'重新读取')))),
           visibleInfo?h('div',{className:'rr-status',role:'status','aria-live':'polite'},h('p',null,visibleInfo),visibleIssue?h('details',{'aria-label':'本次分析未完成的原因'},h('summary',null,'查看原因'),h('p',null,reportIssueExplanation(visibleIssue))):null):null,
           h('footer',{className:'rr-footer'},h('span',null,visibleModel?.model?'整理模型：'+visibleModel.model+(visibleModel.provider?' · '+visibleModel.provider:'')+((readable?readableData?.cached:data.cached)?' · 已缓存':''):'导览、展开和外观切换均在本地完成。'),
@@ -3287,14 +3670,14 @@ const CLIENT_BUILD = 2026111201;
         h('p', { role: 'status', 'aria-live': 'polite', className: 'dsh-persona-action-note' }, message || (!data?.ready ? '正在等待保存服务就绪…' : '修改后点击保存。')));
     }
 
-    function ReportFeedback({ sessionId, row, onClose }) {
+    function ReportFeedback({ sessionId, row, onClose, showResult = false }) {
       const key = rowKey(sessionId, row.seq);
-      const [target,setTarget]=React.useState(()=>({sessionId,seq:row.seq,version:row.version,personaId:row.speaker?.id,name:row.speaker?.name??'原汇报人格'}));
+      const [target,setTarget]=React.useState(()=>({sessionId,seq:row.seq,version:row.version,sourceHash:row.sourceHash,personaId:row.speaker?.id,name:row.speaker?.name??'原汇报人格'}));
       const [acceptedVersion,setAcceptedVersion]=React.useState(null);
       const [draft, setDraft] = React.useState(() => {
         const existing = feedbackDrafts.get(key);
         if (existing?.scope === 'once') return existing;
-        const next = { content: existing?.content ?? '', scope: 'once' };
+        const next = { content: existing?.content ?? '', scope: 'once',thinking:true };
         if (existing) keepDraft(feedbackDrafts, key, next);
         return next;
       });
@@ -3303,7 +3686,7 @@ const CLIENT_BUILD = 2026111201;
       const input=React.useRef(null);
       const [message, setMessage] = React.useState('');
       const edit = (patch) => { const next = { ...draft, ...patch }; setDraft(next); keepDraft(feedbackDrafts, key, next); };
-      const identityChanged=sessionId!==target.sessionId||row.seq!==target.seq||row.speaker?.id!==target.personaId;
+      const identityChanged=sessionId!==target.sessionId||row.seq!==target.seq||row.speaker?.id!==target.personaId||row.sourceHash!==target.sourceHash;
       const awaitingOwnUpdate=!identityChanged&&acceptedVersion===target.version&&row.version<target.version;
       const stale=identityChanged||(row.version!==target.version&&!awaitingOwnUpdate);
       const unavailable=!row.canRetry||!target.personaId;
@@ -3319,15 +3702,15 @@ const CLIENT_BUILD = 2026111201;
         busyRef.current = true; setBusy(true); setMessage('正在调整，当前正文会保留到新版本完成…');
         try {
           const { ok, value } = await actionRequest('feedback', { sessionId:target.sessionId, seq: target.seq, version: target.version,
-            personaId: target.personaId, content: draft.content, scope: 'once' });
+            personaId: target.personaId, ...(target.sourceHash?{sourceHash:target.sourceHash}:{}), content: draft.content, scope: 'once',thinking:draft.thinking!==false });
           if (!ok) { setMessage(actionError(value.error)); void refresh(sessionId); return; }
           if (feedbackDrafts.get(key) === draft) {
-            feedbackDrafts.delete(key); setDraft({ content: '', scope: 'once' });
+            feedbackDrafts.delete(key); setDraft({ content: '', scope: 'once',thinking:draft.thinking!==false });
           }
           if(Number.isSafeInteger(value.version)&&value.version===target.version+1&&value.personaId===target.personaId){
             setTarget({...target,version:value.version});setAcceptedVersion(value.version);
           }
-          setMessage('已按这次偏好重新转述。'); void refresh(sessionId);
+          setMessage(showResult?'已按这次偏好重新转述，可在下方查看。':'已按这次偏好重新转述。'); void refresh(sessionId);
         } catch { setMessage(actionError()); }
         finally { busyRef.current = false; setBusy(false); }
       };
@@ -3340,14 +3723,18 @@ const CLIENT_BUILD = 2026111201;
           disabled: busy || row.retrying, value: draft.content, placeholder: '例如：少一点调侃，先说结论，再解释原因。',
           onChange: (e) => edit({ content: e.target.value }) })),
         h('p',{id:'dsh-persona-feedback-limit',className:'dsh-persona-action-note'},draft.content.length+' / 240 字符'),
-        h('p', { className: 'dsh-persona-action-note' }, '仅调整这份汇报。长期偏好与记忆请在插件设置的「记忆与约定」中管理。'),
+        h('label',{style:{display:'flex',alignItems:'center',gap:7}},h('input',{type:'checkbox','aria-label':'本次调整开启思考',checked:draft.thinking!==false,disabled:busy||row.retrying||unavailable||stale||awaitingOwnUpdate,onChange:e=>edit({thinking:e.target.checked})}),'本次调整开启思考'),
+        h('p', { className: 'dsh-persona-action-note' }, '仅调整这份汇报，不改变人格开关；开关关闭时主消息保留原文，结果在本弹窗查看。长期偏好与记忆请在插件设置中管理。'),
         stale?h('p',{className:'dsh-persona-action-note',role:'status'},'这份汇报的会话、版本或说话者已变化。输入已保留，请关闭后重新打开，核对目标再调整。')
           :unavailable?h('p',{className:'dsh-persona-action-note',role:'status'},actionError(row.retryUnavailableReason??(!target.personaId?'persona-not-found':'source-unavailable'))):null,
         h('div', { className: 'dsh-persona-action-buttons' },
           h('button', { type: 'button', 'data-primary': '', disabled: busy || row.retrying || !draft.content.trim() || draft.content.length>240 || unavailable || stale || awaitingOwnUpdate,
             onClick: submit }, busy || row.retrying ? '处理中…' : '重新转述'),
           h('button', { type: 'button', disabled: busy, onClick: () => { feedbackDrafts.delete(key); setDraft({ content: '', scope: 'once' }); setMessage('已清空输入。'); } }, '清空输入')),
-        h('p', { role: 'status', 'aria-live': 'polite', className: 'dsh-persona-action-note' }, message || '关闭后保留未提交的输入。'));
+        h('p', { role: 'status', 'aria-live': 'polite', className: 'dsh-persona-action-note' }, message || '关闭后保留未提交的输入。'),
+        showResult&&!stale&&row.status==='ready'&&row.text?h('section',{'aria-label':'表达结果'},
+          h('h3',null,acceptedVersion===row.version?'本次调整结果':'当前表达'),renderMarkdown(row.text),
+          h('button',{type:'button',onClick:async()=>{try{await navigator.clipboard.writeText(row.text);setMessage('已复制本次调整结果。');}catch{setMessage('暂时无法复制，请选中结果复制。');}}},'复制调整结果')):null);
     }
 
     /**
@@ -3560,10 +3947,38 @@ const CLIENT_BUILD = 2026111201;
      * @param {string} text
      * @returns {any}
      */
-    function renderMarkdown(text, streaming = false, plainStyle) {
+    // Match the published AssistantMarkdown/ChatView file-image rules. The existing
+    // authenticated Host route owns file access; this is only a display URL.
+    function reportFileMediaUrl(base,path) {
+      if(typeof path!=='string'||(!/^https?:/u.test(base)&&!base.startsWith('dsh-app://app/'))
+        ||!(/^[A-Za-z]:[/\\]/u.test(path)||path.startsWith('/'))||/^[/\\]{2}/u.test(path)||/[\u0000-\u001f\u007f]/u.test(path))return undefined;
+      return new URL('api/file?path='+encodeURIComponent(path),base).href;
+    }
+    function reportMarkdownMedia(owner,source) {
+      const base=document.baseURI,cwd=typeof owner?.cwd==='string'?owner.cwd:'';
+      const fileImages={resolve:path=>{
+        const absolute=path.startsWith('/')||/^[A-Za-z]:[/\\]/u.test(path)||path.startsWith('\\\\');
+        const separator=(/^[A-Za-z]:[/\\]/u.test(cwd)||cwd.startsWith('\\\\'))&&cwd.includes('\\')?'\\':'/';
+        return reportFileMediaUrl(base,absolute||!cwd?path:cwd.replace(/[/\\]+$/u,'')+separator+path.replace(/^[/\\]+/u,''));
+      },labels:{open:'打开图片',loading:'正在加载图片…',failed:'图片加载失败',dialog:'报告图片预览',close:'关闭'}};
+      // Definition-only source blocks supply the document vocabulary to split readable
+      // passages. Leave mixed/ambiguous Markdown to the complete original document.
+      const definitions=(source?.blocks??[]).filter(block=>block.kind!=='code'
+        &&/^(?: {0,3}\[(?!\^)[^\]\n]+\]:[^\n]+(?:\n[ \t]+["'(][^\n]*["')][ \t]*)?)(?:\n {0,3}\[(?!\^)[^\]\n]+\]:[^\n]+(?:\n[ \t]+["'(][^\n]*["')][ \t]*)?)*[ \t]*$/u.test(block.text.trimEnd()))
+        .map(block=>block.text).join('\n');
+      return {fileImages,definitions,openFile:owner?.openFile,pathImages:{resolve:value=>{
+        try{return reportFileMediaUrl(base,decodeURIComponent(value.split(/[?#]/u)[0]??''));}catch{return undefined;}
+      }}};
+    }
+    function renderMarkdown(text, streaming = false, plainStyle, media, references = false) {
       const MarkdownText = shippedMarkdownText();
       if (MarkdownText !== undefined) {
-        return h(MarkdownText, { text, streaming, labels: MARKDOWN_LABELS });
+        const body=h(MarkdownText, { text:references&&media?.definitions?text+'\n\n'+media.definitions:text, streaming, labels: MARKDOWN_LABELS, ...(media?{pathImages:media.pathImages}:{}) });
+        if(media){
+          const Provider=require('@deepseek-ai/dsh-client-ui-primitives').MarkdownDelegateProvider;
+          if(isElementType(Provider))return h(Provider,{fileImages:media.fileImages,openFile:media.openFile},body);
+        }
+        return body;
       }
       return h('div', { style: plainStyle ? { ...PLAIN_FALLBACK_STYLE, ...plainStyle } : PLAIN_FALLBACK_STYLE }, text);
     }
@@ -3856,6 +4271,7 @@ const CLIENT_BUILD = 2026111201;
       const [active, setActive] = React.useState('original');
       const [narrow, setNarrow] = React.useState(false);
       const surfaceRef = React.useRef(null);
+      const floating=useFloatingWindow({id:'comparison',getNode:()=>surfaceRef.current?.closest?.('[role=dialog]'),minWidth:320,minHeight:260,topGap:16});
       const originalRef = React.useRef(null);
       const personaRef = React.useRef(null);
       const originalTabRef = React.useRef(null);
@@ -3887,9 +4303,9 @@ const CLIENT_BUILD = 2026111201;
       const labels = { original: t?.('shell.originalLabel') ?? '原文', persona: t?.('shell.personaLabel') ?? '人格版' };
       const tabs = [['original', originalTabRef], ['persona', personaTabRef]];
       return h(shippedComparisonModal(), { open: true, onClose, title, headless: true, className: 'persona-shell-comparison' },
-        h('style', null, COMPARISON_CSS),
+        h('style', null, COMPARISON_CSS,FLOATING_WINDOW_CSS),
         h('div', { ref: surfaceRef, className: 'persona-shell-comparison-surface', 'data-narrow': narrow },
-          h('div', { className: 'persona-shell-comparison-header' },
+          h('div', { ...floating.dragProps,className: 'persona-shell-comparison-header' },
             h('h2', null, title),
             h('button', { type: 'button', 'data-modal-autofocus': '', onClick: onClose,
               'aria-label': t?.('shell.compareClose') ?? '关闭原文对照' }, t?.('shell.compareCloseShort') ?? '关闭'),
@@ -3921,6 +4337,7 @@ const CLIENT_BUILD = 2026111201;
             }, renderMarkdown(text)),
             )),
           ),
+          h(FloatingWindowHandles,{controls:floating,label:title}),
         ),
       );
     }
@@ -4366,7 +4783,7 @@ const CLIENT_BUILD = 2026111201;
           }, t('shell.showOriginal') ?? 'origin'):null,
           showHeader?h('button', { type: 'button', style: toggleStyle, 'aria-haspopup': 'dialog',
             onClick: () => setFeedbackOpen({key,row}) }, row.retrying ? '正在调整…' : '调整表达'):null,
-          showReading?h('button',{type:'button',style:toggleStyle,'aria-haspopup':'dialog',onClick:()=>{try{reportReadingRuntime.open(sessionId,seq);setReadingError('');}catch(error){setReadingError(error.message);}}},'阅读报告'):null,
+          showReading?h('button',{type:'button',style:toggleStyle,'aria-haspopup':'dialog',onClick:()=>{try{reportReadingRuntime.open(sessionId,seq,{sessionId,seq,text:original,cwd:props.cwd,openFile:props.openFile});setReadingError('');}catch(error){setReadingError(error.message);}}},'阅读报告'):null,
         ) : null,
         showHeader && !ready && reportFallbackReason(row) ? h('details', { 'data-persona-shell': 'fallback-reason',
           style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', lineHeight: 1.6, marginBottom: '6px' } },
@@ -4389,9 +4806,8 @@ const CLIENT_BUILD = 2026111201;
           : null,
         showHeader && ready && comparisonOpen ? h(ComparisonDialog, { original: comparison.original,
           persona: comparison.persona, t, onClose: () => setComparison(undefined) }) : null,
-        eligible && feedbackOpen?.key===key ? h(ReportFeedback, { key, sessionId,
-          row:!allowed?{...(row??feedbackOpen.row),canRetry:false,retryUnavailableReason:'rewrite-disabled'}
-            :row??{...feedbackOpen.row,canRetry:false,retryUnavailableReason:'source-unavailable'},onClose: () => setFeedbackOpen(false) }) : null,
+        eligible && feedbackOpen?.key===key ? h(ReportFeedback, { key, sessionId,showResult:!allowed,
+          row:row??{...feedbackOpen.row,canRetry:false,retryUnavailableReason:'source-unavailable'},onClose: () => setFeedbackOpen(false) }) : null,
         showHeader && row.feedbackError ? h('small', { role: 'status', style: { display: 'block', color: 'var(--dsw-alias-label-secondary)' } }, row.feedbackError) : null,
       );
     }
@@ -4765,11 +5181,11 @@ const CLIENT_BUILD = 2026111201;
     const USAGE_SECTIONS = [
       { label: '工作转述', keys: ['rewrite', 'progress'], tone: 'rewrite' },
       { label: '报告阅读', keys: ['report-visualization'], tone: 'visualization' },
-      { label: '聊天室', keys: ['chat', 'chat-context-selection', 'chat-participation', 'reply-suggestions', 'chat-draft'], tone: 'chat' },
+      { label: '聊天室', keys: ['chat', 'chat-context-selection', 'chat-participation', 'chat-support-research', 'chat-support-reason', 'reply-suggestions', 'chat-draft'], tone: 'chat' },
       { label: '其他功能', keys: ['preset', 'memory'], tone: 'other' },
     ];
     const USAGE_NAMES = { rewrite: '汇报改写', progress: '静默播报', 'report-visualization':'报告阅读', chat: '角色发言',
-      'chat-context-selection':'轮次规划', 'chat-participation': '调度判断', 'reply-suggestions': '快捷回复', 'chat-draft':'指令整理', preset: '预设生成', memory: '记忆提取' };
+      'chat-support-research':'调查资料', 'chat-support-reason':'深入推演', 'chat-context-selection':'轮次规划', 'chat-participation': '调度判断', 'reply-suggestions': '快捷回复', 'chat-draft':'指令整理', preset: '预设生成', memory: '记忆提取' };
     const usageNumber = (n) => Number.isSafeInteger(n) && n >= 0 ? n.toLocaleString('zh-CN') : '—';
     const usageTokens = (m) => m.calls > 0 && !m.usageCalls ? '未上报' : usageNumber(m.totalTokens);
     const usageDay = (iso) => String(iso ?? '').slice(5).replace('-', '/');
@@ -5757,6 +6173,7 @@ const CLIENT_BUILD = 2026111201;
       const [providers, setProviders] = React.useState([]);
       const [providersFailed,setProvidersFailed]=React.useState(false),[catalogueRetry,setCatalogueRetry]=React.useState(0);
       const { models, failed: modelsFailed } = useModelCatalogue(settings?.provider, activeTab === 'advanced', catalogueRetry);
+      const {models:supportModels,failed:supportModelsFailed}=useModelCatalogue(settings?.chatDeepReasoningProvider,activeTab==='chat'&&settings?.chatDeepReasoningEnabled===true&&!!settings?.chatDeepReasoningProvider,catalogueRetry);
       const { models: chatModels, failed: chatModelsFailed } = useModelCatalogue(settings?.chatProvider, activeTab === 'chat', catalogueRetry);
       const { models: visualizationModels, failed: visualizationModelsFailed } = useModelCatalogue(settings?.visualizationProvider, activeTab === 'advanced', catalogueRetry);
       const [status, setStatus] = React.useState('');
@@ -6647,7 +7064,15 @@ const CLIENT_BUILD = 2026111201;
               ...chatModels.map(m=>h('option',{key:m.id,value:m.id},m.name??m.id)))):null,
           chatModelsFailed&&settings.chatProvider&&!providersFailed?catalogueFailure('模型列表暂时无法读取，已保存的选择仍保留。'):null,
           h('div',{className:'dsh-persona-process-options',style:{borderBottom:0,paddingBottom:0}},
-            h(ChatThinkingControls,{visible:activeTab==='chat',settings,save}))),h(RoomReferencesPanel,{visible:activeTab==='chat'}))),
+            h(ChatThinkingControls,{visible:activeTab==='chat',settings,save}))),h('section',{className:'dsh-persona-section','aria-label':'聊天室辅助能力'},
+          settingsHeading('','辅助能力','开启后由判断线程按需使用，每条请求最多一个任务；调查只访问公开网页，推演不联网。'),
+          h('label',{style:{...fieldStyle,display:'flex',gap:8}},h('input',{type:'checkbox',checked:settings.chatResearchEnabled===true,onChange:e=>save({chatResearchEnabled:e.target.checked})}),'允许调查资料'),
+          h('p',{style:hintStyle},'使用 DSH 已配置的搜索服务。最多 4 次模型请求、3 次搜索、5 次网页读取，60 秒内结束；不读取文件或执行命令。'),
+          h('label',{style:{...fieldStyle,display:'flex',gap:8}},h('input',{type:'checkbox',checked:settings.chatDeepReasoningEnabled===true,onChange:e=>save({chatDeepReasoningEnabled:e.target.checked})}),'允许深入推演'),
+          h('p',{style:hintStyle},'一次独立模型请求，默认启用思考，最多 60 秒。未另选模型时沿用聊天室模型；无法启用思考时会提示，不会静默关闭思考。'),
+          settings.chatDeepReasoningEnabled?h('div',null,h('label',{style:fieldStyle},h('span',{style:labelStyle},'深入推演模型'),h('select',{style:inputStyle,'aria-label':'深入推演提供方',value:settings.chatDeepReasoningProvider??'',onChange:e=>save({chatDeepReasoningProvider:e.target.value,chatDeepReasoningModel:''})},h('option',{value:''},'沿用聊天室模型'),...providers.map(p=>h('option',{key:p.provider,value:p.provider},p.name??p.provider)))),
+            settings.chatDeepReasoningProvider?h('label',{style:fieldStyle},h('span',{style:labelStyle},'模型名称'),h('select',{style:inputStyle,'aria-label':'深入推演模型名称',value:settings.chatDeepReasoningModel??'',onChange:e=>save({chatDeepReasoningModel:e.target.value})},h('option',{value:''},'提供方默认'),...supportModels.map(m=>h('option',{key:m.id,value:m.id},m.name??m.id)))):null,
+            supportModelsFailed?h('p',{style:hintStyle},'模型列表暂不可用，已保存的选择仍保留。'):null):null),h(RoomReferencesPanel,{visible:activeTab==='chat'}))),
         panel('memory', h('section', { className: 'dsh-persona-section', 'aria-label': '记忆与约定' },
           settingsHeading('', '记忆与约定', '查看原话依据，确认哪些偏好继续使用。'), h(MemoryPanel, { settings, save, presets }))),
         panel('appearance', h('section', { className: 'dsh-persona-section', 'aria-label': '聊天室外观' },
@@ -6709,11 +7134,14 @@ const CLIENT_BUILD = 2026111201;
         ConversationPanel,
         ReportFeedback,
         ReportVisualizationWindow,
+        reportFileMediaUrl,
+        reportMarkdownMedia,
         reportReadingRuntime,
         SessionPersonaSwitch,
         WorkInputBridge,
         PersonaChatWindow,
         RoomChatWorkspace,
+        ChatSupportStatus,
         RoomAvatar,
         RoomRecipient,
         ChatReplyBubbles,
@@ -6748,7 +7176,7 @@ const CLIENT_BUILD = 2026111201;
         applyControls,
         getChatRendererState: () => chatRendererState,
         unmaskPartial,
-        chatTakeoverEnabled,
+        reportToolsEnabled,
         HOLD_PLACEHOLDER_MS,
         STATE_WAIT_MS,
         reviewFingerprint,
@@ -6757,6 +7185,7 @@ const CLIENT_BUILD = 2026111201;
         ReviewHint,
         ComparisonDialog,
         NativeComparisonModal,
+        ActionDialog,
         COMPARISON_NARROW_WIDTH,
         ProgressNotice,
         setProgressEnabled,
@@ -6798,9 +7227,10 @@ const CLIENT_BUILD = 2026111201;
           chatDelegate = undefined;
           if (release !== undefined) release();
         };
-        refreshChatTakeover = () => {
+        refreshChatTakeover = (recover = false) => {
           if (stopped) return;
-          if (!chatTakeoverEnabled(globalEnabled, activeSessionId, sessionOff)) {
+          if(recover)rendererFailed=false;
+          if (!reportToolsEnabled(controlsReady)) {
             releaseChatSlot();
             rendererFailed = false;
             setChatRendererState('disabled');
@@ -6943,6 +7373,7 @@ const CLIENT_BUILD = 2026111201;
           sessionSwitchRev = -1;
           switchReady = false;
           globalEnabled = false;
+          controlsReady = false;
           activeSessionId = undefined;
           for (const unsubscribe of rendererSubscriptions.splice(0)) unsubscribe();
           releaseChatSlot();
@@ -7020,7 +7451,7 @@ const CLIENT_BUILD = 2026111201;
         if (typeof ctx.inject === 'function') ctx.inject(['remote', 'remote.account'], (owner) => {
           const remote = owner.get('remote');
           if (typeof remote?.account?.getProfile !== 'function' || typeof remote?.account?.getState !== 'function') return;
-          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.2',
+          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.3',
             locale: typeof navigator !== 'undefined' ? navigator.language : 'zh-CN', timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 }));
           owner.effect(() => release);
           if (typeof owner.on === 'function') owner.on('connection/reset', () => { void accountAvatarSource.refresh(); });

@@ -15,6 +15,10 @@
         chatModel: ''
         chatThinking: true # 聊天室独立思考开关
         chatReasoningEffort: '' # 留空使用模型默认思考强度
+        chatResearchEnabled: false # 允许按需调查公开资料，需要宿主搜索服务
+        chatDeepReasoningEnabled: false # 允许按需深入推演，单次强制开启思考
+        chatDeepReasoningProvider: '' # 留空跟随聊天室模型
+        chatDeepReasoningModel: ''
         maxRewriteChars: 6000
         maxRatio: 1.35
         timeoutMs: 45000

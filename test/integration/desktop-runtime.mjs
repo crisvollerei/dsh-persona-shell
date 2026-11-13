@@ -85,6 +85,19 @@ try {
   observations.push({ phase: 'boot', ping });
   assert.equal(ping?.stateSync?.client, 'ready', 'installed Desktop uses the official push stream');
   assert.equal(ping.hostBuild, ping.clientBuild);
+  const nativeWindow=await page.evaluate(()=>({bridgeKeys:Object.keys(globalThis.dshDesktop??{}),
+    popupBlocked:window.open('about:blank','persona-window-probe','width=320,height=240')===null,
+    documentPictureInPicture:typeof globalThis.documentPictureInPicture?.requestWindow==='function'}));
+  observations.push({phase:'native-window-capabilities',...nativeWindow});
+  assert.equal(nativeWindow.popupBlocked,true,'installed Desktop refuses renderer-created child windows');
+  if(nativeWindow.documentPictureInPicture){
+    await page.evaluate(()=>{const button=document.createElement('button');button.dataset.personaPipProbe='';button.textContent='测试独立阅读窗口';
+      button.onclick=async()=>{try{const child=await documentPictureInPicture.requestWindow({width:400,height:300});
+        globalThis.__personaPipProbe={opened:true};child.close();}catch(error){globalThis.__personaPipProbe={opened:false,name:error.name,message:error.message};}finally{button.remove();}};
+      document.body.appendChild(button);});
+    await page.locator('[data-persona-pip-probe]').click();await page.waitForFunction(()=>globalThis.__personaPipProbe!==undefined);
+    observations.push({phase:'document-picture-in-picture',...await page.evaluate(()=>globalThis.__personaPipProbe)});
+  }
   assert.equal((await request('settings')).value.settings.memory, false);
   const base = await page.evaluate(() => globalThis.__DSH_TRANSPORT__?.streamBaseUrl);
   assert.ok(base, 'Desktop supplied its official Host stream carrier');
