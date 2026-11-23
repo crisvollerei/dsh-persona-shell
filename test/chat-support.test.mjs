@@ -26,10 +26,21 @@ test('global/room concurrency is reserved before asynchronous persistence yields
  assert.equal((await b).error,'capacity');assert.equal((await d).error,'capacity');assert.equal((await a).status,'cancelled');assert.equal((await c).status,'cancelled');await manager.dispose();
 });
 test('physical dispatch and individual tool limits cannot be replenished by retry or model output',async()=>{
- for(const [template,field,max]of [['reason','calls',1],['research','calls',4],['research','searches',3],['research','reads',5]]){
+ for(const [template,field,max]of [['reason','calls',1],['research','calls',4],['research','searches',3],['research','reads',4]]){
   const manager=createChatSupport({execute:async({admit})=>{for(let i=0;i<=max;i++)admit(field);return{};}});
   const result=await manager.start({...scope,template});assert.equal(result.counts[field],max);assert.equal(result.error,'budget');
  }
+});
+test('research can finish in three model calls and retains evidence if one parallel read fails',async()=>{
+ const actions=[{action:'search',query:'来源'},{action:'read',sourceIds:['w1','w2']},{action:'finish',answer:'只有第一份有正文。',sources:['w1']}];
+ const manager=createChatSupport({execute:options=>runChatSupport({...options,
+  call:async(_request,dispatch)=>{dispatch();return JSON.stringify(actions.shift());},
+  search:async()=>({sources:[{url:'https://example.com/one'},{url:'https://example.com/two'}]}),
+  readPage:async url=>{if(url.endsWith('/two'))throw Error('offline');return{url,text:'原始资料。'};}})});
+ const result=await manager.start({...scope,template:'research'});
+ assert.equal(result.status,'completed');
+ assert.deepEqual(result.counts,{calls:3,searches:1,reads:2});
+ assert.deepEqual(result.sources.map(source=>source.id),['w1']);
 });
 test('restart marks pending receipts interrupted, and failed persistence never dispatches',async()=>{
  const manager=createChatSupport({execute:()=>assert.fail('not admitted'),save:async()=>{throw Error('disk');}});assert.equal((await manager.start(scope)).error,'save-failed');

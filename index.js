@@ -39,6 +39,7 @@ import { createExpressionLlm,reasoningOptions } from './lib/expression-llm.js';
 import { createModelUsage } from './lib/model-usage.js';
 import { createMemoryUsage } from './lib/memory-usage.js';
 import { CHAT_LIMITS, createPersonaChat, parseChatDecision, chatFailure, primaryChatTurn } from './lib/persona-chat.js';
+import { resolvePersonaExpression } from './lib/persona-expression.js';
 import { buildChatPrompt, publicChatExchange } from './lib/chat-prompt.js';
 import { CHAT_IMAGE_LIMITS, decodeChatImages, normalizeChatImages, sameChatImages, imageInputStatus, selectChatImages, appendChatImages } from './lib/chat-images.js';
 import { createChatTimeContext } from './lib/chat-time.js';
@@ -46,12 +47,12 @@ import { createModelRouteResolver } from './lib/model-route.js';
 import { createChatInputQueue } from './lib/chat-input-queue.js';
 import { createChatScheduler, chatSchedulerEventKey } from './lib/chat-scheduler.js';
 import { contextSelectionFallback, explicitContextSelection } from './lib/chat-coordinator.js';
-import {supportReasonContext} from './lib/chat-support-templates.js';
+import {CHAT_SUPPORT_SETTINGS, supportReasonContext, supportSummaryContext} from './lib/chat-support-templates.js';
 import {createChatSupport} from './lib/chat-support.js';
 import {runChatSupport} from './lib/chat-support-runner.js';
 import {createSupportPageReader} from './lib/chat-support-web.js';
-import { directorEvents,possiblePeerCall } from './lib/chat-director.js';
-import { buildDirectorRequest,parseDirectorResponse } from './lib/chat-director-wire.js';
+import { directorEvents,directedOpinionHandback,possiblePeerCall } from './lib/chat-director.js';
+import { buildDirectorRequest } from './lib/chat-director-wire.js';
 import { normalizeChatContribution } from './lib/chat-contribution.js';
 import { buildChatSceneCatalog,selectChatScene,projectChatScene } from './lib/chat-scene.js';
 import { roomCharacterContext } from './lib/character-roster.js';
@@ -100,9 +101,9 @@ const MAX_SESSION_SWITCHES = 500;
  * loaded" are indistinguishable from the transcript alone; the public probe
  * publishes both ids so a restart can be verified with one request.
  */
-const HOST_BUILD = 2026111201;
+const HOST_BUILD = 2026112301;
 const DIRECTOR_REASONS = new Set(['wire-type','wire-size','control','json','duplicate-key','shape','choice','goal','contribution','actor','event','evidence',
-  'stale-event','author','normal-ineligible','peer-ineligible','peer-call','non-stop','tool-call','too-long','scene']);
+  'stale-event','author','normal-ineligible','peer-ineligible','peer-call','non-stop','tool-call','too-long','scene','support']);
 const DIRECTOR_FINISHES = new Set(['stop','max-tokens','tool-calls','error','aborted']);
 
 /**
@@ -270,6 +271,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     model: cfg.model ?? '',
     reasoningEffort: cfg.reasoningEffort ?? '',
     chatResearchEnabled:cfg.chatResearchEnabled===true,chatDeepReasoningEnabled:cfg.chatDeepReasoningEnabled===true,
+    chatSummarizeEnabled:cfg.chatSummarizeEnabled===true,
     chatDeepReasoningProvider:cfg.chatDeepReasoningProvider??'',chatDeepReasoningModel:cfg.chatDeepReasoningModel??'',
     chatProvider: cfg.chatProvider ?? '', chatModel: cfg.chatModel ?? '', chatThinking: cfg.chatThinking === true,
     chatReasoningEffort: cfg.chatReasoningEffort ?? '',
@@ -340,6 +342,17 @@ export function apply(ctx, rawConfig, runtime = {}) {
 
   /** `${sessionId}:${seq}` → row. */
   const rows = new Map();
+  const rowsBySession = new Map();
+  const sessionRows = sessionId => rowsBySession.get(sessionId)?.values() ?? [];
+  function setReportRow(key, row) {
+    rows.set(key, row);
+    let own = rowsBySession.get(row.sessionId);
+    if (!own) rowsBySession.set(row.sessionId, own = new Map());
+    own.set(row.seq, row);
+  }
+  const originalReportLimit = 60000;
+  const reportFits = text => text.length <= cfg.maxRewriteChars
+    || text.length <= originalReportLimit && mask(text).masked.length <= cfg.maxRewriteChars;
   /** sessionId → newest revision counter. */
   const revisions = new Map();
   /** sessionId → recent successful outputs, for tone continuity. */
@@ -532,7 +545,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       return runChatSupport({job,signal,update,admit,search:(request,abort)=>web.search(request,abort),readPage:supportPageReader,
         call:async(request,onDispatch)=>{
           let selected;
-          const llm=expressionLlm(job.template==='research'?'chat-support-research':'chat-support-reason',()=>{onDispatch();update({model:{provider:selected.provider,model:selected.model,thinking:selected.effective??selected.mode}});},options,
+          const llm=expressionLlm('chat-support-'+job.template,()=>{onDispatch();update({model:{provider:selected.provider,model:selected.model,thinking:selected.effective??selected.mode}});},options,
             decision=>{selected=decision;});
           if(!llm)throw Error('support-model-unavailable');let text='',finish;
           for await(const chunk of streamWithSignal(llm,{...request,...route})){
@@ -758,7 +771,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
       thinking: presentation === 'readable' ? settings.readableThinking !== false : settings.visualizationThinking === true,
       thinkingRequired:presentation==='readable'&&settings.readableThinking!==false };
     activeReportViews.set(key, job);
-    const timer = setTimeout(() => abort.abort(Error('report-timeout')), cfg.timeoutMs); timer.unref?.();
+    const timer = setTimeout(() => abort.abort(Error('report-timeout')),
+      presentation === 'readable' ? cfg.readableTimeoutMs : cfg.timeoutMs); timer.unref?.();
     const valid = () => {
       abort.signal.throwIfAborted();
       if (storeClosing) throw Error('report-cancelled');
@@ -931,7 +945,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       avatar: value.avatar ? ROUTE + '/chat-profile/avatar?v=' + avatarVersion(value.avatar) : null };
   }
   function reportRetryUnavailable(row,sessionId){
-    if(!row||typeof row.original!=='string'||!row.original.trim()||row.original.length>cfg.maxRewriteChars)return 'source-unavailable';
+    if(!row||typeof row.original!=='string'||!row.original.trim()||!reportFits(row.original))return 'source-unavailable';
     if(row.reason==='no-prose')return 'report-no-prose';
     if(!row.speaker||!presets.some(p=>p.id===row.speaker.id))return 'persona-not-found';
     if(row.retrying||inFlight.has(`${sessionId}:${row.seq}`))return 'feedback-in-progress';
@@ -978,7 +992,8 @@ export function apply(ctx, rawConfig, runtime = {}) {
     return { instanceId,chatSchema:3,discussionVersion:2,localStateKey:chatLocalStateKey,roundId:round?.id,roundMessageId:round?.messageId,roundPhase:preparing?'preparing':round?.stage,
       directorFailure:room?chatDirectorFailures.get(room.id)??null:null,queuedInputs:room?chatInputs.list(room.id):[],inputRevision:chatInputs.snapshot().revision,canQueue:chatInputReady,
       roundElapsedMs:round?Math.max(0,Date.now()-round.startedAt):undefined,roundModel:round?.model,canYield,activeAttemptIds:room?chatJobsFor(room.id).filter(job=>job.started&&!job.abort.signal.aborted).map(job=>job.attemptId):[], personaId, room, scopeKey:roomScopeKey(room), rooms, activeRoomId:chats.active(), running:!!running, contacts, epoch: chats.epoch(), userProfile: publicChatProfile(), defaultPersonaId: activePresetId(),
-      supportTasks:room?chatSupport.view(supportScope(room)):[],supportCapabilities:{research:settings.chatResearchEnabled===true,reason:settings.chatDeepReasoningEnabled===true,searchService:typeof ctx.get('web')?.search==='function'},
+      supportTasks:room?chatSupport.view(supportScope(room)):[],supportCapabilities:{research:settings.chatResearchEnabled===true,reason:settings.chatDeepReasoningEnabled===true,
+        summarize:settings.chatSummarizeEnabled===true,workReferences:!!room?.sources?.length,searchService:typeof ctx.get('web')?.search==='function'},
       memberActivity,imagesAvailable:typeof ctx.get('attachments')?.saveImages==='function'&&typeof ctx.get('attachments')?.readImage==='function',
       ready: settingsRestored && !!store && !storeClosing, modelReady: modelRoutes.canResolve(context?.snapshot().primarySessionId??currentSessionHint(),{provider:settings.chatProvider,model:settings.chatModel}) };
   }
@@ -1122,15 +1137,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       if(turn.status==='ready')ids.push(chatSchedulerEventKey({roomId,generation:room.generation??0,
         sourceScope:schedulerScope(room,turn.scopeKey??turn.contextKey??null),turnId:turn.id,attemptId:turn.attemptId}));
     }
-    for(const batch of chatInputs.list(roomId))for(const part of batch.parts)ids.push(chatSchedulerEventKey({roomId,generation:room.generation??0,
-      sourceScope:schedulerScope(room,batch.scopeKey),turnId:part.id,attemptId:'user'}));
     chatScheduler.retain(roomId,ids.filter(Boolean));
-  }
-  function publishChatUser(room,batch) {
-    chatScheduler.register(room.id,room.memberIds,{generation:room.generation??0,sourceScope:schedulerScope(room,batch.scopeKey)});
-    for(const part of batch.parts)chatScheduler.publish(room.id,{authorId:'user',userTurnId:batch.id,messageCount:1,id:chatSchedulerEventKey({
-      roomId:room.id,generation:room.generation??0,sourceScope:schedulerScope(room,batch.scopeKey),turnId:part.id,attemptId:'user'})});
-    retainChatEvents(room.id);
   }
 
   function armChatInput(roomId) {
@@ -1179,8 +1186,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       if(event.authorId==='user'){
         const committed=room.turns.find(t=>(t.scopeKey??t.contextKey??null)===scopeKey&&(t.messageId===ref.turnId||t.userParts?.some(p=>p.id===ref.turnId)));
         const part=committed?.userParts?.find(p=>p.id===ref.turnId);
-        const queued=chatInputs.list(roomId).filter(b=>b.scopeKey===scopeKey).flatMap(b=>b.parts).find(p=>p.id===ref.turnId);
-        const text=part?.text??committed?.user??queued?.text;
+        const text=part?.text??committed?.user;
         if(text)result.push({author:{role:'user',name:'我'},text,eventId:event.id,
           refs:[{roomId,generation:room.generation??0,kind:'user',messageId:part?.id??committed?.messageId??ref.turnId}]});
       }else{
@@ -1242,7 +1248,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       let timer;
       const valid = () => !storeClosing && presets.find((p) => p.id === persona.id)?.pack === persona.pack
         && chats.hasMember(room.id,persona.id)
-        &&(chats.read(room.id)?.referenceRevision??0)===(round.referenceRevision??0)
+        && chats.matchesRound(room.id,round.referenceRevision??0)
         && (!workContext || sourceContext.key() === workContext.key);
       try {
         if(waitFor)await waitWithSignal(waitFor,abort.signal);
@@ -1307,7 +1313,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
           scene:projectChatScene(chats.read(room.id),{messageId:turn.messageId,scopeKey:turn.scopeKey??turn.contextKey??null,referenceRevision:round.referenceRevision??0}),
           responsePlan,
           directorAssignment:round.directive?.id===persona.id?round.directive:undefined,
-          supportResult:round.supportArtifact,
+          supportResult:round.supportSourcesCurrent?.()===false?undefined:round.supportArtifact,
           sceneDirection:round.directive?.id===persona.id&&round.directive.sceneDirection&&round.replyTarget?.ref?{
             text:round.directive.sceneDirection,roomId:room.id,generation:current.generation??0,scopeKey:turn.scopeKey??turn.contextKey??null,
             messageId:turn.messageId,actorId:persona.id,sourceRef:round.replyTarget.ref}:undefined,
@@ -1480,6 +1486,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
 
   function launchChatRound(result,workContext,clientTime) {
     const room=result.room,messageId=result.turn.messageId,original=room.turns.find(t=>t.messageId===messageId);
+    const summaryRequested=original.userParts?.some(part=>part.summarize===true)===true;
     const scopeKey=result.turn.scopeKey??result.turn.contextKey??null,startedAt=Date.now(),abort=new AbortController();
     const round={id:randomUUID(),roomId:room.id,messageId,abort,stage:'preparing',startedAt,epoch:chats.epoch(),
       referenceRevision:room.referenceRevision??0,contextKey:workContext?.key,timeContext:createChatTimeContext(clientTime,startedAt),
@@ -1488,7 +1495,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     chatRounds.get(room.id)?.abort.abort(Error('chat-superseded'));chatRounds.set(room.id,round);chatDirectorFailures.delete(room.id);
     const source=roomContexts.get(room.id)??chatContext;
     const valid=()=>!storeClosing&&!abort.signal.aborted&&chatRounds.get(room.id)===round&&chats.acceptsEpoch(room.id,round.epoch)
-      &&chats.read(room.id)?.turns.at(-1)?.messageId===messageId&&(chats.read(room.id)?.referenceRevision??0)===round.referenceRevision&&(!workContext||source.key()===workContext.key);
+      &&chats.matchesRound(room.id,round.referenceRevision??0,messageId)&&(!workContext||source.key()===workContext.key);
     chatScheduler.register(room.id,original.memberIdsAtSend,{generation:room.generation??0,sourceScope:schedulerScope(room,scopeKey)});
     if(result.created&&result.turn.phase==='anchor')chatScheduler.reset(room.id,messageId,round.selected);
     else if(chatScheduler.read(room.id,original.memberIdsAtSend[0])?.userTurnId!==messageId)chatScheduler.restoreCycle(room.id,{
@@ -1580,17 +1587,24 @@ export function apply(ctx, rawConfig, runtime = {}) {
             if(!due.length)break;
             round.stage='listening';await wait(Math.max(Math.min(...due),lastDecision+chatIntervalMs)-Date.now());continue;
           }
-          const delay=lastDecision+chatIntervalMs-Date.now();if(delay>0){round.stage='listening';await wait(delay);continue;}
-          checked.add(signature);lastDecision=Date.now();chatDirectorClocks.set(room.id,lastDecision);decisions++;
           const sources=workContext?.key&&source.active()?source.selection(workContext.key).sources:[];
           const supportUsed=chatSupport.find({...supportScope(current),messageId});
-          const supportTemplates=!supportUsed&&chats.active()===room.id&&source.active()?[...(settings.chatResearchEnabled===true&&typeof ctx.get('web')?.search==='function'?['research']:[]),...(settings.chatDeepReasoningEnabled===true?['reason']:[])]:[];
-          const directorOptions={supportTemplates,message:original.user,recipients:original.recipients,members,states,events,
+          const explicit=explicitContextSelection(original.user);
+          const wantsSummary=summaryRequested&&!supportUsed&&!explicit;
+          const manualSummary=wantsSummary&&sources.length>0&&chats.active()===room.id;
+          const supportTemplates=!supportUsed&&!manualSummary&&chats.active()===room.id&&source.active()
+            ? [...(settings.chatResearchEnabled&&typeof ctx.get('web')?.search==='function'?['research']:[]),
+              ...(settings.chatDeepReasoningEnabled?['reason']:[]),
+              ...(settings.chatSummarizeEnabled&&!explicit&&sources.length?['summarize']:[])] : [];
+          const directorOptions={supportTemplates,summaryRequested:manualSummary,message:original.user,recipients:original.recipients,members,states,events,
             imageCount:original.userParts?.reduce((n,p)=>n+(p.images?.length??0),0)??0,
             contributions:directorContributions(current,events,scopeKey),
             sources,sourceIds:sources.map(s=>s.id),history:history(),quotedMessage:original.quote,referenceSelection:round.coordination,
             sceneCatalog:buildChatSceneCatalog(current,{messageId,scopeKey,referenceRevision:round.referenceRevision??0})};
-          const {system,user}=buildDirectorRequest(directorOptions);
+          const {system,user,choices,userEventId,parse}=buildDirectorRequest(directorOptions);
+          if (!choices.length) { checked.add(signature); continue; }
+          const delay=lastDecision+chatIntervalMs-Date.now();if(delay>0){round.stage='listening';await wait(delay);continue;}
+          checked.add(signature);lastDecision=Date.now();chatDirectorClocks.set(room.id,lastDecision);decisions++;
           round.stage=group.length?'listening':'preparing';
           const controller=new AbortController(),stop=()=>controller.abort(abort.signal.reason);
           abort.signal.addEventListener('abort',stop,{once:true});if(abort.signal.aborted)stop();
@@ -1614,7 +1628,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
               if(chunk.type==='finish')finish=chunk.reason?.kind;
             }
             round.listeningMemberIds=[];controller.signal.throwIfAborted();if(!valid())return;
-            decision=finish==='stop'?parseDirectorResponse(wire,directorOptions):{basis:'invalid',reason:'non-stop'};
+            decision=finish==='stop'?parse(wire):{basis:'invalid',reason:'non-stop'};
             if(decision.basis!=='model'){
               failureReason=DIRECTOR_REASONS.has(decision.reason)?decision.reason:'shape';throw Error('chat-director-invalid');
             }
@@ -1638,10 +1652,28 @@ export function apply(ctx, rawConfig, runtime = {}) {
           }return;}
           finally{round.listeningMemberIds=[];clearTimeout(deadline);abort.signal.removeEventListener('abort',stop);controller.abort();}
           if(!valid()||chatInputs.peek(room.id))break;
-          const explicit=explicitContextSelection(original.user);
+          if (manualSummary && (!decision.next || decision.next.kind !== 'normal' || decision.next.to !== 'user')) {
+            const direct = choices.filter(choice => choice.kind === 'normal' && choice.to === 'user' && choice.eventId === userEventId);
+            const fallback = original.recipients.length
+              ? original.recipients.map(recipient => direct.find(choice => choice.id === recipient.id)).find(Boolean) : direct[0];
+            if (fallback) {
+              const accepted = parse(fallback.choiceId);
+              if (accepted.next) decision = { ...decision, next: accepted.next, waitForUser: false };
+            }
+          }
+          if (wantsSummary && (!manualSummary || !decision.next || decision.next.kind !== 'normal' || decision.next.to !== 'user')) {
+            chatDirectorFailures.set(room.id,{messageId,code:manualSummary?'summary-actor-unavailable':'summary-reference-unavailable'});
+          }
           round.coordination=explicit??(decision.context.basis==='omitted'&&round.coordination?round.coordination:decision.context);
           if(!decision.next){if(decision.waitForUser===true)break;continue;}
           const action=decision.next,person=members.find(p=>p.id===action.id);
+          if(!manualSummary&&round.coordination.work!=='required'&&directedOpinionHandback(directorOptions,action))break;
+          const directSummary=manualSummary&&action.kind==='normal'&&action.to==='user';
+          const helper=directSummary?{template:'summarize',goal:'整理与当前问题有关的工作会话原文'}:action.support;
+          if(directSummary&&round.coordination.work!=='required'){
+            const primary=sources.find(s=>s.primary)??sources[0];
+            round.coordination={work:'required',sourceIds:[primary.id],request:round.coordination.request,basis:'explicit'};
+          }
           const targetEvent=events.find(event=>event.id===action.evidence.eventId);
           round.replyTarget=directorQuote(chats.read(room.id),targetEvent,action.evidence.index,scopeKey);
           let preparationGrant;
@@ -1652,23 +1684,39 @@ export function apply(ctx, rawConfig, runtime = {}) {
             preparationGrant=chatScheduler.read(room.id,person.id)?.peerGrant;
           }
           try{
+          const ids=round.coordination.work==='required'?round.coordination.sourceIds:[];
           if(workContext?.key){
-            const ids=round.coordination.work==='required'?round.coordination.sourceIds:[];
             if(source.active()){
               if(ids.length)await waitWithSignal(source.prepareCapture(workContext.key,{sourceIds:ids}),abort.signal);
-              if(!valid())return;workContext={...source.capture(workContext.key,{sourceIds:ids}),sourceCatalog:source.selection(workContext.key).sources,scopeKey};
+              if(!valid())return;workContext={...source.capture(workContext.key,{sourceIds:ids,question:original.user}),sourceCatalog:source.selection(workContext.key).sources,scopeKey};
             }else{workContext={...workContext,sources:[],omitted:ids.length?[{name:'已接入的工作参考',reason:'inactive'}]:[]};if(ids.length)round.coordination={...contextSelectionFallback('unavailable'),request:round.coordination.request};}
           }
-          if(action.support){
+          if(helper){
             if(targetEvent?.author?.role!=='user')throw Error('chat-invalid');
             round.stage='support';
             const snapshot=chats.read(room.id),scope=supportScope(snapshot);
+            const isSummary=helper.template==='summarize';
+            const captureOptions={sourceIds:ids,question:original.user};
+            const summarySources=isSummary&&ids.length&&source.active()
+              ? source.capture(workContext.key,{...captureOptions,forSummary:true}).sources.filter(entry=>source.resolveReference(entry)) : [];
+            const summaryCurrent=()=>source.active()&&summarySources.every(entry=>source.resolveReference(entry));
             round.supportArtifact=await chatSupport.start({...scope,messageId,actorId:person.id,actorName:person.name,
-              template:action.support.template,goal:action.support.goal,question:original.user,
-              context:action.support.template==='reason'?supportReasonContext(history(),workContext?.sources):''},
+              template:helper.template,goal:helper.goal,question:original.user,...(directSummary?{explicit:true}:{}),
+              context:isSummary?JSON.stringify(supportSummaryContext(summarySources)):helper.template==='reason'?supportReasonContext(history(),workContext?.sources):''},
               {signal:abort.signal,valid:()=>valid()&&chats.hasMember(room.id,person.id)&&presets.some(p=>p.id===person.id&&p.pack===person.pack)
-                &&(action.support.template==='research'?settings.chatResearchEnabled:settings.chatDeepReasoningEnabled)===true});
+                &&(directSummary||settings[CHAT_SUPPORT_SETTINGS[helper.template]]===true)
+                &&(!isSummary||!summarySources.length||summaryCurrent())});
             if(!valid()||chatInputs.peek(room.id))break;
+            if(isSummary){
+              round.supportSourcesCurrent=summarySources.length?summaryCurrent:undefined;
+              if(summarySources.length&&!summaryCurrent()){
+                if(source.active())await waitWithSignal(source.prepareCapture(workContext.key,{sourceIds:ids}),abort.signal);
+                if(!valid())return;
+                workContext=source.active()
+                  ? {...source.capture(workContext.key,captureOptions),sourceCatalog:source.selection(workContext.key).sources,scopeKey}
+                  : {...workContext,sources:[],omitted:[{name:'已接入的工作参考',reason:'inactive'}]};
+              }
+            }
           }
           const state=chats.read(room.id),added=await chats.appendDirectedReply({roomId:room.id,messageId,planId:round.id+':'+decisions,
             actor:{id:person.id,name:person.name},responsePlan:{kind:action.kind,to:action.to,evidence:action.evidence.text,
@@ -1714,7 +1762,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       const updated = { ...active, pack, at: Date.now() };
       await commitPresetChange({ entry: updated });
       presets = presets.map((preset) => (preset.id === active.id ? updated : preset));
-      return settings.presetName;
+      return pack;
     }
 
     if (presets.length >= MAX_PRESETS) throw new Error('too-many-presets');
@@ -1726,6 +1774,14 @@ export function apply(ctx, rawConfig, runtime = {}) {
     let name = `${base} 2`;
     for (let index = 3; presets.some((preset) => preset.name === name); index += 1) {
       name = `${base} ${index}`;
+    }
+    if (active?.builtin === true) {
+      const chat = resolvePersonaExpression(active.pack,{channel:'chat',persona:active});
+      const report = resolvePersonaExpression(active.pack,{channel:'report',persona:active});
+      const inherited = Object.fromEntries(['report','voice','samples']
+        .filter(key=>JSON.stringify(pack[key])===JSON.stringify(active.pack[key])).map(key=>[key,report[key]]));
+      pack = normalizePack({...pack,...inherited,chat:{voice:chat.voice,samples:chat.samples,
+        dialogueExamples:chat.dialogueExamples,workDialogueExamples:chat.workDialogueExamples,gender:chat.gender,...pack.chat}});
     }
     const forked = {
       id: `preset-${randomUUID()}`,
@@ -1739,7 +1795,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     await commitPresetChange({ entry: forked, activeId: forked.id });
     presets = [...presets, forked];
     settings.presetName = name;
-    return name;
+    return pack;
   }
 
   /** Persist the durable switches and route. */
@@ -1766,6 +1822,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       model: settings.model,
       reasoningEffort: settings.reasoningEffort,
       chatResearchEnabled:settings.chatResearchEnabled,chatDeepReasoningEnabled:settings.chatDeepReasoningEnabled,chatDeepReasoningProvider:settings.chatDeepReasoningProvider,chatDeepReasoningModel:settings.chatDeepReasoningModel,
+      chatSummarizeEnabled:settings.chatSummarizeEnabled,
       chatProvider:settings.chatProvider,chatModel:settings.chatModel,chatThinking:settings.chatThinking,
       chatReasoningEffort:settings.chatReasoningEffort,
       visualizationProvider:settings.visualizationProvider,visualizationModel:settings.visualizationModel,
@@ -2031,8 +2088,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     // process has not touched yet — which is exactly what a restart plus one new
     // message used to do.
     if (sessionId !== '') hydrate(sessionId);
-    const own = [];
-    for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
+    const own = [...sessionRows(sessionId)];
     own.sort((a, b) => a.seq - b.seq);
     return store.put(sessionId, own.map((row) => ({
       seq: row.seq,
@@ -2090,7 +2146,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         const key = `${sessionId}:${saved.seq}`;
         if (rows.has(key)) continue;
         if (saved.status !== 'ready' && saved.status !== 'skipped') recoveredStatus = true;
-        rows.set(key, {
+        setReportRow(key, {
           sessionId,
           seq: saved.seq,
           status: saved.status === 'ready' ? 'ready' : 'skipped',
@@ -2102,7 +2158,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
           processNote: saved.final === true ? undefined : validateProcessNote(saved.processNote, saved.processUsage),
           processUsage: saved.final === true ? undefined : restoreToolUsage(saved.processUsage),
           process: saved.process === true,
-          original: typeof saved.original === 'string' && saved.original.length <= cfg.maxRewriteChars ? saved.original : undefined,
+          original: typeof saved.original === 'string' && saved.original.length <= originalReportLimit ? saved.original : undefined,
           version: Number.isSafeInteger(saved.version) && saved.version > 0 ? saved.version : 1,
           speaker: typeof saved.speaker?.id === 'string' && typeof saved.speaker?.name === 'string'
             ? { id: saved.speaker.id.slice(0, 200), name: saved.speaker.name.slice(0, 80),
@@ -2138,8 +2194,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
    */
   function markRestoredTail(sessionId) {
     let newest;
-    for (const row of rows.values()) {
-      if (row.sessionId !== sessionId) continue;
+    for (const row of sessionRows(sessionId)) {
       if (row.final === true) return; // a live turn already marked one
       if (row.process === true) continue;
       if (row.status !== 'ready') continue;
@@ -2150,12 +2205,14 @@ export function apply(ctx, rawConfig, runtime = {}) {
 
   /** Keep results bounded, including failed preparations that never reach rewrite(). */
   function trim(sessionId) {
-    const own = [];
-    for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
+    const own = [...sessionRows(sessionId)];
     const limit = Math.max(20, cfg.maxRowsPerSession);
     if (own.length <= limit) return;
     own.sort((a, b) => a.seq - b.seq);
-    for (const row of own.slice(0, own.length - limit)) rows.delete(`${row.sessionId}:${row.seq}`);
+    for (const row of own.slice(0, own.length - limit)) {
+      rows.delete(`${row.sessionId}:${row.seq}`);
+      rowsBySession.get(sessionId).delete(row.seq);
+    }
     touch(sessionId);
   }
 
@@ -2365,7 +2422,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
   /** Queue one text for rewriting. */
   function enqueue(sessionId, seq, text, usage, process = false) {
     if (rows.has(`${sessionId}:${seq}`)) return;
-    rows.set(`${sessionId}:${seq}`, {
+    setReportRow(`${sessionId}:${seq}`, {
       sessionId,
       seq,
       status: 'pending',
@@ -2413,7 +2470,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
 
   /** Skip a text without spending a call, but still tell the page why. */
   function skip(sessionId, seq, reason) {
-    rows.set(`${sessionId}:${seq}`, {
+    setReportRow(`${sessionId}:${seq}`, {
       sessionId, seq, status: 'skipped', text: '', reason, model: '', time: Date.now(),
     });
     // Trim here too. `trim()` used to run only in `rewrite()`'s finally, so every
@@ -2687,7 +2744,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
 
     const process = hasToolCall(event);
     if (!process) state.lastSeq = event.seq;
-    if (text.length > cfg.maxRewriteChars) { skip(sessionId, event.seq, 'too-long'); return; }
+    if (!reportFits(text)) { skip(sessionId, event.seq, 'too-long'); return; }
 
     // Subagent sessions: a spawned helper's own conversation. Two independent
     // switches, because its mid-task chatter and its final answer are different
@@ -2874,7 +2931,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         for (const key of ['provider', 'model', 'reasoningEffort','chatProvider','chatModel','visualizationProvider','visualizationModel']) {
           if (typeof savedSettings[key] === 'string') settings[key] = savedSettings[key];
         }
-        for(const key of ['chatResearchEnabled','chatDeepReasoningEnabled'])if(typeof savedSettings[key]==='boolean')settings[key]=savedSettings[key];
+        for(const key of Object.values(CHAT_SUPPORT_SETTINGS))if(typeof savedSettings[key]==='boolean')settings[key]=savedSettings[key];
         for(const key of ['chatDeepReasoningProvider','chatDeepReasoningModel'])if(typeof savedSettings[key]==='string'&&savedSettings[key].length<=180)settings[key]=savedSettings[key].trim();
         if(typeof savedSettings.chatThinking==='boolean')settings.chatThinking=savedSettings.chatThinking;
         if(typeof savedSettings.chatReasoningEffort==='string'&&savedSettings.chatReasoningEffort.trim().length<=128)settings.chatReasoningEffort=savedSettings.chatReasoningEffort.trim();
@@ -2991,8 +3048,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     // A page that opens an old session asks before any event arrives, so this
     // is where a restart's rows come back.
     if (sessionId !== '') hydrate(sessionId);
-    const own = [];
-    for (const row of rows.values()) if (row.sessionId === sessionId) own.push(row);
+    const own = [...sessionRows(sessionId)];
     for(const report of settingsRestored&&enabledRestored?reportViews.list(sessionId):[])if(report.available&&!own.some(row=>row.seq===report.seq)){
       const proposal=manualReportRow(sessionId,report.seq);if(proposal)own.push(proposal);
     }
@@ -3680,6 +3736,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       let body;
       try { body = JSON.parse(raw); } catch { sendJson(res, 400, { error: 'invalid-chat-message' }); return; }
       if(raw.length>24000&&(body.action!=='send'||!Array.isArray(body.images))){sendJson(res,413,{error:'too-large'});return;}
+      if(body?.summarize!==undefined&&(body.summarize!==true||body.action!=='send'||!body.roomId)){sendJson(res,400,{error:'invalid-chat-message'});return;}
       const id = body?.personaId;
       if (typeof id !== 'string' || !id || id.length > 160) { sendJson(res, 400, { error: 'invalid-chat-message' }); return; }
       const selectedRoom=chats.read(body.roomId??id),roomKey=selectedRoom?.id??id;
@@ -3734,19 +3791,20 @@ export function apply(ctx, rawConfig, runtime = {}) {
               const prior=current.turns.find(t=>t.messageId===body.requestId||t.userParts?.some(p=>p.id===body.requestId));
               if(prior){
                 const text=prior.userParts?.find(p=>p.id===body.requestId)?.text??prior.user;
-                if(text!==body.content||!sameChatImages(prior.userParts?.find(p=>p.id===body.requestId)?.images,admittedImages)||!!prior.userParts?.find(p=>p.id===body.requestId)?.withoutImages!==(body.withoutImages===true)||(prior.scopeKey??prior.contextKey??null)!==scopeKey||(prior.recipients.length>0&&prior.recipients[0].id!==persona.id)
+                if(text!==body.content||!sameChatImages(prior.userParts?.find(p=>p.id===body.requestId)?.images,admittedImages)||!!prior.userParts?.find(p=>p.id===body.requestId)?.withoutImages!==(body.withoutImages===true)||!!prior.userParts?.find(p=>p.id===body.requestId)?.summarize!==(body.summarize===true)||(prior.scopeKey??prior.contextKey??null)!==scopeKey||(prior.recipients.length>0&&prior.recipients[0].id!==persona.id)
                   ||(body.recipientIds&&JSON.stringify(body.recipientIds)!==JSON.stringify(prior.recipients.map(p=>p.id)))
                   ||quoteKey(body.quote)!==quoteKey(prior.quote?.ref))throw Error('chat-id-conflict');
                 // A committed request remains an acknowledgment even if next-send
                 // roster controls changed. It must never create a new round.
               }else{
+              if(body.summarize&&!current.sources?.length)throw Error('support-reference-unavailable');
               if(JSON.stringify(targetIds)!==JSON.stringify(current.targetPersonaIds))throw Error('chat-conflict');
               const quote=body.quote==null?null:resolveChatQuote(current,body.quote,scopeKey);
               if(body.quote!=null&&!quote)throw Error('chat-quote-unavailable');
-              const queued=await chatInputs.enqueue({roomId:current.id,requestId:body.requestId,content:body.content,...(admittedImages.length?{images:admittedImages,imageGeneration:current.generation??0}:{}),...(body.withoutImages?{withoutImages:true}:{}),
+              const queued=await chatInputs.enqueue({roomId:current.id,requestId:body.requestId,content:body.content,...(admittedImages.length?{images:admittedImages,imageGeneration:current.generation??0}:{}),...(body.withoutImages?{withoutImages:true}:{}),...(body.summarize?{summarize:true}:{}),
                 recipients:targetIds.map(id=>({id,name:presets.find(p=>p.id===id).name})),memberIds:current.memberIds,
                 referenceRevision:current.referenceRevision??0,contextKey,scopeKey,quote,clientTime:body.clientTime});
-              if(queued.batch){chatInputBindings.set(JSON.stringify([current.id,queued.batch.id]),workContext);publishChatUser(current,queued.batch);}
+              if(queued.batch)chatInputBindings.set(JSON.stringify([current.id,queued.batch.id]),workContext);
               const round=chatRounds.get(current.id);
               if(round&&queued.created&&!chatJobsFor(current.id).some(job=>job.started&&!job.abort.signal.aborted))round.abort.abort(Error('chat-user-input'));
               round?.wake?.();
@@ -3801,7 +3859,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         sendJson(res, 200, chatState(body.roomId??id));
       } catch (error) {
         const reason = error?.message ?? 'chat-save-failed';
-        const known = /^(invalid-chat|chat-|context-not-open)/.test(reason);
+        const known = /^(invalid-chat|chat-|context-not-open|support-reference-unavailable)/.test(reason);
         sendJson(res, /save-failed|persist/.test(reason) ? 503 : /conflict|busy|context-changed|context-unsaved|context-not-open/.test(reason) ? 409 : known ? 400 : 503,
           { error: known ? reason : 'chat-save-failed', state: chatState(body.roomId??id) });
       }
@@ -3872,7 +3930,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       if (path === ROUTE + '/conversation') {
         hydrate(sessionId);
         const latest = Math.max(latestSourceSeq.get(sessionId) ?? -1,
-          ...[...rows.values()].filter((r) => r.sessionId === sessionId).map((r) => r.seq));
+          ...[...sessionRows(sessionId)].map((r) => r.seq));
         try {
           await conversations.update(sessionId, body, { knownPersona: (id) => presets.some((p) => p.id === id),
             currentPersonaId: () => personaFor(sessionId).id, latestSeq: latest });
@@ -3917,7 +3975,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
       }
       const unavailable=reportRetryUnavailable(row,sessionId);
       if(unavailable){sendJson(res,['feedback-in-progress','report-incomplete'].includes(unavailable)?409:400,{error:unavailable});return;}
-      if(!existing)rows.set(`${sessionId}:${body.seq}`,row);
+      if(!existing)setReportRow(`${sessionId}:${body.seq}`,row);
       row.retrying = true; row.feedbackError = undefined; touch(sessionId);
       const draft = { ...row, status: 'pending', partial: '', processNote: undefined, processUsage: undefined };
       const retryRevision = revisionFor(sessionId);
@@ -4199,9 +4257,9 @@ export function apply(ctx, rawConfig, runtime = {}) {
         if (patch.pack !== undefined) {
           const oldId = activePresetId();
           const oldBuiltin = presets.find((p) => p.id === oldId)?.builtin === true;
-          const pack = normalizePack(patch.pack);
+          let pack = normalizePack(patch.pack);
           presetChanging = true;
-          try { await persistActivePack(pack); }
+          try { pack = await persistActivePack(pack); }
           catch (error) { sendJson(res, error?.message === 'too-many-presets' ? 400 : 503, { error: 'preset-save-failed' }); return; }
           finally { presetChanging = false; }
           invalidatePersona('persona-changed', (id) => !conversations.read(id).personaId
@@ -4218,7 +4276,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
         if (typeof patch.reasoningEffort === 'string') setSetting('reasoningEffort', patch.reasoningEffort.trim());
         if(typeof patch.chatProvider==='string')setSetting('chatProvider',patch.chatProvider.trim());
         if(typeof patch.chatModel==='string')setSetting('chatModel',patch.chatModel.trim());
-        for(const key of ['chatResearchEnabled','chatDeepReasoningEnabled'])if(typeof patch[key]==='boolean'){setSetting(key,patch[key]);if(!patch[key])for(const room of chats.list())chatSupport.cancelRoom(room.id,'disabled',key==='chatResearchEnabled'?'research':'reason');}
+        for(const [template,key] of Object.entries(CHAT_SUPPORT_SETTINGS))if(typeof patch[key]==='boolean'){setSetting(key,patch[key]);if(!patch[key])for(const room of chats.list())chatSupport.cancelRoom(room.id,'disabled',template);}
         for(const key of ['chatDeepReasoningProvider','chatDeepReasoningModel'])if(typeof patch[key]==='string'&&patch[key].length<=180)setSetting(key,patch[key].trim());
         if(typeof patch.chatThinking==='boolean')setSetting('chatThinking',patch.chatThinking);
         if(typeof patch.chatReasoningEffort==='string'&&patch.chatReasoningEffort.trim().length<=128)setSetting('chatReasoningEffort',patch.chatReasoningEffort.trim());
@@ -4440,6 +4498,7 @@ export function apply(ctx, rawConfig, runtime = {}) {
     }
     persistTimers.clear();
     rows.clear();
+    rowsBySession.clear();
     revisions.clear();
     samples.clear();
     hydrated.clear();

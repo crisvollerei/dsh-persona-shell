@@ -14,8 +14,8 @@ const wire=line=>(async function*(){yield{type:'text-delta',text:line};yield{typ
 const choiceFor=(body,id)=>body.choices.find(choice=>choice.id===id&&choice.to==='user');
 const workWire=(body,choice)=>`D1 ${body.protocol.ticket} ${choice.choiceId} s1 answer q0`;
 
-function sourceHost(t,directorScript){
-  const reads=[],events=new Map(['work','other'].map(id=>[id,eventsFor(id)]));let fail=false;
+function sourceHost(t,directorScript,workEvents=eventsFor('work')){
+  const reads=[],events=new Map([['work',workEvents],['other',eventsFor('other')]]);let fail=false;
   const f=fixture(t,{directorScript,script:()=>reply(['围绕本次真实资料回应。']),extraServices:[
     ['sessions',{get:id=>({header:{id,title:id+' 的工作会话',cwd:'D:/fixture/'+id}})}],
     ['sessionQuery',{observeSession:async id=>{reads.push(id);if(fail)throw Error('PRIVATE_SOURCE_READ_FAILURE');return{events:events.get(id)??[]};}}],
@@ -23,6 +23,36 @@ function sourceHost(t,directorScript){
   return{f,reads,failSource(){fail=true;const event={seq:5,type:'user/message',data:{content:[{type:'text',text:'work_UPDATED_GOAL'}]}};
     events.get('work').push(event);f.bus.emit('session/event',{id:'work',header:{},append(){assert.fail('chat cannot modify a work session');}},event);}};
 }
+
+test('the actual speaker gets the portion of the long work request and report named by the current question',async t=>{
+  const goalTarget='缓存恢复策略：仅对新工作会话启用，不改已有记录。';
+  const reportTarget='缓存恢复策略：分成冷启动恢复和异常退出恢复。'+'本节构建细节。'.repeat(150);
+  const caution='验收条件：尚未验证桌面重启，必须保留回退路径。';
+  const background=Array.from({length:12},(_,i)=>`其他条目 ${i}：${'其他模块的完整说明。'.repeat(82)}`);
+  // Pick positions which the generic middle-out spread does not reach at these budgets.
+  const withTarget=(target,rest=background)=>[rest[0],target,...rest.slice(1)].join('\n\n');
+  const events=eventsFor('work');
+  events[1].data.content[0].text=withTarget(goalTarget);
+  events[2].data.message.content[0].text=withTarget(reportTarget,[...background.slice(0,7),caution,...background.slice(7)]);
+  const {f,reads}=sourceHost(t,options=>{const body=readChatInput(options),choice=choiceFor(body,whale);return wire(choice?workWire(body,choice):'WAIT');},events);
+  await f.ready();const room=await newRoom(f,[whale]),before=reads.length;
+  await roomSend(f,room,whale,'这个会话里的缓存恢复策略具体是怎么设计的？','selected-long-work');await settledRoom(f,room);
+  assert.equal(f.calls.length,1);assert.equal(f.directors.length,1);assert.equal(reads.length,before);
+  const [actual]=readChatInput(f.calls[0]).workContext.sources;
+  assert.equal(actual.goalOmitted,true);assert.equal(actual.goalExcerpt.coverage,'partial-unknown');
+  assert.ok(actual.goal.includes(goalTarget));assert.ok(actual.goal.length<=2000);
+  assert.ok(actual.report.includes(reportTarget));assert.ok(actual.report.includes(caution));assert.ok(actual.report.length<=5000);
+  assert.doesNotMatch(JSON.stringify(f.directors),/异常退出恢复|不改已有记录|尚未验证桌面重启/);
+  assert.doesNotMatch(JSON.stringify(f.requests),/other_ORIGINAL_GOAL|other_ORIGINAL_REPORT/);
+  const references=await f.request('chat-references?room='+encodeURIComponent(room.roomId));
+  const [shown]=references.value.records[0].work;
+  assert.equal(shown.goal,actual.goal);assert.deepEqual(shown.goalExcerpt,actual.goalExcerpt);assert.equal(shown.report,actual.report);
+  assert.equal(reads.length,before,'inspecting the fragments does not read the work session again');
+  await f.dispose();
+  const saved=f.storage.tables.get('profile').get('chatReferenceUsage');
+  assert.deepEqual(saved.records[0].work[0].goalExcerpt,actual.goalExcerpt);
+  assert.doesNotMatch(JSON.stringify(saved),/异常退出恢复|不改已有记录|尚未验证桌面重启/);
+});
 
 test('a short action plus source key grounds the first actual reply in the fixed primary source without guessing a request type',async t=>{
   const {f}=sourceHost(t,options=>{const body=readChatInput(options),choice=choiceFor(body,whale);return wire(choice?choice.choiceId+' s1':'WAIT');});

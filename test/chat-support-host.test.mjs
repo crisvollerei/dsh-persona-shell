@@ -9,6 +9,84 @@ function choose(options,template='research'){
  return wire(`${choice.choiceId} N ${input.sceneCatalog?.options?.[0]?.key??'-'} | 核对当前公开条件`);
 }
 const web={search:async()=>({sources:[{url:'https://example.com/official',title:'一手资料'}]})};
+const originalReport='上轮只验证旧配置。仅供对照，尚未验证客户端。';
+const currentReport='本轮切换到新配置，完成本地检查。';
+function workReferenceEvents(){
+ const events=[];let seq=1;
+ for(const [turn,goal,report] of [[1,'核对旧配置',originalReport],[2,'继续验证这项设置',currentReport]]){
+  events.push({seq:seq++,type:'turn/start',data:{turn}},
+    {seq:seq++,type:'user/message',data:{turn,content:[{type:'text',text:goal}]}},
+    {seq:seq++,type:'assistant/message',data:{turn,message:{content:[{type:'text',text:report}]}}},
+    {seq:seq++,type:'turn/end',data:{turn,reason:{kind:'completed'}}});
+ }
+ return events;
+}
+
+for(const mode of ['checked','checked-wait','automatic','bad-quote','partly-invalid','source-updated'])test(`work summary ${mode} uses grounded work excerpts and releases ordinary chat`,async t=>{
+ const events=workReferenceEvents(),auto=mode==='automatic';let calls=0,actors=0,release,startCall;
+ const started=new Promise(resolve=>startCall=resolve);
+ const services=[['sessions',{get:id=>({header:{id,title:'项目工作'}})}],
+   ['sessionQuery',{observeSession:async id=>({events:id==='work'?events:[{seq:1,type:'user/message',data:{content:[{type:'text',text:'UNATTACHED_CANARY'}]}}]})}],
+   ['web',{search(){assert.fail('summary has no network access');}}]];
+ const f=fixture(t,{config:{chatSummarizeEnabled:auto},extraServices:services,directorScript:options=>{
+   const input=readChatInput(options),last=input.events.findLastIndex(e=>e.author.role==='user');
+   if(input.events.slice(last+1).some(e=>e.author.role==='assistant'))return wire('WAIT');
+   if(!input.message.includes('对照')){
+     assert.equal(input.summaryRequested,undefined);
+     return wire(input.choices.find(c=>c.id===whale).choiceId+' N');
+   }
+   if(auto){const choice=input.supportChoices.find(c=>c.template==='summarize');
+     return wire(`${choice.choiceId} s1 ${input.sceneCatalog?.options?.[0]?.key??'-'} | 对照两轮原始汇报`);}
+   assert.equal(input.summaryRequested,true);
+   return wire(mode==='checked-wait'?'WAIT':input.choices.find(c=>c.id===whale).choiceId+' N');
+ },script:options=>{
+   const input=readChatInput(options);
+   if(input.task==='chat-support'){
+     calls++;assert.equal(input.template,'summarize');assert.equal(options.tools,undefined);
+     assert.equal(input.question,'能对照一下前后两次吗？');
+     assert.doesNotMatch(JSON.stringify(input),/PRIVATE_SUMMARY_SENTINEL|UNATTACHED_CANARY/);
+     assert.ok(input.references.some(item=>item.passages.some(p=>p.text===currentReport)&&item.seq===7));
+     const ref=input.references.find(item=>item.seq===3);
+     const passage=ref.passages.find(p=>p.text==='仅供对照，尚未验证客户端。').id;
+     const invalid={ref:ref.ref,passage:999,note:'已经验证客户端。'};
+     const output=JSON.stringify({points:mode==='bad-quote'?[invalid]:[{ref:ref.ref,passage},...(mode==='partly-invalid'?[invalid]:[])],unknowns:''});
+     if(mode==='source-updated')return(async function*(){await new Promise(resolve=>{release=resolve;startCall();});yield{type:'text-delta',text:output};yield{type:'finish',reason:{kind:'stop'}};})();
+     return wire(output);
+   }
+   actors++;
+   if(actors>1||mode==='source-updated')assert.equal(input.supportReference,undefined);
+   else if(mode==='bad-quote')assert.equal(input.supportReference.error,'format');
+   else{
+     const [note]=JSON.parse(input.supportReference.text).notes;
+     assert.deepEqual([note.kind,note.turn,note.event,note.quote],['上轮结束的汇报',1,3,'仅供对照，尚未验证客户端。']);
+     assert.doesNotMatch(input.supportReference.text,/已经验证客户端/);
+     assert.equal(input.workContext.sources[0].previousReport,undefined,'the broader history belongs to the helper');
+   }
+   return reply(['前后两次的验证范围要分开看。']);
+ }});
+ await f.ready();await preference(f,'私有哨兵 PRIVATE_SUMMARY_SENTINEL');
+ const room=await newRoom(f,[whale]);
+ assert.equal((await roomSend(f,auto?room:{...room,summarize:true},whale,'能对照一下前后两次吗？','summary-work')).status,200);
+ if(mode==='source-updated'){
+   await started;
+   const event={seq:9,type:'user/message',data:{content:[{type:'text',text:'工作来源的新要求'}]}};
+   events.push(event);f.bus.emit('session/event',{id:'work',header:{}},event);release();
+ }
+ const done=await settledRoom(f,room);
+ assert.equal(done.directorFailure,null);
+ assert.equal(done.room.turns.find(t=>t.phase==='anchor').user,'能对照一下前后两次吗？');
+ assert.equal(done.supportTasks[0].template,'summarize');
+ assert.equal(done.supportTasks[0].status,['bad-quote','source-updated'].includes(mode)?'failed':mode==='partly-invalid'?'partial':'completed');
+ assert.deepEqual(done.supportTasks[0].counts,{calls:1,searches:0,reads:0});
+ assert.equal((await f.request('settings')).value.settings.chatSummarizeEnabled,auto);
+ assert.doesNotMatch(JSON.stringify(f.directors),/尚未验证客户端|PRIVATE_SUMMARY_SENTINEL/);
+ await roomSend(f,room,whale,'今天只闲聊。','summary-casual');await settledRoom(f,room);
+ assert.equal(calls,1);assert.equal(actors,2);
+ await f.dispose();
+ const saved=f.storage.tables.get('profile').get('chatSupport');
+ assert.doesNotMatch(JSON.stringify(saved),/尚未验证客户端|新配置|前后两次|PRIVATE_SUMMARY_SENTINEL/);
+});
+
 test('research really searches and reads, returns only to its actor, and spends no extra speech quota',async t=>{
  const actions=[{action:'search',query:'current official'},{action:'read',sourceId:'w1'},{action:'finish',answer:'官方页面列出了当前条件。',sources:['w1']}];let read=0,support=0,actor=0;
  const f=fixture(t,{config:{chatResearchEnabled:true},extraServices:[['web',web]],runtime:{chatIntervalMs:0,supportPageReader:async url=>{read++;return{url,text:'官方当前条件和未验证部分。'};}},

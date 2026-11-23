@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {buildDirectorRequest,parseDirectorResponse} from '../lib/chat-director-wire.js';
+import {directedOpinionHandback} from '../lib/chat-director.js';
 import {chatSchedulerEventKey} from '../lib/chat-scheduler.js';
 
 const key=(turnId,roomId='r')=>chatSchedulerEventKey({roomId,generation:2,sourceScope:'this-source',turnId,attemptId:turnId});
@@ -35,6 +36,40 @@ test('no hand-back is inferred from an unbound mention, wrong bubble, other room
   for(const events of [[original],[original,unbound],[original,otherRoom],[original,reply('bad','owner',original.id,5)],
     [newUser,answer],[original,answer,newUser]]){
     assert.equal(read(options(events)).turnFloor,undefined);
+  }
+});
+
+test('a single addressee and an actual aside stay distinct per user part, while room discussion keeps its existing choices',()=>{
+  const primary=reply('answer','owner',original.id);
+  const aside=reply('aside','friend',original.id);
+  const anotherPart=reply('other-part','guest',original.id,1);
+  const opts=options([original,primary,aside,anotherPart],members.slice(0,1));
+  assert.deepEqual(read(opts).addressedExchange,{addressee:'owner',userEventId:'e1',parts:[{
+    index:0,addressedReplies:['e2'],otherReplies:['e3'],
+  }]});
+  assert.equal(read({...opts,recipients:[]}).addressedExchange,undefined);
+  assert.equal(read({...opts,recipients:members.slice(0,2)}).addressedExchange,undefined);
+  assert.equal(read(options([original,aside],members.slice(0,1))).addressedExchange,undefined);
+  assert.doesNotThrow(()=>parseDirectorResponse('WAIT',opts));
+});
+
+test('only a further ordinary opinion on the same clear one-person question hands the turn back',()=>{
+  const question=user('opinion',['那你觉得小克怎么样？']);
+  const primary=reply('answer','owner',question.id);
+  const aside=reply('aside','friend',question.id);
+  const opts={...options([question,primary,aside],members.slice(0,1)),
+    members:members.map(person=>person.id==='friend'?{...person,name:'小克'}:person)};
+  const action={id:'guest',kind:'normal',to:'user',evidence:{eventId:question.id,index:0},contribution:{move:'opine'}};
+  assert.equal(directedOpinionHandback(opts,action),true);
+  for(const change of [{id:'friend'},{kind:'peer',to:'friend'},{contribution:{move:'branch'}},
+    {evidence:{eventId:original.id,index:0}},{support:{template:'reason'}},{contribution:{move:'react'}}]){
+    assert.equal(directedOpinionHandback(opts,{...action,...change}),false);
+  }
+  for(const change of [{recipients:[]},{recipients:members.slice(0,2)},{events:[question,aside]},
+    {events:[question,primary,{...aside,id:key('aside','another-room')}]},
+    {events:[{...question,messages:['那你觉得小克怎么样？','其他人也说说。']},primary,aside]},
+    {events:[{...question,messages:['你觉得小克怎么样，大家也说说？']},primary,aside]}]){
+    assert.equal(directedOpinionHandback({...opts,...change},action),false);
   }
 });
 

@@ -173,7 +173,10 @@ test('editing the default persona through Host settings retains the actual custo
   };
   assert.equal((await f.request('settings', { pack: card })).status, 200);
   const saved = (await f.request('presets')).value, active = saved.presets.find(value => value.name === saved.active);
-  assert.equal(active.builtin, false); assert.notEqual(active.id, builtin.id); assert.deepEqual(active.pack, card);
+  assert.equal(active.builtin, false); assert.notEqual(active.id, builtin.id);
+  const { chat, ...savedCard } = active.pack;
+  assert.deepEqual(savedCard, card);
+  assert.equal(chat.gender, 'female'); assert.ok(chat.dialogueExamples.length && chat.workDialogueExamples.length);
   assert.deepEqual(saved.presets.find(value => value.id === builtin.id).pack, builtin.pack, 'editing a builtin creates a separate persona');
   const row = await reportSession(f, 'settings-custom-default').report('本次只完成本地检查，未部署，仍需用户确认。');
   assert.equal(row.speaker.id, active.id); assert.equal(f.reports.length, 1);

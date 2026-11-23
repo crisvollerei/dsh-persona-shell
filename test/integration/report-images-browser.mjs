@@ -79,8 +79,14 @@ try{
  await page.getByRole('button',{name:'阅读报告',exact:true}).click();
  const doc=page.locator('.rr-document[aria-label="原始报告全文"]');await doc.locator('img').first().waitFor();
  // Visit lazy images before checking error fallback and completed resources.
- for(const img of await doc.locator('img').all())await img.scrollIntoViewIfNeeded();
- await doc.getByText('图片加载失败 · 损坏图片',{exact:true}).waitFor();
+ // The failed image disappears from the image list while the others load.
+ const failedImage=doc.getByText('图片加载失败 · 损坏图片',{exact:true});
+ const imageAlts=await doc.locator('img').evaluateAll(nodes=>nodes.map(img=>img.alt));
+ for(const alt of imageAlts){
+   const img=doc.getByAltText(alt,{exact:true});
+   await (alt==='损坏图片'?img.or(failedImage).first():img).scrollIntoViewIfNeeded();
+ }
+ await failedImage.waitFor();
  const imageSources=locator=>locator.locator('img').evaluateAll(nodes=>nodes.map(n=>({alt:n.alt,src:n.src})));
  const actual=await imageSources(doc),expected=await imageSources(page.locator('#native-report'));
  assert.deepEqual(actual,expected);assert.equal(actual.length,7);

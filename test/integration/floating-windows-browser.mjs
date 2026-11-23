@@ -49,6 +49,8 @@ try{
  await resize(chat,100,-100);let savedChat=await box(chat);assert.ok(savedChat.width>moved.width+90&&savedChat.height<moved.height-90,JSON.stringify({moved,savedChat}));checks.push('chat corner resize');
  await resize(chat,-1000,-1000);await inView(chat);assert.equal((await box(chat)).width,280);
  assert.equal(await chat.evaluate(el=>{const b=el.getBoundingClientRect(),close=el.querySelector('[aria-label="关闭聊天室"]').getBoundingClientRect();return el.scrollWidth<=el.clientWidth&&close.right<=b.right&&close.bottom<=b.bottom;}),true);await capture('chat-small-desktop');
+ const source=chat.getByRole('button',{name:'参考来源',exact:true});assert.equal(await source.innerText(),'来源');
+ assert.equal(await source.evaluate(button=>button.scrollWidth<=button.clientWidth+1),true);checks.push('narrow room header retains a readable source shortcut');
  const compact=await box(chat);await resize(chat,savedChat.width-compact.width,savedChat.height-compact.height);equal(await box(chat),savedChat);checks.push('manual narrow width adapts on a wide desktop');
  const grip=chat.getByRole('button',{name:'调整聊天室窗口大小',exact:true});await grip.focus();await grip.press('Control+ArrowRight');await grip.press('ArrowDown');savedChat=await box(chat);checks.push('keyboard move and resize');
  await chat.getByRole('button',{name:'放大',exact:true}).click();await motion();assert.ok((await box(chat)).width>savedChat.width);await chat.getByRole('button',{name:'还原',exact:true}).click();await motion();equal(await box(chat),savedChat);checks.push('maximize restores custom bounds');

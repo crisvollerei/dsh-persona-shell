@@ -1,11 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fixture,reply,newRoom,roomSend,roomState,settledRoom,whale,dragon,readChatInput} from './helpers/persona-chat-host.mjs';
+import {fixture,reply,newRoom,roomSend,roomState,settledRoom,whale,dragon,claude,readChatInput} from './helpers/persona-chat-host.mjs';
 
 const wire=value=>(async function*(){yield{type:'text-delta',text:value};yield{type:'finish',reason:{kind:'stop'}};})();
 const taskWire=(body,choice,move,point)=>wire(`${choice.choiceId} N ${body.sceneCatalog?.options[0]?.key??'-'} ${move} | ${point}`);
 async function broadcast(f,binding){const state=await roomState(f,binding);assert.equal((await f.request('chat-rooms',{
   ...binding,action:'update',targetPersonaIds:[],configRevision:state.room.configRevision,epoch:state.epoch})).status,200);}
+
+test('a directed opinion can admit the person being discussed and hand back before another parallel opinion',async t=>{
+  const userText='那你怎么看待小克的？';
+  const f=fixture(t,{directorScript:options=>{
+    const body=readChatInput(options),said=body.events.filter(event=>event.author.role==='assistant');
+    if(said.length===2){
+      assert.equal(body.addressedExchange.addressee,whale);
+      assert.deepEqual(body.addressedExchange.parts[0].addressedReplies,[said[0].id]);
+      assert.deepEqual(body.addressedExchange.parts[0].otherReplies,[said[1].id]);
+      const choice=body.choices.find(item=>item.id===dragon&&item.to==='user');
+      assert.ok(choice);
+      return taskWire(body,choice,'opine','再说一份自己对小克的看法。');
+    }
+    const choice=body.choices.find(item=>item.id===(said.length?claude:whale)&&item.to==='user');
+    assert.ok(choice);
+    return taskWire(body,choice,said.length?'react':'opine',said.length?'本人回应一下先不说话的说法。':'说你的个人印象。');
+  },script:options=>{
+    const input=readChatInput(options);
+    assert.equal(input.message,userText);assert.deepEqual(input.recipients.map(person=>person.id),[whale]);
+    if(input.speaker.id===whale){
+      assert.match(options.system,/第一人称时用「鲸鲸」/);
+      assert.doesNotMatch(options.system,/你是听到公开聊天后顺口插话/);
+      return reply(['鲸鲸觉得挺好相处，就是她有时先不说话。']);
+    }
+    assert.equal(input.speaker.id,claude);
+    assert.match(options.system,/公开聊天后顺口插话/);
+    assert.match(options.system,/公开发言可以当场听见/);
+    assert.match(options.system,/第一人称时用「我」/);
+    return reply(['那是我在等你把笑话讲完。']);
+  }});
+  await f.ready();const room=await newRoom(f,[whale,claude,dragon]);
+  await roomSend(f,room,whale,userText,'focused-side');
+  const done=await settledRoom(f,room);
+  assert.equal(done.directorFailure,null);
+  assert.equal(f.directors.length,3);
+  assert.equal(f.calls.length,2);
+  assert.deepEqual(done.room.turns.filter(turn=>turn.phase!=='anchor').map(turn=>turn.recipientId),[whale,claude]);
+});
 
 test('one shared clarification is followed by waiting; later user details get a new bounded task without replaying old progress',async t=>{
   const points=['只问这次签到表要记什么。','只给昵称和到场两列，沿用刚才的范围。','顺口应声，不复演放下工作的过程。'];

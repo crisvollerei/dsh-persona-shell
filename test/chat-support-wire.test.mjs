@@ -5,6 +5,15 @@ import {chatSchedulerEventKey} from '../lib/chat-scheduler.js';
 const event=chatSchedulerEventKey({roomId:'room',generation:0,sourceScope:null,turnId:'user',attemptId:'user'});
 const options={message:'帮我核对公开条件。',members:[{id:'fish',name:'鲸鲸'}],events:[{id:event,author:{role:'user',name:'我'},messages:['帮我核对公开条件。']}],states:[{id:'fish',level:0,normalRemaining:3,normalReady:true,pendingEventIds:[event],normalPendingEventIds:[event]}],sources:[],sourceIds:[],supportTemplates:['research','reason']};
 const line=o=>`${JSON.parse(buildDirectorRequest(o).user).choices[0].choiceId} N - answer | 回应当前问题`;
+test('summary choices are available only for attached sources and require an explicit valid work selection',()=>{
+ const onlySummary={...options,supportTemplates:['summarize']};
+ assert.equal(JSON.parse(buildDirectorRequest(onlySummary).user).supportChoices,undefined);
+ const attached={...onlySummary,sourceIds:['work'],sources:[{id:'work',name:'工作会话'}]};
+ const [choice]=JSON.parse(buildDirectorRequest(attached).user).supportChoices;
+ assert.equal(parseDirectorResponse(`${choice.choiceId} s1 - | 整理原文`,attached).next.support.template,'summarize');
+ for(const token of ['N','U','s2'])assert.equal(parseDirectorResponse(`${choice.choiceId} ${token} - | 整理原文`,attached).basis,'invalid');
+});
+
 test('HELP is optional and bound to an authorized direct user response',()=>{
  const base=line(options),result=parseDirectorResponse(base+'\nHELP research | 核对公开条件',options);
  assert.equal(result.basis,'model');assert.deepEqual(result.next.support,{template:'research',goal:'核对公开条件'});

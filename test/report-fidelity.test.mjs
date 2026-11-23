@@ -136,6 +136,22 @@ test('a uniquely anchored permission or requirement cannot turn into a promised 
   assert.equal(checkReportFidelity({ original: '只有确认后才可关闭写入端。', candidate: '只有确认后才会去关掉写入端。' }).ok, false);
   assert.equal(checkReportFidelity({ original: '确认之后才会关闭演练。', candidate: '确认之后才会关闭演练。' }).ok, true);
 });
+
+test('scope expansion, moving confirmation after execution and explicit status reversal reuse the source', () => {
+  const cases = [
+    ['远程同步仅覆盖新用户。现有用户需要手动迁移。', '远程同步同时覆盖新用户和现有用户。', 'scope-change'],
+    ['只有管理员确认后，才可以删除旧快照。', '可以删除旧快照，管理员确认可随后补办。', 'permission-change'],
+    ['实际恢复尚未执行。', '实际恢复已经执行。', 'status-change'],
+  ];
+  for (const [original, candidate, reason] of cases) {
+    assert.ok(checkReportFidelity({ original, candidate }).reasons.includes(reason));
+    const source = makeReportSource({ sessionId: 's', seq: 55, text: original });
+    const result = parseReportReadable(JSON.stringify({ schemaVersion: 3, blocks: [{ ref: source.blocks[0].id, text: candidate }] }), source);
+    assert.equal(result.value.blocks[0].text, original);
+  }
+  const original = cases[0][0];
+  assert.equal(checkReportFidelity({ original, candidate: '远程同步只覆盖新用户。现有用户需要自己迁移。' }).ok, true);
+});
 test('readable output falls back at the original permission and worker boundary', () => {
   const source = makeReportSource({ sessionId: 's', seq: 1, text: '只有确认后才可关闭演练。\n\n工作助手已调整配置。' });
   const request = JSON.parse(buildReportReadablePrompt(source).user);

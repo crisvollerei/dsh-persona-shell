@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {Readable} from 'node:stream';
+import {gzipSync,deflateSync} from 'node:zlib';
 import {createSupportPageReader,publicIpv4} from '../lib/chat-support-web.js';
 function transport(responses,seen){return(url,options,cb)=>{
  seen.push({url:url.href,options});const req=new EventEmitter();req.setTimeout=()=>{};req.destroy=error=>req.emit('error',error);req.end=()=>queueMicrotask(()=>{
@@ -34,4 +35,16 @@ test('non-text, oversized bodies and cancellation cannot become page evidence',a
  }
  const abort=new AbortController(),reader=createSupportPageReader({lookup:async()=>{abort.abort(Error('stopped'));return[{address:'93.184.216.34',family:4}];},request:()=>assert.fail('no post-cancel connection')});
  await assert.rejects(reader('https://example.com',{signal:abort.signal}),/stopped/);
+});
+test('compressed main content and the www variant retain DNS checks and bounded decompression',async()=>{
+ const lookup=async()=>[{address:'93.184.216.34',family:4}];
+ for(const [encoding,compress] of [['gzip',gzipSync],['deflate',deflateSync]]){
+  const seen=[],headers={'content-type':'text/html;charset=UTF-8','content-encoding':encoding};
+  const body=compress('<nav>'+('导航 '.repeat(2000))+'</nav><main><p>真正的正文。</p></main>');
+  const reader=createSupportPageReader({lookup,request:transport([{status:301,headers:{location:'https://www.example.com/info'}},{headers,body}],seen)});
+  assert.deepEqual(await reader('https://example.com'),{url:'https://www.example.com/info',text:'真正的正文。'});
+  assert.equal(seen.length,2);
+  const oversized=createSupportPageReader({lookup,request:transport([{headers,body:compress('x'.repeat(1048577))}],[])});
+  await assert.rejects(oversized('https://example.com'),/page-size/);
+ }
 });

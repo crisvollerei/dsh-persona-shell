@@ -269,7 +269,7 @@ window.__ModuleLoader__.load({
   // Match actual conditions and polarity phrases, not individual Chinese
   // characters in neutral words such as 不同、未来、需求、无缝 or 刚才.
   const condition = /风险|限制|注意|尚未|必须|需要|仅(?:在|限|有|供|当|对|用于|支持|适用|涉及|提供|处理|完成|修改|包含|保留|允许|执行|验证|测试|覆盖|表示|代表|说明|进行|使用|本|这|仅)|只有|除非|否则|前提|条件|依赖|仍(?:需|未|不)|可能|失败|警告|建议|后续|下一步|手动|人工|审批|批准|确保|以免|避免|直到|才(?:能|可|会|算|允许|执行|生效)|取决于|是否|要不要|选哪|哪个方案|以上|以下|至少|至多|大于|小于|[<>]=|[≥≤]|(?:^|[，。；：\s])若|如果|假如|假设|在[^。\n]{0,60}(?:环境|范围|平台|版本)|(?:当|等到|一旦)[^。\n]{0,80}(?:时|后|才|再)|(?:完成|成功|确认|通过|满足|就绪|重启|恢复|加载|连接|保存|读取|安装|生成|结束|打开|更新|迁移|启动|登录)[^。\n]{0,12}(?:后|前|时)(?:才|再|可|能|需|会|不|请|应|执行|重试|继续)|待(?:确认|验证|测试|处理|完善|实现|检查|审批|批准|发布|接入|用户|修复|解决|完成|补充|部署)|需(?:确认|提供|保证|满足|先|等|由|用|在|获|重|手动|另行|核对|通过|准备|安装)|\b(?:if|unless|only|except|without|not|never|must|should|required?|requires?|assuming|depends?|dependent|cannot|pending|unverified|untested|unknown|may|might|risk|limitation|caveat|prerequisite|warning|failed|failure|remaining|missing)\b/iu;
-  const polarity = /不(?!同|一样|过(?!期|关)|但|仅|光(?!滑)|妨|错(?!过)|约而同|知不觉|由自主|好意思)|未(?!来|央)|无(?!缝|论|数|聊|与伦比)|没(?!关系|事|想到)|需(?!求)|仅|仍/u;
+  const polarity = /不(?:能|可|得|允许|支持|建议|保证|触发|影响|适用|包含|涉及|兼容|自动|覆盖|通过|会|生效|提交|推送|部署|执行|再|用|必)|未(?:经|能|通过|完成|执行|启用|发布|部署|提交|安装|验证|测试|检查|接入|覆盖|处理|解决|生效|应用|迁移)|无(?:法|效|权限|证据|数据|记录|结果|输出|需)|没(?:有|能|通过|完成|执行|生效)|仍(?:要|会|需|未|不|待)|需签名|仅接受/u;
   const englishCondition = /\b(?:no|none|provided|until|when|whenever|once|before|after)\b|\b(?:subject\s+to|as\s+long\s+as|depending\s+on|in\s+case|on\s+condition|in\s+the\s+event|at\s+least|at\s+most|no\s+(?:more|less)\s+than|or\s+(?:higher|lower|above|below|newer|older))\b|\b(?:can|won|shouldn|isn|wasn)['’]t\b/iu;
   const riskSignal = /风险|限制|尚未|未验证|未测试|未覆盖|未上线|待验证|不支持|无法|不保证|前提|仅在|只有|除非|否则|必须|取决于|失败|警告|至少|至多|以上|以下|[<>]=|[≥≤]|如果|假如|假设|在[^。\n]{0,100}(?:环境|范围|平台|版本)[^。\n]{0,40}才|\b(?:risk|limitations?|caveats?|prerequisites?|warnings?|failed|failure|unverified|untested|unsupported|unavailable|cannot|unless|only|assuming|depends?|requires?)\b|\bnot\s+(?:yet\s+)?(?:supported|tested|verified|covered|guaranteed)\b/iu;
   const completedDecision = /无需|不需|不用|不必|已(?:经)?确认|确认(?:完成|通过)|\balready\s+(?:confirmed|approved|decided)|\bno\s+(?:confirmation|approval|decision)\s+(?:is\s+)?(?:needed|required)|\bdoes\s+not\s+require\b/iu;
@@ -285,6 +285,11 @@ window.__ModuleLoader__.load({
     const original = block.text.replace(/\r\n?/g, '\n');
     if (/^(?: {4}|\t)\S/mu.test(original)) return null;
     let text = original.trim();
+    if (!/[!\\`]/u.test(text) && !/^\[[^\]]+\]\([^)]*\)$/u.test(text)) {
+      // The native paragraph's textContent contains the label, not the URL.
+      // Any unmatched Markdown delimiters still leave the entire block visible.
+      text = text.replace(/\[([^\[\]\n]+)\]\(https?:\/\/[^\s()<>\[\]]+\)/gu, '$1');
+    }
     if (!text || /\n\s*\n/u.test(text) || /^ {0,3}(?:#{1,6}[ \t]|>|[-+*][ \t]|\d+[.)][ \t]|`{3,}|~{3,}|(?:[-*_][ \t]*){3,}$)/mu.test(text)
       || /^(?: {4}|\t)/mu.test(text) || /[|<>\[\]\\$\uE000\uE001]/u.test(text)
       || /&(?:#[xX][\da-f]+|#\d+|[a-z][a-z\d]+);/iu.test(text) || /\n {0,3}(?:=+|-+)[ \t]*$/u.test(text)) return null;
@@ -490,7 +495,7 @@ window.__ModuleLoader__.load({
 }
     // END GENERATED CHAT PALETTE
 
-const CLIENT_BUILD = 2026111201;
+const CLIENT_BUILD = 2026112301;
 
     // --- host data -----------------------------------------------------------
 
@@ -1194,9 +1199,7 @@ const CLIENT_BUILD = 2026111201;
         .dsh-persona-chat-top[data-room=true] .dsh-persona-chat-room-title{grid-column:2;grid-row:1}.dsh-persona-chat-top[data-room=true] .dsh-persona-chat-room-tools{grid-column:2;grid-row:2}
         .dsh-persona-chat-top[data-room=true] .dsh-persona-chat-actions button{padding:1px;min-height:24px;font-size:11px;grid-row:1}.dsh-persona-chat-top[data-room=true] .dsh-persona-chat-actions button:nth-child(-n+2){grid-row:2;min-height:20px;border:none;color:var(--chat-muted)}
         .dsh-persona-chat-actions button:nth-child(3){grid-column:3}.dsh-persona-chat-actions button:is(:nth-child(1),:nth-child(4)){grid-column:4}.dsh-persona-chat-actions button:is(:nth-child(2),:nth-child(5)){grid-column:5}
-        .dsh-persona-chat-compose-row small{display:none}.dsh-persona-chat-compose-row button.dsh-persona-chat-compose-expand{margin-left:auto}
       }
-      @container dsh-floating-chat (max-width:324px){.dsh-persona-chat-compose-row{gap:5px}.dsh-persona-chat-compose-row>button{flex-shrink:0;padding:3px 6px;white-space:nowrap}.dsh-persona-chat-compose-row>label{font-size:10px;gap:3px}.dsh-persona-chat-compose-row .dsh-persona-chat-compose-expand{width:24px;min-width:24px}}
       @container dsh-floating-report (max-width:586px){.rr-head{padding:10px!important;gap:5px!important}.rr-head-title h2{font-size:13px!important}.rr-head-title small{font-size:9px!important}.rr-head-actions{gap:3px!important}.rr-head-actions button{font-size:10px!important;padding:4px 6px!important}.rr-toolbar{padding:9px 10px!important;gap:4px!important}.rr-content{padding:23px 17px 30px!important}.rr-footer{padding:8px 10px!important}}
       [data-floating-drag]{cursor:grab;touch-action:none}[data-floating-drag] :is(button,input,select,a,summary){touch-action:auto}
       .dsh-floating-resize{position:absolute;display:block;margin:0!important;padding:0!important;min-width:0!important;min-height:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;z-index:5;touch-action:none}
@@ -1476,9 +1479,10 @@ const CLIENT_BUILD = 2026111201;
       'chat-room-not-found': '这个聊天室已移除，请重新选择或新建。',
       'chat-recipient-not-member': '这位角色已不在房间中，请重新选择回复对象。',
       'invalid-chat-members': '每个聊天室需要 1–8 位不同的人格。',
+      'support-reference-unavailable': '请先在当前房间接入工作会话，再整理工作参考。',
     }[code] ?? '暂时没有连接成功，输入仍保留，可以稍后重试。');
     const DIRECTOR_ISSUE_REASONS=Object.freeze({
-      'wire-type':'调度返回类型不符合要求','wire-size':'调度结果超过长度上限',control:'调度返回的选项格式未能识别',scene:'话题关联选项未通过校验',contribution:'本次接话方向未能确认',json:'调度结果不是完整的 JSON',
+      'wire-type':'调度返回类型不符合要求','wire-size':'调度结果超过长度上限',control:'调度返回的选项格式未能识别',scene:'话题关联选项未通过校验',contribution:'本次接话方向未能确认',support:'辅助任务或工作参考选项未通过校验',json:'调度结果不是完整的 JSON',
       'duplicate-key':'调度结果包含重复字段',shape:'调度结果结构不符合要求',choice:'所选接话项不在本次候选中',
       goal:'接话目标未能识别',actor:'接话角色不在本次候选中',event:'所选发言不在本次对话范围',
       evidence:'接话依据未能对应原话','stale-event':'所选原话已经处理或不再适用',author:'接话对象与原话作者未能对应',
@@ -1488,7 +1492,8 @@ const CLIENT_BUILD = 2026111201;
     });
     const chatDirectorIssueReason=issue=>{
       if(typeof issue?.reason==='string'&&Object.hasOwn(DIRECTOR_ISSUE_REASONS,issue.reason))return DIRECTOR_ISSUE_REASONS[issue.reason];
-      const defaults={invalid:'接话安排未通过校验',timeout:'调度判断超时',unavailable:'调度调用暂不可用'};
+      const defaults={invalid:'接话安排未通过校验',timeout:'调度判断超时',unavailable:'调度调用暂不可用',
+        'summary-reference-unavailable':'本条工作参考暂不可用','summary-actor-unavailable':'本条还没有可直接回应并整理工作参考的人格'};
       return typeof issue?.code==='string'&&Object.hasOwn(defaults,issue.code)?defaults[issue.code]:'调度未完成';
     };
     const chatReplyStateText = (turn, running) => turn.status === 'pending' && running ? '输入中…' : ({
@@ -1562,6 +1567,8 @@ const CLIENT_BUILD = 2026111201;
       .dsh-persona-chat-thread-wrap{position:relative;min-height:0;flex:1;display:flex;overflow:hidden}
       /* Sticky code banners belong to the scrolling messages, below room panels and the jump button. */
       .dsh-persona-chat-thread{isolation:isolate;min-width:0;width:100%}
+      .dsh-persona-chat-thread[data-following=true]{overflow-anchor:none}
+      .dsh-persona-chat-thread-content{display:flow-root}
       .dsh-persona-chat .dsh-persona-chat-quote-action{align-self:center;flex:none;width:22px;min-height:24px;padding:0;border:0;background:transparent;color:var(--chat-muted);font-size:15px;opacity:0;pointer-events:none}
       .dsh-persona-chat-message:has(>.dsh-persona-chat-quote-action)>.dsh-persona-chat-bubble{max-width:calc(100% - 70px)}
       .dsh-persona-chat-message:hover>.dsh-persona-chat-quote-action,.dsh-persona-chat-message:focus-within>.dsh-persona-chat-quote-action{opacity:1;pointer-events:auto}
@@ -1583,10 +1590,16 @@ const CLIENT_BUILD = 2026111201;
       .dsh-persona-chat-top{grid-template-columns:28px minmax(0,1fr) auto;gap:6px 8px;min-height:0;padding:9px 12px 8px}.dsh-persona-chat-top>.dsh-persona-chat-avatar{width:28px;height:28px}.dsh-persona-chat-title{display:block;grid-column:2;grid-row:1;font-size:14px;line-height:28px;min-width:0}.dsh-persona-chat-actions{grid-column:3;grid-row:1;display:flex;align-items:center;gap:4px}.dsh-persona-chat-actions button{min-height:27px;padding:2px 7px;font-size:11px}
       .dsh-persona-chat-context-row{grid-column:1/-1;grid-row:2;display:flex;align-items:center;gap:7px;min-width:0}.dsh-persona-chat-context-row select{flex:1;min-width:0;width:0;max-width:100%;padding:4px 7px;border:1px solid var(--chat-border);background:var(--chat-soft);font-size:12px;line-height:20px;height:29px;border-radius:6px}.dsh-persona-chat-context-row button{flex:none;font-size:11px;min-height:29px;padding:3px 8px;white-space:nowrap}.dsh-persona-chat-sources{max-height:28%;flex:0 1 auto;min-height:0;padding:6px 12px}.dsh-persona-chat-sources>p:first-child{margin-top:0}
       .dsh-persona-chat-thread-wrap{min-height:min(84px,18dvh)}.dsh-persona-chat-thread{padding:12px}.dsh-persona-chat-empty{min-height:0;gap:7px;padding:12px}.dsh-persona-chat-empty strong{font-size:14px}.dsh-persona-chat-empty p{font-size:11px;max-width:240px;line-height:1.65}
-      .dsh-persona-chat-compose{padding:8px 12px;min-height:0;max-height:56%;display:flex;flex-direction:column;gap:6px;overflow:auto}.dsh-persona-chat-compose textarea{flex:0 1 auto;height:56px;min-height:48px;max-height:none;resize:none;padding:7px 9px;border-radius:8px;font-size:13px}.dsh-persona-chat[data-compose-expanded=true] .dsh-persona-chat-compose textarea{height:clamp(88px,26dvh,220px);min-height:64px}.dsh-persona-chat-compose-row{flex:none;display:flex;align-items:center;gap:7px;margin-top:0;min-height:29px}.dsh-persona-chat-compose-row>label{display:flex;align-items:center;gap:5px;font-size:11px;white-space:nowrap}.dsh-persona-chat-compose-row input[type=checkbox]{margin:0;accent-color:var(--chat-brand)}.dsh-persona-chat-compose-row small{font-size:10px;color:var(--chat-muted);margin-left:auto;white-space:nowrap}.dsh-persona-chat-compose-row>button{min-height:29px;padding:3px 9px;font-size:12px}.dsh-persona-chat-compose-row button[data-primary]{min-width:56px}.dsh-persona-chat-compose-row .dsh-persona-chat-compose-expand{margin-left:auto;display:grid;place-items:center;width:28px;min-width:28px;padding:4px;background:transparent;border-color:transparent;color:var(--chat-muted)}.dsh-persona-chat-compose-row small+.dsh-persona-chat-compose-expand{margin-left:0}.dsh-persona-chat-compose-expand:hover{background:var(--chat-soft);border-color:var(--chat-border)}.dsh-persona-chat-compose-expand svg{display:block}
+      .dsh-persona-chat-compose{padding:8px 12px;min-height:0;max-height:56%;display:flex;flex-direction:column;gap:6px;overflow:auto;container:chat-compose / inline-size}.dsh-persona-chat-compose textarea{flex:0 1 auto;height:56px;min-height:48px;max-height:none;resize:none;padding:7px 9px;border-radius:8px;font-size:13px}.dsh-persona-chat[data-compose-expanded=true] .dsh-persona-chat-compose textarea{height:clamp(88px,26dvh,220px);min-height:64px}
+      .dsh-persona-chat-compose-row{flex:none;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px;margin-top:0;min-height:29px;position:sticky;bottom:0;z-index:1;background:var(--chat-bg)}
+      .dsh-persona-chat-compose-tools,.dsh-persona-chat-compose-actions{display:flex;align-items:center;gap:7px;min-width:0}.dsh-persona-chat-compose-tools{flex-wrap:wrap;row-gap:3px}.dsh-persona-chat-compose-actions{justify-content:flex-end}
+      .dsh-persona-chat-compose-tools label{display:flex;align-items:center;gap:5px;font-size:11px;white-space:nowrap;min-height:26px}.dsh-persona-chat-compose-tools input[type=checkbox]{margin:0;accent-color:var(--chat-brand)}.dsh-persona-chat-compose-short{display:none}
+      .dsh-persona-chat-compose-actions small{font-size:10px;color:var(--chat-muted);white-space:nowrap}.dsh-persona-chat-compose-row button{min-height:29px;padding:3px 9px;font-size:12px;white-space:nowrap}.dsh-persona-chat-compose-row button[data-primary]{min-width:56px}.dsh-persona-chat-compose-row .dsh-persona-chat-compose-expand{display:grid;place-items:center;width:28px;min-width:28px;padding:4px;background:transparent;border-color:transparent;color:var(--chat-muted)}.dsh-persona-chat-compose-expand:hover{background:var(--chat-soft);border-color:var(--chat-border)}.dsh-persona-chat-compose-expand svg{display:block}
+      @container chat-compose (max-width:520px){.dsh-persona-chat-compose-actions small{display:none}}
+      @container chat-compose (max-width:430px){.dsh-persona-chat-compose-full{display:none}.dsh-persona-chat-compose-short{display:inline}}
+      @container chat-compose (max-width:350px){.dsh-persona-chat-compose-row,.dsh-persona-chat-compose-tools,.dsh-persona-chat-compose-actions{column-gap:5px}.dsh-persona-chat-compose-row button{padding-inline:6px}.dsh-persona-chat-compose-tools label{font-size:10px;gap:3px}.dsh-persona-chat-compose-row .dsh-persona-chat-compose-expand{width:24px;min-width:24px}}
       .dsh-persona-chat-suggest{flex:0 1 auto;min-height:0;max-height:150px;overflow:auto;padding-bottom:6px;margin:0;border-bottom:1px solid var(--chat-border)}.dsh-persona-chat-suggest-head{font-size:11px;color:var(--chat-muted)}.dsh-persona-chat-suggest-head>small{margin:0;flex:1}.dsh-persona-chat-suggest-head>button{flex:none}.dsh-persona-chat-suggestions{max-height:110px}
       @media(max-width:520px){.dsh-persona-chat,.dsh-persona-chat[data-wide=true]{right:8px;bottom:max(8px,env(safe-area-inset-bottom,0px));width:calc(100vw - 16px);height:calc(100dvh - var(--chat-top-safe) - max(8px,env(safe-area-inset-bottom,0px)));max-height:calc(100dvh - var(--chat-top-safe) - max(8px,env(safe-area-inset-bottom,0px)))}.dsh-persona-chat-top{grid-template-columns:28px minmax(0,1fr) auto;padding:8px 10px 7px;gap:5px 7px}.dsh-persona-chat-top>.dsh-persona-chat-avatar{width:28px;height:28px}.dsh-persona-chat-actions{gap:3px}.dsh-persona-chat-actions button{padding:2px 6px}.dsh-persona-chat-compose{padding:7px 10px}}
-      @media(max-width:420px){.dsh-persona-chat-compose-row small{display:none}.dsh-persona-chat-compose-row button.dsh-persona-chat-compose-expand{margin-left:auto}}
     `;
     const CHAT_APPEARANCE_CSS = `
       .dsh-persona-chat-appearance{position:absolute;z-index:2;top:8px;right:8px;width:calc(100% - 16px);height:calc(100% - 16px);max-height:calc(100% - 16px);box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;padding:0;border:1px solid var(--chat-border);border-radius:12px;background:var(--chat-bg);box-shadow:0 12px 32px #0003}
@@ -1599,7 +1612,6 @@ const CLIENT_BUILD = 2026111201;
       .dsh-persona-room-avatar-display{position:relative}.dsh-persona-chat-member-activity{position:absolute;right:-2px;top:-2px;display:flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:var(--chat-bg);pointer-events:none}.dsh-persona-chat-member-activity i{display:block;width:6px;height:6px;border-radius:50%;background:#299b66}.dsh-persona-chat-member-activity[data-state=listening] i{animation:dsh-chat-listening 1.8s ease-in-out infinite}.dsh-persona-chat-member-activity[data-state=typing]{right:-6px}.dsh-persona-chat-member-activity[data-state=typing] i{width:3px;height:3px;opacity:.25;animation:dsh-chat-member-typing 1.2s ease-in-out infinite}.dsh-persona-chat-member-activity[data-state=typing] i:nth-child(2){animation-delay:.18s}.dsh-persona-chat-member-activity[data-state=typing] i:nth-child(3){animation-delay:.36s}
       @keyframes dsh-chat-listening{0%,100%{opacity:.4}50%{opacity:1}}@keyframes dsh-chat-member-typing{0%,65%,100%{opacity:.25}20%,45%{opacity:1}}
       @media(prefers-reduced-motion:reduce){.dsh-persona-chat-member-activity i{animation:none!important;opacity:1!important}}
-      @media(max-width:340px){.dsh-persona-chat-compose-row{gap:5px}.dsh-persona-chat-compose-row>button{flex-shrink:0;padding:3px 6px;white-space:nowrap}.dsh-persona-chat-compose-row>label{font-size:10px;gap:3px}.dsh-persona-chat-compose-row .dsh-persona-chat-compose-expand{width:24px;min-width:24px}}
       .dsh-persona-chat-images{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;max-width:100%}.dsh-persona-chat-images a{display:block;max-width:min(210px,100%);line-height:0}.dsh-persona-chat-images img{display:block;max-width:100%;max-height:150px;object-fit:contain;border-radius:7px}.dsh-persona-chat-images>span{font-size:11px;color:var(--chat-muted)}
       .dsh-persona-chat-image-drafts{display:flex;gap:7px;flex:none;overflow-x:auto;padding:3px 3px 5px}.dsh-persona-chat-image-drafts>div{position:relative;flex:none;width:68px;height:60px}.dsh-persona-chat-image-drafts img{width:68px;height:60px;object-fit:cover;border-radius:7px;border:1px solid var(--chat-border)}.dsh-persona-chat-image-drafts button{position:absolute;top:-3px;right:-3px;min-height:22px!important;width:22px;padding:0!important;border-radius:50%!important;font-size:15px!important}
       .dsh-persona-chat-image-note{flex:none;font-size:11px;color:var(--chat-muted);line-height:1.7;overflow-wrap:anywhere}.dsh-persona-chat-image-note button{margin-left:6px;min-height:25px;font-size:11px}
@@ -1619,18 +1631,28 @@ const CLIENT_BUILD = 2026111201;
       }
       .dsh-persona-chat-top[data-room=true]{grid-template-columns:44px minmax(0,1fr) auto}.dsh-persona-chat-room-heading{grid-column:2;grid-row:1;min-width:0;display:flex;flex-direction:column;gap:2px}.dsh-persona-chat-room-title{display:flex;align-items:center;gap:5px;min-width:0;min-height:20px!important;border:0!important;background:transparent!important;padding:0!important;text-align:left;font-weight:600;font-size:13px!important;line-height:20px}.dsh-persona-chat-room-title>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-persona-chat-room-title>span:last-child{font-size:10px;color:var(--chat-muted)}.dsh-persona-room-avatar-display{grid-column:1;grid-row:1;align-self:center}.dsh-persona-chat-room-tools{display:flex;align-items:center;gap:10px;min-width:0}.dsh-persona-chat-room-tools button{border:0;min-height:20px;padding:0;font-size:10px;background:transparent;white-space:nowrap;color:var(--chat-muted)}.dsh-persona-chat-room-tools button:hover{color:var(--chat-brand)}.dsh-persona-chat-room-tools button[aria-expanded=true]{color:var(--chat-brand)}.dsh-persona-chat-room-heading+.dsh-persona-chat-actions{align-self:start}
       .dsh-persona-room-avatar{--room-avatar-letter:9px;position:relative;display:block;width:44px;height:44px;flex:none;isolation:isolate}.dsh-persona-room-avatar-tile{position:absolute;display:block;border:1px solid var(--chat-bg);border-radius:24%;background:var(--chat-bg);transform:translate(-50%,-50%) rotate(var(--tile-angle,0deg));transform-origin:center;box-shadow:0 1px 0 var(--chat-border),0 2px 4px #0002}.dsh-persona-room-avatar-tile::after{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,#ffffff0c,transparent 55%);pointer-events:none}.dsh-persona-room-avatar[data-count='1']{--room-avatar-letter:12px}.dsh-persona-room-avatar[data-count='2']{--room-avatar-letter:10px}.dsh-persona-room-avatar-more{display:grid;place-items:center;color:var(--chat-muted);background:var(--chat-soft);font-size:var(--room-avatar-letter);line-height:1;font-weight:600}.dsh-persona-chat-empty>.dsh-persona-room-avatar{--room-avatar-letter:12px;width:64px;height:64px;margin-bottom:5px}.dsh-persona-chat-mentions{display:block;font-size:9px;line-height:1.4;opacity:.72;margin-bottom:3px;font-weight:400}
-      .dsh-persona-chat-participants{min-width:0;flex:none;container-type:inline-size}
-      .dsh-persona-chat-recipient{display:flex;flex-wrap:wrap;align-items:center;gap:2px 5px;min-width:0;padding:2px}
-      .dsh-persona-chat button.dsh-persona-chat-recipient-option{display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:142px;min-height:30px;padding:3px 7px 3px 4px;border:0;border-radius:9px;background:transparent;font:inherit;font-size:11px;line-height:18px;color:var(--chat-muted);text-align:start}
-      .dsh-persona-chat-recipient-option>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .dsh-persona-chat-participants{min-width:0;flex:none;container:chat-participants / inline-size}
+      .dsh-persona-chat-room-tools{container:chat-room-tools / inline-size}
+      .dsh-persona-chat-source-short{display:none}
+      @container chat-room-tools (max-width:145px){.dsh-persona-chat-source-full{display:none}.dsh-persona-chat-source-short{display:inline}}
+      .dsh-persona-chat-recipient{display:flex;align-items:center;gap:2px 5px;min-width:0;padding:2px}
+      .dsh-persona-chat-recipient-broadcast{flex:none;font-size:11px;color:var(--chat-muted);white-space:nowrap}
+      .dsh-persona-chat-recipient-broadcast-short{display:none}
+      .dsh-persona-chat button.dsh-persona-chat-recipient-option{display:inline-flex;align-items:center;gap:5px;min-width:36px;max-width:142px;min-height:30px;padding:3px 7px 3px 4px;border:0;border-radius:9px;background:transparent;font:inherit;font-size:11px;line-height:18px;color:var(--chat-muted);text-align:start}
+      .dsh-persona-chat-recipient-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .dsh-persona-chat-recipient-portrait{position:relative;display:inline-flex;flex:none}
       .dsh-persona-chat-recipient-option .dsh-persona-chat-avatar{width:22px;height:22px;border-radius:7px;font-size:9px}
       .dsh-persona-chat button.dsh-persona-chat-recipient-option[aria-checked=true]{background:color-mix(in srgb,var(--chat-brand) 12%,var(--chat-bg));color:var(--chat-text);font-weight:600}
       .dsh-persona-chat-recipient-option[aria-checked=true] .dsh-persona-chat-recipient-portrait::after{content:'✓';position:absolute;right:-2px;bottom:-1px;display:grid;place-items:center;width:11px;height:11px;border:1px solid var(--chat-bg);border-radius:50%;background:var(--chat-brand);color:white;font:bold 8px/1 system-ui}
       .dsh-persona-chat-recipient-option[aria-checked=true] .dsh-persona-chat-recipient-portrait[data-order]::after{content:attr(data-order)}
       .dsh-persona-chat-recipient-option:not(:disabled):hover{background:var(--chat-soft)}
-      @container(max-width:620px){.dsh-persona-chat-recipient[data-crowded=true]{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}.dsh-persona-chat-recipient[data-crowded=true]>button{max-width:100%}}
-      @container(max-width:335px){.dsh-persona-chat-recipient[data-crowded=true]{grid-template-columns:repeat(3,minmax(0,1fr))}}
+      @container chat-participants (max-width:460px){.dsh-persona-chat-recipient[data-density=large]{--recipient-name-display:none;--recipient-padding:3px;--recipient-min:28px;--recipient-justify:center;gap:2px}}
+      @container chat-participants (max-width:350px){.dsh-persona-chat-recipient[data-density=medium]{--recipient-name-display:none;--recipient-padding:3px;--recipient-min:28px;--recipient-justify:center;gap:2px}}
+      @container chat-participants (max-width:310px){.dsh-persona-chat-recipient[data-density=large] .dsh-persona-chat-recipient-broadcast-full{display:none}.dsh-persona-chat-recipient[data-density=large] .dsh-persona-chat-recipient-broadcast-short{display:inline}}
+      @container chat-participants (max-width:270px){.dsh-persona-chat-recipient:is([data-density=medium],[data-density=large]){flex-wrap:wrap}.dsh-persona-chat-recipient[data-density=large] .dsh-persona-chat-recipient-broadcast{display:none}}
+      @container chat-participants (max-width:220px){.dsh-persona-chat-recipient{--recipient-name-display:none;--recipient-padding:3px;--recipient-min:28px;--recipient-justify:center;flex-wrap:wrap}.dsh-persona-chat-recipient-broadcast{display:none}}
+      .dsh-persona-chat .dsh-persona-chat-recipient button.dsh-persona-chat-recipient-option{min-width:var(--recipient-min,36px);padding-inline:var(--recipient-padding,4px) var(--recipient-padding,7px);justify-content:var(--recipient-justify,flex-start)}
+      .dsh-persona-chat-recipient-name{display:var(--recipient-name-display,block)}
       .dsh-persona-chat-room-panel{position:absolute;z-index:5;inset:84px 10px auto;max-height:calc(100% - 98px);overflow:auto;padding:12px;border:1px solid var(--chat-border);border-radius:11px;background:var(--chat-bg);box-shadow:0 12px 35px #0003;font-size:12px}.dsh-persona-chat-room-panel header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.dsh-persona-chat-room-panel header button{min-height:25px;padding:2px 7px;font-size:11px}.dsh-persona-chat-room-panel p{font-size:11px;color:var(--chat-muted);line-height:1.7}.dsh-persona-chat-room-panel input[type=text]{box-sizing:border-box;width:100%;padding:7px 9px;margin:6px 0 10px;border:1px solid var(--chat-border);border-radius:7px;background:var(--chat-soft);font:inherit;color:inherit}.dsh-persona-chat-room-list{display:grid;gap:5px}.dsh-persona-chat-room-list>button{display:flex;align-items:center;gap:9px;width:100%;text-align:left}.dsh-persona-chat-room-list>button[aria-pressed=true]{border-color:var(--chat-brand);background:var(--chat-soft)}.dsh-persona-chat-room-list>button>span:last-child{min-width:0;display:grid;gap:2px}.dsh-persona-chat-room-list strong{font-size:12px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.dsh-persona-chat-room-list small{font-size:10px;color:var(--chat-muted)}.dsh-persona-chat-room-buttons{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.dsh-persona-chat-room-buttons button{font-size:12px;min-height:29px}
       .dsh-persona-chat-room-members{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:8px 0}.dsh-persona-chat-room-members label{display:flex;align-items:center;gap:6px;min-width:0;padding:6px;border:1px solid var(--chat-border);border-radius:7px}.dsh-persona-chat-room-members label>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-persona-chat-room-members .dsh-persona-chat-avatar{width:26px;height:26px;font-size:10px}.dsh-persona-chat-speaker{display:block;font-size:10px;line-height:1.5;color:var(--chat-muted);margin-bottom:3px}.dsh-persona-chat-message[data-user=true] .dsh-persona-chat-speaker{color:inherit;opacity:.8}.dsh-persona-chat-room-loading{padding:24px;display:grid;gap:10px;font-size:12px}
     `;
@@ -1921,7 +1943,7 @@ const CLIENT_BUILD = 2026111201;
         h('div',{className:'dsh-persona-chat-quote-actions'},onJump?h('button',{type:'button',disabled:!available,'aria-label':'查看引用原消息',title:available?'定位到原消息':'原消息暂不可用',onClick:onJump},'↗'):null,
           draft?h('button',{type:'button','aria-label':'取消引用',title:'取消引用 · Esc',onClick:onCancel},'×'):null));
     }
-    function ChatReplyBubbles({turn,frame,avatar,colorStyle,onProgress,onPresented,latest=true,running=false,showSpeaker=false,showTyping=true,onQuote}) {
+    function ChatReplyBubbles({turn,frame,avatar,colorStyle,onPresented,latest=true,running=false,showSpeaker=false,showTyping=true,onQuote}) {
       const animate=latest&&(chatAnimatedAttempts.has(turn.attemptId)||turn.status==='pending');
       const [entrance]=React.useState(()=>animate&&!chatSurfaceMotion);
       const messages=turn.status==='ready'?turn.assistant.map(text=>({text,complete:true}))
@@ -1938,10 +1960,9 @@ const CLIENT_BUILD = 2026111201;
         if(count>=messages.length){if(turn.status==='ready'){chatAnimatedAttempts.delete(turn.attemptId);onPresented?.(turn);}return;}
         if(count===0){setCount(1);return;}
         if(!messages[count-1]?.complete)return;
-        const wait=Math.min(1250,650+messages[count-1].text.length*12);
+        const wait=Math.min(500,200+messages[count-1].text.length*5);
         const timer=setTimeout(()=>setCount(n=>n+1),wait);return()=>clearTimeout(timer);
       },[turn.attemptId,turn.status,count,messages.length,messages[Math.max(0,count-1)]?.complete,animate]);
-      useLayoutEffect(()=>{onProgress?.();},[count,typing,visible.map(m=>m.text).join('\n')]);
       const portrait=continuation=>continuation?h('span',{className:'dsh-persona-chat-avatar-spacer','aria-hidden':true}):avatar();
       return h(React.Fragment,null,...displayed.map(({message,index},position)=>h('div',{key:index,className:'dsh-persona-chat-message','data-user':'false','data-chat-bubble':index,'data-arriving':entrance||undefined,
         'data-chat-persona':turn.recipientId,style:colorStyle,
@@ -1991,18 +2012,23 @@ const CLIENT_BUILD = 2026111201;
         ?parts:[{id:turn?.messageId,text:turn?.user??'',at:turn?.at}];
     }
     const chatSupportRequestPrefixes={research:'请先调查公开资料，附上来源，再回答下面的问题：\n',reason:'请使用深入推演，分析下面的问题与关键条件：\n'};
+    const chatSupportCards = {
+      research:{name:'调查资料',setting:'chatResearchEnabled',description:'联网查公开网页，带回来源。',request:'调查请求'},
+      reason:{name:'深入推演',setting:'chatDeepReasoningEnabled',description:'用思考模式分析条件与取舍，不联网。',request:'推演请求'},
+      summarize:{name:'整理工作参考',setting:'chatSummarizeEnabled',description:'梳理已接入会话的目标、报告和上轮结果。'},
+    };
     function ChatSupportMenu({id,capabilities,disabled,busy,notice,onToggle,onInsert,onClose}){
       const known=typeof capabilities?.research==='boolean'&&typeof capabilities?.reason==='boolean';
       return h('section',{id,'aria-label':'聊天室子代理能力','aria-busy':busy,style:{padding:'8px 10px',marginBottom:7,border:'1px solid var(--chat-border)',borderRadius:8,background:'var(--chat-soft)',fontSize:12,maxHeight:'min(240px,30vh)',overflowY:'auto',overflowWrap:'anywhere'}},
         h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}},h('strong',null,'子代理辅助'),h('button',{type:'button','aria-label':'收起子代理入口',onClick:onClose},'收起')),
-        h('p',{style:{margin:'4px 0 7px',fontSize:11,color:'var(--chat-muted)'}},'让成员先查资料或深入分析。请求填入草稿，可修改后发送；打开这里不会调用模型。'),
-        h('div',{style:{display:'flex',flexWrap:'wrap',gap:8}},...['research','reason'].map(template=>{
-          const name=template==='research'?'调查资料':'深入推演',enabled=capabilities?.[template]===true,available=template!=='research'||capabilities?.searchService===true;
+        h('p',{style:{margin:'4px 0 7px',fontSize:11,color:'var(--chat-muted)'}},'发送消息后，成员可按需调查、推演或整理会话参考。'),
+        h('div',{style:{display:'flex',flexWrap:'wrap',gap:8}},...Object.entries(chatSupportCards).filter(([id])=>id!=='summarize'||typeof capabilities?.summarize==='boolean').map(([template,card])=>{
+          const {name,description,request}=card,enabled=capabilities?.[template]===true,available=template!=='research'||capabilities?.searchService===true;
           return h('div',{key:template,style:{flex:'1 1 180px',minWidth:0,padding:7,border:'1px solid var(--chat-border)',borderRadius:6}},
-            h('strong',null,name),h('p',{style:{margin:'3px 0',fontSize:11}},template==='research'?'联网查公开网页，带回来源。':'用思考模式分析条件与取舍，不联网。'),
+            h('strong',null,name),h('p',{style:{margin:'3px 0',fontSize:11}},description),
             h('label',{style:{display:'flex',alignItems:'center',gap:5,fontSize:11,margin:'5px 0'}},h('input',{type:'checkbox',checked:enabled,disabled:disabled||busy||!known||!available&&!enabled,'aria-label':'允许按需'+name,onChange:e=>void onToggle(template,e.target.checked)}),'允许按需调用'),
             !available?h('p',{style:{margin:'3px 0',fontSize:11}},'当前宿主没有搜索服务，暂不能调查资料。'):null,
-            h('button',{type:'button',disabled:disabled||busy||!known||!available,onClick:()=>void onInsert(template)},(enabled?'填入':'启用并填入')+(template==='research'?'调查请求':'推演请求')));
+            request?h('button',{type:'button',disabled:disabled||busy||!known||!available,onClick:()=>void onInsert(template)},(enabled?'填入':'启用并填入')+request):null);
         })),
         h('p',{style:{margin:'6px 0 0',fontSize:11,color:'var(--chat-muted)'}},'开关对所有聊天室生效，开启后也可由判断线程按需使用。更多模型配置见插件设置 → 聊天室。'),
         !known?h('p',{role:'status',style:{margin:'5px 0 0'}},'辅助能力状态暂未就绪，请稍后重试。'):null,
@@ -2015,11 +2041,12 @@ const CLIENT_BUILD = 2026111201;
       if(task&&(received.current.id!==task.id||received.current.elapsed!==task.elapsedMs))received.current={id:task.id,elapsed:task.elapsedMs??0,at:Date.now()};
       React.useEffect(()=>{if(!task||task.status!=='running'||minimized)return;const timer=setInterval(()=>tick(v=>v+1),1000);return()=>clearInterval(timer);},[task?.id,task?.status,minimized]);
       if(!task)return null;
-      const name=task.template==='research'?'调查资料':'深入推演',running=task.status==='running';
-      const stages={preparing:'准备任务',thinking:'整理检索方向',searching:'正在搜索',reading:'正在阅读网页',reasoning:'正在深入推演'};
+      const name=chatSupportCards[task.template]?.name??'辅助任务',running=task.status==='running';
+      const stages={preparing:'准备任务',thinking:'整理检索方向',searching:'正在搜索',reading:'正在阅读网页',reasoning:'正在深入推演',summarizing:'正在整理会话原文'};
       const terminal={completed:'已完成',partial:'部分完成',failed:'未完成',cancelled:'已停止',interrupted:'上次任务已中断'};
       const errors={timeout:'已到时间上限',budget:'已到调用上限',format:'结果格式未通过检查',capacity:'其他辅助任务正在运行',unavailable:'模型、搜索或网络暂不可用',
-        stale:'原话或参考已变化',cancelled:'已停止',interrupted:'没有自动重跑', 'save-failed':'任务记录暂未保存','thinking-unavailable':'当前模型无法启用已声明的思考模式，请在设置中选择支持思考的推演模型。'};
+        stale:'原话或参考已变化',cancelled:'已停止',interrupted:'没有自动重跑', 'save-failed':'任务记录暂未保存',
+        'reference-unavailable':'本次暂未取得可整理的工作会话原文。','thinking-unavailable':'当前模型无法启用已声明的思考模式，请在设置中选择支持思考的推演模型。'};
       const elapsed=Math.max(0,(received.current.elapsed??0)+(running?Date.now()-received.current.at:0));
       return h('section',{className:'dsh-persona-support', 'aria-label':'聊天室辅助任务',style:{flex:'none',margin:'4px 12px',padding:'7px 9px',border:'1px solid var(--chat-border,#dce3eb)',borderRadius:8,fontSize:11,color:'var(--chat-muted)',overflowWrap:'anywhere'}},
         h('div',{style:{display:'flex',alignItems:'center',gap:'4px 8px',flexWrap:'wrap'}},
@@ -2091,14 +2118,15 @@ const CLIENT_BUILD = 2026111201;
       const root=React.useRef(null);
       if(memberIds.length<2)return null;
       const targets=value.filter(id=>memberIds.includes(id)&&contacts.some(p=>p.id===id&&!p.archived));
-      return h('div',{className:'dsh-persona-chat-recipient',ref:root,role:'group','aria-label':'回复对象','aria-description':targets.length?'已选 '+targets.length+' 位，第一位优先回应，其余按顺序关注':'发给房间，未指定回复对象','data-crowded':memberIds.length>4,title:'不点名时发给房间；第一位点名对象优先，其余依次关注',onKeyDown:e=>{
+      return h('div',{className:'dsh-persona-chat-recipient',ref:root,role:'group','aria-label':'回复对象','aria-description':targets.length?'已选 '+targets.length+' 位，第一位优先回应，其余按顺序关注':'发给房间，未指定回复对象','data-density':memberIds.length>6?'large':memberIds.length>4?'medium':'small',title:'不点名时发给房间；第一位点名对象优先，其余依次关注',onKeyDown:e=>{
         if(disabled||!['ArrowRight','ArrowLeft','ArrowDown','ArrowUp','Home','End'].includes(e.key))return;
         e.preventDefault();const options=[...root.current.querySelectorAll('[role=checkbox]:not(:disabled)')];
         if(!options.length)return;const index=options.indexOf(document.activeElement);
         const next=e.key==='Home'?0:e.key==='End'?options.length-1:(index+(['ArrowRight','ArrowDown'].includes(e.key)?1:-1)+options.length)%options.length;
         options[next].focus({preventScroll:true});
       }},
-        !targets.length?h('small',{style:{fontSize:11,color:'var(--chat-muted)',whiteSpace:'nowrap'}},'发给房间'):null,
+        !targets.length?h('small',{className:'dsh-persona-chat-recipient-broadcast'},
+          h('span',{className:'dsh-persona-chat-recipient-broadcast-full'},'发给房间'),h('span',{className:'dsh-persona-chat-recipient-broadcast-short'},'房间')):null,
         ...memberIds.map(id=>{const person=contacts.find(p=>p.id===id),selected=targets.includes(id);
         const order=selected&&targets.length>1?targets.indexOf(id)+1:undefined,status=chatMemberStatus(activityData,id);
         const hint=person?.archived?'这位角色已移除':selected?targets.indexOf(id)===0?'优先回应，点击取消 @'+person.name:'第 '+order+' 位关注对象，点击取消 @'+person.name:'同时 @'+(person?.name??'角色');
@@ -2107,7 +2135,7 @@ const CLIENT_BUILD = 2026111201;
         'aria-checked':selected,'aria-description':hint+(status?' · '+status.text:''),disabled:disabled||!person||person.archived,
         title:(person?.name??'已移除的人格')+' · '+hint+(status?' · '+status.detail:''),onClick:()=>{const next=selected?targets.filter(p=>p!==id):[...targets,id];void onChange(next);}},
         h('span',{className:'dsh-persona-chat-recipient-portrait','data-order':order},h(PersonaAvatar,{id,name:person?.name??'已移除的人格',src:person?.avatar,className:'dsh-persona-chat-avatar'}),h(ChatMemberActivity,{status,name:person?.name??'角色'})),
-        h('span',null,((id==='大肥鱼（默认）'&&person?.name==='大肥鱼（默认）')?'大肥鱼':(id==='鲸鲸（实验性）'&&person?.name==='小肥鱼（实验性）')?'小肥鱼':person?.name??'已移除的人格')+(person?.archived?'（已移除）':'')));}));
+        h('span',{className:'dsh-persona-chat-recipient-name'},((id==='大肥鱼（默认）'&&person?.name==='大肥鱼（默认）')?'大肥鱼':(id==='鲸鲸（实验性）'&&person?.name==='小肥鱼（实验性）')?'小肥鱼':person?.name??'已移除的人格')+(person?.archived?'（已移除）':'')));}));
     }
     function roomReferenceHint(context, foreground) {
       if (!context?.initialized) return { text: '连接中', title: '正在初始化参考来源', different: false };
@@ -2466,6 +2494,7 @@ const CLIENT_BUILD = 2026111201;
       const readRevision = React.useRef(0), live = React.useRef(true), reading = React.useRef(undefined);
       const host = React.useRef({ id: undefined, retired: new Set() });
       const input = React.useRef(null), thread = React.useRef(null), atBottom = React.useRef(chatUi.get(explicitRoomId)?.reading?.atBottom!==false), appearanceButton = React.useRef(null),workButton=React.useRef(null);
+      const threadContent=React.useRef(null),threadPosition=React.useRef(null);
       const readingRestore=React.useRef(chatUi.get(explicitRoomId)?.reading??null),readingRestored=React.useRef(false),readingTimer=React.useRef(null);
       const knownReading=React.useRef(new Set(chatUi.get(explicitRoomId)?.reading?.known??(initialState?.room?.turns??[]).filter(turn=>turn.status==='ready'&&turn.phase!=='anchor').map(turn=>turn.attemptId)));
       const knownGeneration=React.useRef(initialState?.room?.generation??0);
@@ -2483,10 +2512,49 @@ const CLIENT_BUILD = 2026111201;
       };
       const scheduleReading=()=>{clearTimeout(readingTimer.current);readingTimer.current=setTimeout(saveReading,120);};
       const noteReadyReplies=value=>{
-        const ids=(value.room?.turns??[]).filter(turn=>turn.status==='ready'&&turn.phase!=='anchor').map(turn=>turn.attemptId);
+        const ids=(value?.room?.turns??[]).filter(turn=>turn.status==='ready'&&turn.phase!=='anchor').map(turn=>turn.attemptId);
         if(atBottom.current){knownReading.current=new Set(ids);setNewReplies(0);}
         else{knownReading.current=new Set(ids.filter(id=>knownReading.current.has(id)));setNewReplies(ids.filter(id=>!knownReading.current.has(id)).length);}
       };
+      const readThreadPosition=element=>({top:element.scrollTop,height:element.scrollHeight,viewport:element.clientHeight});
+      const syncThreadLayout=()=>{
+        const element=thread.current;
+        if(!element?.clientHeight)return;
+        const position=readThreadPosition(element);
+        if(atBottom.current&&position.height-position.viewport-position.top>1){
+          element.scrollTop=position.height;
+          position.top=element.scrollTop;
+        }
+        threadPosition.current=position;
+      };
+      const followLatest=value=>{
+        atBottom.current=value;
+        setScrolledUp(!value);
+        syncThreadLayout();
+        noteReadyReplies(latestData.current);
+        scheduleReading();
+      };
+      const onThreadScroll=event=>{
+        const position=readThreadPosition(event.currentTarget),previous=threadPosition.current;
+        const sameLayout=previous?.height===position.height&&previous.viewport===position.viewport;
+        const gap=position.height-position.viewport-position.top;
+        // Reflow can change the scrollbar range and dispatch its own scroll event.
+        // Only movement within the same layout changes which position the user follows.
+        if(sameLayout&&position.top!==previous.top){
+          if(atBottom.current&&position.top<previous.top&&gap>1){followLatest(false);return;}
+          if(!atBottom.current&&position.top>previous.top&&gap<=1){followLatest(true);return;}
+        }
+        syncThreadLayout();
+        scheduleReading();
+      };
+      useLayoutEffect(()=>{
+        const element=thread.current,content=threadContent.current;
+        if(minimized||!element||!content)return;
+        const observer=new ResizeObserver(syncThreadLayout);
+        observer.observe(element);
+        observer.observe(content);
+        return()=>observer.disconnect();
+      },[minimized]);
       const minimize=(options={})=>{
         saveReading();
         const snapshot=latestData.current;
@@ -2501,7 +2569,8 @@ const CLIENT_BUILD = 2026111201;
         const last=dockSession.current;if(!last)return;
         dockSession.current=null;
         if(last.missing){onRoomMissing?.();return;}
-        if(thread.current)thread.current.scrollTop=atBottom.current?thread.current.scrollHeight:last.scroll;
+        if(thread.current&&!atBottom.current)thread.current.scrollTop=last.scroll;
+        syncThreadLayout();
         input.current?.focus({preventScroll:true});if(last.start!=null)input.current?.setSelectionRange(last.start,last.end);
         if(!busyRef.current)void currentLoad.current(undefined,true);
       },[minimized]);
@@ -2533,7 +2602,6 @@ const CLIENT_BUILD = 2026111201;
       const queuedInputs=(ready&&Array.isArray(data.queuedInputs)?data.queuedInputs:[]).map(batch=>({...batch,
         parts:(Array.isArray(batch.parts)?batch.parts:[]).filter(part=>part&&chatUiId(part.id)&&typeof part.text==='string'&&!committedInputs.has(part.id))})).filter(batch=>chatUiId(batch.id)&&batch.parts.length);
       const queueWaiting=queuedInputs.some(batch=>batch.status==='pending'||batch.status==='sending');
-      const queuedKey=queuedInputs.map(batch=>batch.id+':'+batch.status+':'+batch.parts.map(part=>part.id).join('|')).join(';');
       const latestMessage=turns.at(-1)?.messageId;
       const directorIssue=data?.directorFailure&&data.directorFailure.messageId===latestMessage?data.directorFailure:null;
       const directorAnswered=!!directorIssue&&turns.some(turn=>turn.messageId===latestMessage&&turn.phase!=='anchor'&&turn.status==='ready'&&turn.assistant?.length);
@@ -2554,19 +2622,21 @@ const CLIENT_BUILD = 2026111201;
       const pendingTurn=stopMessageId?turns.find(t=>t.messageId===stopMessageId && t.status==='pending'):undefined;
       const stopTurn=pendingTurn??(stopMessageId && ['preparing','listening','support'].includes(data.roundPhase)?turns.find(t=>t.messageId===stopMessageId):undefined);
       const currentContextKey = context?.id ? context.id + ':' + context.revision : null;
+      const summaryScope = data?.scopeKey ?? null;
+      const summaryAvailable = !!summaryScope && data?.supportCapabilities?.workReferences === true;
       const quoteScope=context?.scopeKey??data?.scopeKey??null;
       useLayoutEffect(()=>{
         if(!ready||minimized||readingRestored.current||!thread.current)return;
         const saved=readingRestore.current,element=thread.current;
         if(saved){atBottom.current=saved.atBottom;const owner=[...element.querySelectorAll('[data-chat-turn],[data-chat-user-head]')].find(node=>(node.getAttribute('data-chat-turn')??node.getAttribute('data-chat-user-head'))===saved.anchor?.turnId);
           const bubble=saved.anchor?.kind==='user'?(saved.anchor.messageId?[...element.querySelectorAll('[data-user=true][data-chat-user-part]')].find(node=>node.dataset.chatUserPart===saved.anchor.messageId):owner?.querySelector('[data-user=true]')):owner?.querySelector('[data-chat-bubble="'+(saved.anchor?.index??0)+'"]');
-          element.scrollTop=saved.atBottom?element.scrollHeight:saved.scrollTop;
-          if(!saved.atBottom&&bubble)element.scrollTop=layoutTop(bubble,element)-saved.offset;
+          if(!saved.atBottom)element.scrollTop=bubble?layoutTop(bubble,element)-saved.offset:saved.scrollTop;
           setScrolledUp(!saved.atBottom);
-        }else{element.scrollTop=element.scrollHeight;atBottom.current=true;}
+        }else atBottom.current=true;
+        syncThreadLayout();
         const selection=chatUi.get(explicitRoomId)?.selection;if(selection)input.current?.setSelectionRange(selection.start,selection.end);
         readingRestored.current=true;noteReadyReplies(latestData.current);saveReading();
-      },[ready,minimized,turns.length]);
+      },[ready,minimized,turns.length,data?.instanceId,data?.localStateKey,data?.room?.generation]);
       useLayoutEffect(()=>{const save=()=>saveReading();window.addEventListener('pagehide',save);if(explicitRoomId)chatUiFlushers.set(explicitRoomId,save);
         return()=>{clearTimeout(readingTimer.current);saveReading();window.removeEventListener('pagehide',save);if(chatUiFlushers.get(explicitRoomId)===save)chatUiFlushers.delete(explicitRoomId);};},[]);
       React.useEffect(()=>{
@@ -2715,9 +2785,6 @@ const CLIENT_BUILD = 2026111201;
         document.addEventListener('visibilitychange',visibility);
         return()=>{alive=false;sequence++;clearTimeout(timer);document.removeEventListener('visibilitychange',visibility);};
       }, [pending,queueWaiting,syncDelayed,busy,explicitRoomId,persona,data?.instanceId]);
-      React.useEffect(() => {
-        if (atBottom.current && thread.current) thread.current.scrollTop = thread.current.scrollHeight;
-      }, [data?.room?.revision, queuedKey, persona]);
       const resetSuggestions = () => {
         suggestRequest.current.revision += 1; suggestRequest.current.abort?.abort(); suggestRequest.current.busy = false;
         setSuggestions([]); setSuggestBusy(false); setSuggestInfo('');
@@ -2730,8 +2797,8 @@ const CLIENT_BUILD = 2026111201;
         const next = { ...draft,text, requestId: chatNonce() }; saveChatDraft(draftScope, next); setDraft(next);
       };
       const toggleSupport=async(template,enabled)=>{
-        if(!['research','reason'].includes(template)||supportWrite.current)return false;
-        const owner=imageScope,field=template==='research'?'chatResearchEnabled':'chatDeepReasoningEnabled',abort=new AbortController();
+        if(!Object.hasOwn(chatSupportCards,template)||supportWrite.current)return false;
+        const owner=imageScope,field=chatSupportCards[template].setting,abort=new AbortController();
         supportWrite.current=abort;setSupportSaving(true);setSupportNotice('');const timeout=setTimeout(()=>abort.abort(),10000);
         try{
           const response=await fetch(ROUTE+'/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({[field]:enabled}),signal:abort.signal}),value=await response.json();
@@ -2762,14 +2829,14 @@ const CLIENT_BUILD = 2026111201;
         const author=index===null?{role:'user',name:'我'}:{role:'assistant',id:turn.recipientId,name:turn.speakerName};
         const next={...draft,requestId:chatNonce(),quote:{ref,author,text}};saveChatDraft(draftScope,next);setDraft(next);input.current?.focus();
       };
-      const cancelQuote=()=>{const next={text:draft.text,requestId:chatNonce()};saveChatDraft(draftScope,next);setDraft(next);resetSuggestions();input.current?.focus();};
+      const cancelQuote=()=>{const {quote,...rest}=draft;const next={...rest,requestId:chatNonce()};saveChatDraft(draftScope,next);setDraft(next);resetSuggestions();input.current?.focus();};
       const jumpQuote=ref=>{
         const source=chatQuotedSource(data.room,ref,quoteScope);if(!source||!thread.current)return;
         const node=[...thread.current.querySelectorAll('[data-chat-turn]')].find(el=>el.getAttribute('data-chat-turn')===source.turn.id);
         const target=ref.kind==='user'?[...thread.current.querySelectorAll('[data-user=true]')].find(element=>element.dataset.chatUserPart===ref.messageId):node?.querySelector('[data-chat-bubble="'+ref.index+'"]');
         if(!target)return;
         thread.current.querySelectorAll('.dsh-persona-chat-quoted-highlight').forEach(el=>el.classList.remove('dsh-persona-chat-quoted-highlight'));
-        atBottom.current=false;setScrolledUp(true);target.scrollIntoView({block:'center',behavior:'instant'});target.tabIndex=-1;target.focus({preventScroll:true});
+        atBottom.current=false;target.scrollIntoView({block:'center',behavior:'instant'});followLatest(false);target.tabIndex=-1;target.focus({preventScroll:true});
         target.classList.add('dsh-persona-chat-quoted-highlight');target.addEventListener('blur',()=>target.classList.remove('dsh-persona-chat-quoted-highlight'),{once:true});
       };
       const generateSuggestions = async () => {
@@ -2865,9 +2932,10 @@ const CLIENT_BUILD = 2026111201;
         else chatImageSends.delete(owner);
         while(chatImageSends.size>32)chatImageSends.delete(chatImageSends.keys().next().value);
         if((chatDrafts.get(draftScope)?.requestId??draft.requestId)===draft.requestId){saveChatDraft(draftScope, current);setDraft(current);}
-        atBottom.current = true; setScrolledUp(false);
+        followLatest(true);
         markChatAnimation(current.requestId);
         return await act({ action: 'send', requestId: current.requestId, content: current.text, revision: data.room?.revision ?? 0,clientTime:chatClientTime(),
+          ...(summaryAvailable&&current.summaryScope===summaryScope?{summarize:true}:{}),
           ...(selected.length?{images:selected.map(({mediaType,data,name})=>({mediaType,data,name}))}:{}),
           ...(textOnly===true?{withoutImages:true}:{}),
           ...(draft.quote?{quote:draft.quote.ref}:{}),
@@ -2879,7 +2947,7 @@ const CLIENT_BUILD = 2026111201;
         if (!ready || busyRef.current || roomBusy || contextState.busy || pending || !data.modelReady) return;
         const sameScope=explicitRoomId&&turn.scopeKey&&turn.scopeKey===(context?.scopeKey??data.scopeKey);
         if ((turn.contextKey ?? null) !== currentContextKey && !sameScope && !confirmed) { setRetryConfirm(turn); return; }
-        setRetryConfirm(null); resetSuggestions(); atBottom.current = true; setScrolledUp(false);
+        setRetryConfirm(null); resetSuggestions(); followLatest(true);
         const key = draftScope + ':' + turn.id, id = chatRetryIds.get(key) ?? chatNonce();
         keepDraft(chatRetryIds, key, id); markChatAnimation(id);
         return act({ action: 'retry', id: turn.id, attemptId: id, revision: data.room.revision,clientTime:chatClientTime(),
@@ -2920,7 +2988,8 @@ const CLIENT_BUILD = 2026111201;
                 title:'管理成员 · '+(data?.room?.memberIds.length??0)+' 位人格',onClick:()=>{setWorkOpen(false);onOpenMembers?.();}},'成员'),
               h('button',{type:'button','aria-label':sourcesOpen?'收起来源':'参考来源','aria-expanded':sourcesOpen,'aria-controls':'dsh-persona-chat-source-panel',
                 title:sourceHint.title,'data-source-different':sourceHint.different,'data-source-count':context?.initialized?context.sources?.length??0:undefined,style:{flex:'0 1 auto',minWidth:0,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis'},
-                onClick:()=>{setWorkOpen(false);setSourcesOpen(!sourcesOpen);}},sourceHint.text),
+                onClick:()=>{setWorkOpen(false);setSourcesOpen(!sourcesOpen);}},
+                h('span',{className:'dsh-persona-chat-source-full'},sourceHint.text),h('span',{className:'dsh-persona-chat-source-short'},sourceHint.different?'固定':'来源')),
               h('button',{type:'button',ref:workButton,'aria-label':'整理工作指令','aria-expanded':workOpen,disabled:roomBusy||!ready,
                 onClick:()=>{onDismissPanel?.();setAppearance(false);setSourcesOpen(false);setWorkOpen(!workOpen);}},'整理指令'))):h('strong', { className:'dsh-persona-chat-title' }, '聊天室'),
           h('div', { className:'dsh-persona-chat-actions' },
@@ -2983,15 +3052,11 @@ const CLIENT_BUILD = 2026111201;
           h('button', { type: 'button', onClick: () => { setInfo(''); void load(); } }, '刷新')) : null,
         syncDelayed?h('div',{className:'dsh-persona-chat-info',role:'status'},'连接暂时中断，正在重新读取回复…'):null,
         contact?.archived ? h('div', { className: 'dsh-persona-chat-info' }, explicitRoomId?'这位角色已移除，请选择其他回复对象，或在成员管理中加入新角色。原有聊天保留。':'角色已移除，可以查看或清空历史记录。') : null,
-        h('div', { className: 'dsh-persona-chat-thread-wrap' }, h('div', { className: 'dsh-persona-chat-thread', ref: thread, 'aria-label': '聊天消息', onScroll: () => {
-          const el = thread.current; if (!el) return;
-          atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; setScrolledUp(!atBottom.current);
-          noteReadyReplies(latestData.current);scheduleReading();
-        } }, turns.length === 0 && queuedInputs.length === 0 ? h('div', { className: 'dsh-persona-chat-empty' },
+        h('div', { className: 'dsh-persona-chat-thread-wrap' }, h('div', { className: 'dsh-persona-chat-thread', ref: thread, 'aria-label': '聊天消息', 'data-following':!scrolledUp,onScroll:onThreadScroll }, turns.length === 0 && queuedInputs.length === 0 ? h('div', { className: 'dsh-persona-chat-empty' },
           explicitRoomId?h(RoomAvatar,{memberIds:data?.room?.memberIds,contacts:data?.contacts}):avatar(persona, contact?.name),
           h('strong', null, ready ? data?.room?.targetPersonaIds.length!==1?'和大家聊点什么吧':`和${contact?.name ?? '这位角色'}聊点什么吧` : '正在读取聊天记录…'),
           h('p', null, explicitRoomId&&data?.room?.memberIds.length>1?'不点名时发给房间，也可以在下方 @ 想先听的人。':'从一个想法，或今天的小事开始。')) : null,
-          ...groups.map((group,groupIndex)=>h('div',{key:group.id,'data-chat-message':group.id},
+          h('div',{className:'dsh-persona-chat-thread-content',ref:threadContent},...groups.map((group,groupIndex)=>h('div',{key:group.id,'data-chat-message':group.id},
             h('div',{'data-chat-user-head':group.head.id},
             (groupIndex === 0 || group.head.at - groups[groupIndex-1].head.at > 300000 || chatDateBoundary(group.head.at,groups[groupIndex-1].head.at)) ? h(ChatMessageTime,{at:group.head.at,now:chatNow}) : null,
             group.parts.map((part,partIndex)=>h('div', { key:part.id,className: 'dsh-persona-chat-message', 'data-user': 'true','data-chat-user-part':part.id,
@@ -3009,8 +3074,7 @@ const CLIENT_BUILD = 2026111201;
               showSpeaker:!!explicitRoomId&&(data.room.memberIds.length>1||turn.recipientId!==persona),
               onQuote:explicitRoomId&&(turn.scopeKey??turn.contextKey??null)===quoteScope?chooseQuote:undefined,
               avatar:()=>avatar(turn.recipientId??persona,turn.speakerName),
-              colorStyle:chatPalette.style(bubbleColors.get(turn.recipientId??persona)),
-              onProgress:()=>{if(atBottom.current&&thread.current)thread.current.scrollTop=thread.current.scrollHeight;}}),
+              colorStyle:chatPalette.style(bubbleColors.get(turn.recipientId??persona))}),
             !responseHeld(turn)&&turn.status !== 'ready' && !(turn.status === 'pending' && data.running)
               && !(turn.status==='interrupted'&&turn.messageId!==latestMessage&&['reaction','followup'].includes(turn.phase)) ? h('div', { className: 'dsh-persona-chat-turn-state', role: 'status', 'aria-live': 'polite' },
               explicitRoomId&&(data.room.memberIds.length>1||turn.recipients.length>1||turn.phase==='reaction')?h('strong',null,turn.speakerName+' · '):null,
@@ -3030,10 +3094,8 @@ const CLIENT_BUILD = 2026111201;
               ?h(React.Fragment,null,h('span',null,'这几条暂时没接上，原话已保留。'),
                 h('button',{type:'button',disabled:busy||roomBusy||!ready,'aria-label':'重试这组消息',onClick:()=>act({action:'retry-input',requestId:batch.id})},'重试'),
                 h('button',{type:'button',disabled:busy||roomBusy||!ready,'aria-label':'取消这组消息',onClick:()=>act({action:'cancel-input',requestId:batch.id})},'取消'))
-              :batch.status==='sending'?'正在接上这几句…':'等待回应')))),
-        scrolledUp&&(turns.length||queuedInputs.length)?h('button',{type:'button',className:'dsh-persona-chat-jump',onClick:()=>{
-          atBottom.current=true;setScrolledUp(false);noteReadyReplies(latestData.current);if(thread.current)thread.current.scrollTop=thread.current.scrollHeight;saveReading();
-        }},newReplies?newReplies+' 条新回复 · 回到最新消息':'回到最新消息'):null),
+              :batch.status==='sending'?'正在接上这几句…':'等待回应'))))),
+        scrolledUp&&(turns.length||queuedInputs.length)?h('button',{type:'button',className:'dsh-persona-chat-jump',onClick:()=>followLatest(true)},newReplies?newReplies+' 条新回复 · 回到最新消息':'回到最新消息'):null),
         !explicitRoomId&&pending&&(data.roundPhase==='preparing'||barrier<0)?h('div',{role:'status',style:{fontSize:11,color:'var(--chat-muted)',padding:'0 12px 6px'}},data.roundPhase==='preparing'?'正在接上这句话…':data.roundPhase==='listening'?'大家在听…':'等待回应'):null,
         h(ChatSupportStatus,{tasks:(data?.supportTasks??[]).filter(t=>t.messageId===(data?.roundMessageId??turns.at(-1)?.messageId)),minimized,onStop:jobId=>act({action:'cancel-support',jobId})}),
         directorIssue&&!data?.activeAttemptIds?.length?h('div',{className:'dsh-persona-chat-info',role:'status','aria-live':'polite',style:{display:'flex',alignItems:'center',flexWrap:'wrap',gap:'4px 8px'}},
@@ -3077,9 +3139,16 @@ const CLIENT_BUILD = 2026111201;
           } }),
           !data?.modelReady && ready ? h('p', { style: { fontSize: '11px', margin: '0 0 7px' } }, '请先在插件设置中选择聊天室或转述模型。') : null,
           h('div', { className: 'dsh-persona-chat-compose-row' },
+            h('div', { className: 'dsh-persona-chat-compose-tools' },
             explicitRoomId?h('button',{type:'button',disabled:!ready||busy||imageBusy||data?.imagesAvailable===false||images.length>=3,title:data?.imagesAvailable===false?'当前宿主没有图片附件服务':'添加图片，也可粘贴截图或拖入','aria-label':'添加图片',onClick:()=>imageInput.current?.click()},'图片'):null,
-            explicitRoomId?h('button',{type:'button',ref:supportButton,'aria-label':'聊天室子代理','aria-expanded':supportOpen,'aria-controls':supportMenuId.current,title:'调查资料或深入推演；先填入草稿，不自动发送',onClick:()=>{setSupportOpen(!supportOpen);setSupportNotice('');}},'子代理'):null,
-            h('label', null, h('input', { type: 'checkbox', checked: suggestMode, 'aria-label': '快捷回复参考', onChange: (event) => setSuggestMode(event.target.checked) }), '快捷回复参考'),
+            explicitRoomId?h('button',{type:'button',ref:supportButton,'aria-label':'聊天室子代理','aria-expanded':supportOpen,'aria-controls':supportMenuId.current,title:'调查资料、深入推演和整理工作参考',onClick:()=>{setSupportOpen(!supportOpen);setSupportNotice('');}},'子代理'):null,
+            summaryAvailable?h('label',{title:'仅整理下一条消息用到的工作会话原文'},h('input',{
+              type:'checkbox',checked:draft.summaryScope===summaryScope,disabled:!ready||imageBusy||contextState.busy,'aria-label':'本条整理工作参考',onChange:event=>{
+                const next={...draft,summaryScope:event.target.checked?summaryScope:undefined,requestId:chatNonce()};saveChatDraft(draftScope,next);setDraft(next);
+              }}),h('span',{className:'dsh-persona-chat-compose-full'},'整理工作参考'),h('span',{className:'dsh-persona-chat-compose-short'},'整理参考')):null,
+            h('label', {title:'快捷回复参考'}, h('input', { type: 'checkbox', checked: suggestMode, 'aria-label': '快捷回复参考', onChange: (event) => setSuggestMode(event.target.checked) }),
+              h('span',{className:'dsh-persona-chat-compose-full'},'快捷回复参考'),h('span',{className:'dsh-persona-chat-compose-short'},'回复参考'))),
+            h('div', { className: 'dsh-persona-chat-compose-actions' },
             h('small', {title:'Enter 发送 · Shift+Enter 换行'}, 'Enter 发送'),
             h('button', {type:'button',className:'dsh-persona-chat-compose-expand','aria-label':composeExpanded?'收起输入框':'展开输入框',
               title:composeExpanded?'收起输入框':'展开输入框','aria-expanded':composeExpanded,'aria-controls':'dsh-persona-chat-input',
@@ -3089,7 +3158,7 @@ const CLIENT_BUILD = 2026111201;
                 attempts:turns.filter(t=>t.messageId===stopTurn.messageId&&t.status==='pending').map(t=>({id:t.id,attemptId:t.attemptId})) });
             } }, data.roundPhase==='listening'?'停止接话':'停止回复') : h('button', { type: 'button', 'data-primary': '', disabled: !quoteAvailable || (pending&&!data.canQueue&&!data.canYield) || busy || imageBusy || roomBusy || contextState.busy || !ready || (!draft.text.trim()&&!images.length) || contact?.archived || !data?.modelReady,
               title:data?.canQueue&&draft.text.trim()?'发送后先保留这几句，再一起回应':data?.canYield&&draft.text.trim()?'发送新消息，结束本轮接话':undefined,
-              onClick:()=>void send() }, pending&&!data.canQueue&&!data.canYield ? (data.roundPhase==='preparing'?'正在确认…':'同步中…') : busy||imageBusy ? '发送中…' : '发送'))));
+              onClick:()=>void send() }, pending&&!data.canQueue&&!data.canYield ? (data.roundPhase==='preparing'?'正在确认…':'同步中…') : busy||imageBusy ? '发送中…' : '发送')))));
       // The workspace already has a dedicated body root; another portal would remount the loaded window.
       return view;
     }
@@ -4682,7 +4751,7 @@ const CLIENT_BUILD = 2026111201;
     function reportFallbackReason(row) {
       if (!row || !['failed', 'skipped'].includes(row.status)) return '';
       const reason = row.reason;
-      if (['source-quantity-change', 'source-worker-change', 'source-permission-change'].includes(reason)) {
+      if (['source-quantity-change', 'source-worker-change', 'source-permission-change', 'source-scope-change', 'source-status-change'].includes(reason)) {
         return '这次转述的数值表达、工作归属或执行条件未通过现有检查，未采用改写。原始汇报仍可阅读；这些检查不构成完整语义核验。';
       }
       if (['dropped-marker', 'unknown-marker', 'duplicate-marker', 'invented-fence'].includes(reason)) {
@@ -5181,11 +5250,11 @@ const CLIENT_BUILD = 2026111201;
     const USAGE_SECTIONS = [
       { label: '工作转述', keys: ['rewrite', 'progress'], tone: 'rewrite' },
       { label: '报告阅读', keys: ['report-visualization'], tone: 'visualization' },
-      { label: '聊天室', keys: ['chat', 'chat-context-selection', 'chat-participation', 'chat-support-research', 'chat-support-reason', 'reply-suggestions', 'chat-draft'], tone: 'chat' },
+      { label: '聊天室', keys: ['chat', 'chat-context-selection', 'chat-participation', 'chat-support-research', 'chat-support-reason', 'chat-support-summarize', 'reply-suggestions', 'chat-draft'], tone: 'chat' },
       { label: '其他功能', keys: ['preset', 'memory'], tone: 'other' },
     ];
     const USAGE_NAMES = { rewrite: '汇报改写', progress: '静默播报', 'report-visualization':'报告阅读', chat: '角色发言',
-      'chat-support-research':'调查资料', 'chat-support-reason':'深入推演', 'chat-context-selection':'轮次规划', 'chat-participation': '调度判断', 'reply-suggestions': '快捷回复', 'chat-draft':'指令整理', preset: '预设生成', memory: '记忆提取' };
+      'chat-support-research':'调查资料', 'chat-support-reason':'深入推演', 'chat-support-summarize':'整理工作参考', 'chat-context-selection':'轮次规划', 'chat-participation': '调度判断', 'reply-suggestions': '快捷回复', 'chat-draft':'指令整理', preset: '预设生成', memory: '记忆提取' };
     const usageNumber = (n) => Number.isSafeInteger(n) && n >= 0 ? n.toLocaleString('zh-CN') : '—';
     const usageTokens = (m) => m.calls > 0 && !m.usageCalls ? '未上报' : usageNumber(m.totalTokens);
     const usageDay = (iso) => String(iso ?? '').slice(5).replace('-', '/');
@@ -7069,6 +7138,7 @@ const CLIENT_BUILD = 2026111201;
           h('label',{style:{...fieldStyle,display:'flex',gap:8}},h('input',{type:'checkbox',checked:settings.chatResearchEnabled===true,onChange:e=>save({chatResearchEnabled:e.target.checked})}),'允许调查资料'),
           h('p',{style:hintStyle},'使用 DSH 已配置的搜索服务。最多 4 次模型请求、3 次搜索、5 次网页读取，60 秒内结束；不读取文件或执行命令。'),
           h('label',{style:{...fieldStyle,display:'flex',gap:8}},h('input',{type:'checkbox',checked:settings.chatDeepReasoningEnabled===true,onChange:e=>save({chatDeepReasoningEnabled:e.target.checked})}),'允许深入推演'),
+          h('label',{style:{...fieldStyle,display:'flex',gap:8}},h('input',{type:'checkbox',checked:settings.chatSummarizeEnabled===true,onChange:e=>save({chatSummarizeEnabled:e.target.checked})}),'允许按需整理工作参考'),
           h('p',{style:hintStyle},'一次独立模型请求，默认启用思考，最多 60 秒。未另选模型时沿用聊天室模型；无法启用思考时会提示，不会静默关闭思考。'),
           settings.chatDeepReasoningEnabled?h('div',null,h('label',{style:fieldStyle},h('span',{style:labelStyle},'深入推演模型'),h('select',{style:inputStyle,'aria-label':'深入推演提供方',value:settings.chatDeepReasoningProvider??'',onChange:e=>save({chatDeepReasoningProvider:e.target.value,chatDeepReasoningModel:''})},h('option',{value:''},'沿用聊天室模型'),...providers.map(p=>h('option',{key:p.provider,value:p.provider},p.name??p.provider)))),
             settings.chatDeepReasoningProvider?h('label',{style:fieldStyle},h('span',{style:labelStyle},'模型名称'),h('select',{style:inputStyle,'aria-label':'深入推演模型名称',value:settings.chatDeepReasoningModel??'',onChange:e=>save({chatDeepReasoningModel:e.target.value})},h('option',{value:''},'提供方默认'),...supportModels.map(m=>h('option',{key:m.id,value:m.id},m.name??m.id)))):null,
@@ -7451,7 +7521,7 @@ const CLIENT_BUILD = 2026111201;
         if (typeof ctx.inject === 'function') ctx.inject(['remote', 'remote.account'], (owner) => {
           const remote = owner.get('remote');
           if (typeof remote?.account?.getProfile !== 'function' || typeof remote?.account?.getState !== 'function') return;
-          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.3',
+          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.4',
             locale: typeof navigator !== 'undefined' ? navigator.language : 'zh-CN', timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 }));
           owner.effect(() => release);
           if (typeof owner.on === 'function') owner.on('connection/reset', () => { void accountAvatarSource.refresh(); });

@@ -277,7 +277,8 @@ try {
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
     if(values.output){mkdirSync(values.output,{recursive:true});await dialog().screenshot({path:path.join(values.output,name+'.png')});}};
   const members=async()=>{await page.getByRole('button',{name:'管理聊天室成员',exact:true}).click();await page.getByRole('region',{name:'管理聊天室',exact:true}).waitFor();};
-  const chooseRoom=async name=>{await page.getByRole('button',{name:'切换聊天室',exact:true}).click();await page.getByRole('button',{name:'打开聊天室 '+name,exact:true}).click();await input().waitFor();};
+  const chooseRoom=async name=>{await page.getByRole('button',{name:'切换聊天室',exact:true}).click();await page.getByRole('button',{name:'打开聊天室 '+name,exact:true}).click();
+    await dialog().locator('.dsh-persona-chat-room-title').getByText(name,{exact:true}).waitFor();await input().waitFor();};
   const inspectSettingsPanel=async()=>{
     const result=await dialog().locator('.dsh-persona-chat-appearance').evaluate(panel=>{
       const header=panel.querySelector('.dsh-persona-chat-settings-heading'),body=panel.querySelector('.dsh-persona-chat-settings-body'),close=header.querySelector('button');
@@ -697,7 +698,8 @@ try {
   await page.evaluate(()=>window.switchWorkSession('other'));
   assert.equal(await dialog().count(),1,'global window survives working-header unmount');
   await page.waitForFunction(()=>document.querySelector('.dsh-persona-chat [data-source-different="true"]'));
-  assert.match(await sourceControl().innerText(),/^固定 · 当前任务/);assert.match(await sourceControl().getAttribute('title'),/主要参考与当前工作页不同/);
+  assert.match(await sourceControl().innerText(),/^固定(?: · 当前任务)?$/);
+  assert.match(await sourceControl().getAttribute('title'),/^固定参考 · 当前任务。.*主要参考与当前工作页不同/);
   await page.getByRole('button',{name:'参考来源',exact:true}).click();await page.getByRole('button',{name:'接入当前会话',exact:true}).click();
   await waitSources(2);
   assert.deepEqual((await state()).room.sources,['work','other']);
@@ -875,11 +877,15 @@ try {
   await restore.click();await input().waitFor();assert.equal(await input().inputValue(),'还原时应保留的草稿');
   assert.deepEqual(await input().evaluate(e=>[e===document.activeElement,e.selectionStart,e.selectionEnd]),[true,2,4]);
   assert.equal((await state()).room.id,dockRoom);
+  const finalDockReply=(await state()).room.turns.at(-1);
+  await dialog().locator('[data-chat-turn="'+finalDockReply.id+'"]').getByText(finalDockReply.assistant.at(-1),{exact:true}).waitFor();
+  assert.ok(await dialog().getByLabel('聊天消息',{exact:true}).evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight<=1),'restoring a following room reveals the final reply received in the dock');
+  assert.equal(await dialog().getByRole('button',{name:/回到最新消息/}).count(),0);
   // Broadcast gives all eight members a fresh ordinary budget; a real peer call
   // can use each independent one-shot opportunity, reaching the hard frame cap.
   const beforeThirtyTwo=calls.length,savedTargets=[...(await state()).room.targetPersonaIds];
   for(const name of await recipients.getByRole('checkbox',{checked:true}).evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label'))))await toggleTarget(name);
-  await recipients.getByText('发给房间',{exact:true}).waitFor();await send('满员续聊三十二席');
+  await recipients.and(page.locator('[aria-description^="发给房间"]')).waitFor();await send('满员续聊三十二席');
   await page.waitForFunction(()=>[...document.querySelectorAll('[data-provisional=true] .dsh-persona-chat-body')].some(node=>node.textContent==='第三十二席正在输入'),{},{timeout:20000});
   const cappedState=await state(),cappedMessage=cappedState.room.turns.at(-1).messageId,capped=cappedState.room.turns.filter(turn=>turn.messageId===cappedMessage),actualReplies=replies(cappedState.room).filter(turn=>turn.messageId===cappedMessage);
   assert.equal(capped.length,33);assert.equal(capped[0].phase,'anchor');assert.equal(actualReplies.length,32);assert.equal(calls.length,beforeThirtyTwo+32);
@@ -1450,7 +1456,7 @@ try {
   console.log(JSON.stringify({result:'passed',calls:calls.length,judgements:judgements.length,contextSelections:contextSelections.length,checks:['lazy global launch','slow storage first-room retry and overlapping opens','pending first send has no premature stop action','foreground work persona for a new room','reverse primary selection order','historical mentions survive member changes','room creation and selected room persistence','shared timeline and historical speaker identity',
     'host code toolbar size and member panel hit testing','quote draft, cancellation, durable buffer save retry and source jump','long quote full-text preview, draft source jump and Esc without losing text','explicit work draft, read and generation retry, editing, replacement confirmation and clipboard fallback','native draft empty guard and revision-CAS insertion without submission','conclusion thinking choice, one-shot override and default-enabled bypass','successful conclusion fills and minimizes while target, text or attachments changes retain the room','work draft room retention, cancellation and mobile layout','lazy per-room reference inspection, private preference isolation and pause retry','reference question and frozen @ order across individual speakers','room discussion evidence, failed save retry, correction, undo and external conflict without losing a draft','discussion editor source invalidation never revives an old reference scope','bounded peer continuation completes the active reply before yielding queued speech to new input','borderless member strip and single-person simplification','header sources and visible member management','avatar options and composite updates','target changes during streaming','removed speaker cancellation','room-isolated drafts and sources','stream pacing and format retry',
     'ordered selected speakers and repeated single-record retry','one room director selects an unmentioned listener from real public events','broadcast reaches twenty-four ordinary plus eight peer replies in one thirty-two-seat live stream','explicit quick replies','owner avatar display','custom member avatar refresh','expanded composer and safe viewport','failed room save retains draft','clear versus delete','old Host reload guard','closed window stops polling',
-    'minimize releases source presence and counts distinct completed replies','dock respects reduced motion and stops polling after the round','restore from dock or launcher preserves room, draft and caret',
+    'minimize releases source presence and counts distinct completed replies','dock respects reduced motion and stops polling after the round','restore from dock or launcher preserves room, draft and caret','restoring while following shows the last reply received in the dock',
     'native surface transitions preserve draft, selection and reading position without extra model calls or expanded source reads','reduced-motion, hidden-page and missing/failed native animation fallbacks','motion preference changes settle an active native animation','rapid minimize, restore, close and immediate reopen settle without stale visual state',
     'one room director handles source relevance and each next actor while unstarted seats never pretend to type','casual talk omits work bodies and explicit casual-only commands omit extra notes and discussion state','authorized source subset and invalid selection fallback preserve room sources and historical mentions','reference selection is inspected only in settings without re-running a model',
     'consecutive bubbles keep only the first historical portrait and name while quote and stream indices remain original','second-bubble quote survives save failure, reopen and source jump','lightweight local dates preserve cross-day boundaries and precise time metadata without changing canonical history','only explicit sends and retries attach browser-local clock metadata','explicit model silence retires live typing without a bubble, failure, automatic repeat or losing the next user cycle'],pageErrors:errors}));

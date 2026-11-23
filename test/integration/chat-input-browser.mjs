@@ -206,17 +206,82 @@ try {
     const thread=dialog.getByLabel('聊天消息',{exact:true});await thread.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});
     const jump=dialog.getByRole('button',{name:/回到最新消息/});await jump.waitFor();
     assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth),true);
-    assert.equal(await dialog.locator('.dsh-persona-chat-compose-row>button').evaluateAll(nodes=>nodes.every(el=>getComputedStyle(el).whiteSpace==='nowrap'||el.scrollHeight<=el.clientHeight)),true);
+    assert.equal(await dialog.locator('.dsh-persona-chat-compose-row button').evaluateAll(nodes=>nodes.length>0&&nodes.every(el=>getComputedStyle(el).whiteSpace==='nowrap'||el.scrollHeight<=el.clientHeight)),true);
     assert.equal(await jump.evaluate(el=>getComputedStyle(el).position==='absolute'&&!!el.closest('.dsh-persona-chat-thread-wrap')&&!el.closest('.dsh-persona-chat-compose')),true,'jump control stays floating in the message area');
     const jumpBox=await jump.boundingBox(),threadBox=await thread.boundingBox();
     assert.ok(jumpBox.y>=threadBox.y&&jumpBox.y+jumpBox.height<=threadBox.y+threadBox.height&&jumpBox.x>=threadBox.x&&jumpBox.x+jumpBox.width<=threadBox.x+threadBox.width,'floating jump remains within the message viewport');
     assert.equal(await marks.count(),2);
     if(values.output){mkdirSync(values.output,{recursive:true});await dialog.screenshot({path:path.join(values.output,'chat-member-status-'+count+'-'+width+'.png')});}
   }
+  await page.evaluate(()=>{const state=window.inputHost.state;state.contacts=Array.from({length:8},(_,i)=>({id:String.fromCharCode(97+i),name:'很长的自定义人格名称 '+(i+1)}));
+    state.room.memberIds=state.contacts.slice(0,5).map(p=>p.id);state.room.revision++;window.refreshInputUI();});
+  const fifth=dialog.getByRole('checkbox',{name:'很长的自定义人格名称 5',exact:true});await fifth.waitFor();
+  const recipientLayout=()=>dialog.getByRole('group',{name:'回复对象'}).evaluate(group=>{
+    const buttons=[...group.querySelectorAll('button')],names=[...group.querySelectorAll('.dsh-persona-chat-recipient-name')];
+    return {rows:new Set(buttons.map(button=>Math.round(button.getBoundingClientRect().top))).size,
+      fits:group.scrollWidth<=group.clientWidth+1,visible:names.filter(name=>getComputedStyle(name).display!=='none').length,
+      shortened:names.some(name=>name.clientWidth>0&&name.scrollWidth>name.clientWidth)};
+  });
+  for(const width of [752,585,390,280]){
+    await page.setViewportSize({width:width>500?1100:width,height:650});
+    await dialog.evaluate((el,width)=>{el.style.width=width>500?width+'px':'';},width);
+    const layout=await recipientLayout();assert.equal(layout.rows,1,`five members stay on one row at ${width}px`);assert.ok(layout.fits);
+    assert.equal(layout.visible,width===280?0:5);if(width===585||width===390)assert.ok(layout.shortened);
+    if(values.output)await dialog.screenshot({path:path.join(values.output,`recipient-names-${width}.png`)});
+  }
+  await dialog.getByRole('checkbox',{name:'很长的自定义人格名称 1',exact:true}).focus();await page.keyboard.press('End');
+  assert.equal(await fifth.evaluate(el=>el===document.activeElement),true,'avatar-only mode keeps keyboard navigation and full names');
+  await page.evaluate(()=>{const state=window.inputHost.state;state.room.memberIds=state.contacts.map(p=>p.id);state.room.revision++;window.refreshInputUI();});
+  await dialog.getByRole('checkbox',{name:'很长的自定义人格名称 8',exact:true}).waitFor();
+  const compact=await recipientLayout();assert.equal(compact.visible,0);assert.ok(compact.fits);
+  await page.setViewportSize({width:320,height:650});
+  await page.evaluate(()=>{const state=window.inputHost.state;state.room.targetPersonaIds=[];state.room.targetPersonaId=null;state.room.revision++;window.refreshInputUI();});
+  await dialog.getByRole('group',{name:'回复对象'}).getByText('房间',{exact:true}).waitFor();
+  const broadcast=await recipientLayout();assert.deepEqual(broadcast,{rows:1,fits:true,visible:0,shortened:false});
   await dialog.getByRole('button',{name:/回到最新消息/}).click();
   await dialog.getByRole('button',{name:/回到最新消息/}).waitFor({state:'hidden'});
   assert.equal(await dialog.getByLabel('聊天消息',{exact:true}).evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight<2),true);
   assert.equal(await marks.count(),2,'returning to the latest message keeps member activity');
+  const messageThread=dialog.getByLabel('聊天消息',{exact:true});
+  const layoutSettled=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const bottomGap=()=>messageThread.evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight);
+  const noGap=async cause=>{await layoutSettled();assert.ok(await bottomGap()<=1,cause);};
+  await dialog.getByRole('button',{name:'展开输入框',exact:true}).click();
+  await noGap('expanding the composer keeps the timeline at the bottom without a room revision');
+  await dialog.getByRole('button',{name:'收起输入框',exact:true}).click();
+  await noGap('shrinking the composer keeps the timeline at the bottom');
+  await page.setViewportSize({width:390,height:700});await noGap('viewport reflow keeps the timeline at the bottom');
+  let resolveImage;
+  const imageGate=new Promise(resolve=>{resolveImage=resolve;});
+  await page.route('**/chat-image?**',async route=>{
+    await imageGate;
+    return route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180"><rect width="240" height="180" fill="steelblue"/></svg>'});
+  });
+  await page.evaluate(()=>{const state=window.inputHost.state,last=state.room.turns.at(-1);last.userParts=[{id:'delayed-image-part',text:last.user,at:last.at,images:[{attachmentId:'delayed-image',name:'延迟图片'}]}];state.room.revision++;window.refreshInputUI();});
+  const lateImage=dialog.getByAltText('延迟图片',{exact:true});await lateImage.waitFor({state:'attached'});
+  await noGap('the message with a still-loading attachment reaches the bottom');resolveImage();
+  await lateImage.evaluate(img=>img.decode());await noGap('decoding the attachment keeps the newest reply visible');
+  await messageThread.hover();await page.mouse.wheel(0,-35);
+  await dialog.getByRole('button',{name:/回到最新消息/}).waitFor();
+  assert.ok(await bottomGap()>2,'a deliberate small upward scroll leaves the latest message');
+  const readingTop=await messageThread.evaluate(el=>el.scrollTop);
+  await page.evaluate(()=>{const state=window.inputHost.state,last=state.room.turns.at(-1);last.assistant.push('新的后续气泡。'.repeat(30));state.room.revision++;window.refreshInputUI();});
+  await dialog.getByText(/^新的后续气泡/).waitFor();await layoutSettled();
+  assert.ok(Math.abs(await messageThread.evaluate(el=>el.scrollTop)-readingTop)<=1,'new bubbles keep the position of someone reading above');
+  await messageThread.hover();await page.mouse.wheel(0,12000);
+  await dialog.getByRole('button',{name:/回到最新消息/}).waitFor({state:'hidden'});
+  await noGap('scrolling manually to the end resumes following');
+  await page.setViewportSize({width:320,height:610});await noGap('manual resumption survives the next viewport reflow');
+  await page.evaluate(()=>{const host=window.inputHost,state=host.state,last=state.room.turns.at(-1);
+    state.room.turns.push({...last,id:'bottom-live',attemptId:'bottom-live',userParts:[],recipientId:'b',speakerName:'乙',phase:'reaction',status:'pending',assistant:[],emittedOrder:1});
+    state.roundMessageId=last.messageId;state.roundPhase='speaking';state.activeAttemptIds=['bottom-live'];state.room.revision++;window.refreshInputUI();});
+  const liveSeat=dialog.locator('[data-chat-turn="bottom-live"]');await liveSeat.waitFor({state:'attached'});
+  const liveChunk=async(revision,text)=>{
+    await page.evaluate(({revision,text})=>{const host=window.inputHost,state=host.state;
+      host.pushLive({instanceId:state.instanceId,roomId:'room',status:'streaming',frames:[{instanceId:state.instanceId,roomId:'room',turnId:'bottom-live',attemptId:'bottom-live',personaId:'b',revision,status:'streaming',messages:[{text,complete:false}]}]});}, {revision,text});
+    await liveSeat.getByText(text,{exact:true}).waitFor();await noGap('an SSE text expansion keeps following without a room revision');
+  };
+  await liveChunk(1,'流式开始。');await liveChunk(2,'流式展开。'.repeat(40));
   await page.emulateMedia({reducedMotion:'reduce'});
   assert.equal(await marks.locator('i').evaluateAll(nodes=>nodes.every(el=>getComputedStyle(el).animationName==='none')),true);
   await page.evaluate(()=>{const state=window.inputHost.state;state.running=false;state.room.revision++;window.refreshInputUI();});
@@ -226,5 +291,5 @@ try {
   await page.waitForFunction(()=>!document.querySelector('.dsh-persona-chat-compose textarea')?.disabled);
   await page.evaluate(()=>window.closeInputUI());await dialog.waitFor({state:'hidden'});
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
-  console.log(JSON.stringify({ result: 'passed', checks: ['separate queued user bubbles and no premature typing', 'continued input while replies are pending', 'buffer observation reaches canonical committed parts', 'part ids survive quote, draft and source jump', 'failed input retry/cancel retain original words', 'late acknowledgement preserves a newer draft', 'cooling is not typing', 'dispatch order bypasses a cooling seat and preserves the fixed user head', 'no legacy cancellation fields on queued send', 'zero through eight ordered addressees without a silent default', 'user-only anchor has no fictional assistant row', 'explicit director retry retains the original message','bounded forty-frame batch retires exact silent attempts without stale snapshot ghosts or loss of other quotes','invalid nonempty or mismatched-turn silent frames cannot discard pending replies','one listening dot and three typing dots follow the Host member','activity and selected-order badges do not overlap','no room typing bubble or wait banner','2/3/5 members at 1100/390/280 widths without overflow','jump floats in message area and returns to latest without changing activity','reduced motion keeps static activity dots','idle ignores stale activity'], pageErrors:errors,screenshots: values.output }));
+  console.log(JSON.stringify({ result: 'passed', checks: ['separate queued user bubbles and no premature typing', 'continued input while replies are pending', 'buffer observation reaches canonical committed parts', 'part ids survive quote, draft and source jump', 'failed input retry/cancel retain original words', 'late acknowledgement preserves a newer draft', 'cooling is not typing', 'dispatch order bypasses a cooling seat and preserves the fixed user head', 'no legacy cancellation fields on queued send', 'zero through eight ordered addressees without a silent default', 'user-only anchor has no fictional assistant row', 'explicit director retry retains the original message','bounded forty-frame batch retires exact silent attempts without stale snapshot ghosts or loss of other quotes','invalid nonempty or mismatched-turn silent frames cannot discard pending replies','one listening dot and three typing dots follow the Host member','activity and selected-order badges do not overlap','no room typing bubble or wait banner','2/3/5 members at 1100/390/280 widths without overflow','long names truncate before avatar-only mode, with keyboard navigation and all eight seats reachable','jump floats in message area and returns to latest without changing activity','following survives composer toggle, viewport reflow and late image decoding','manual upward and downward scroll pause and resume following','following survives streamed bubble expansion','reduced motion keeps static activity dots','idle ignores stale activity'], pageErrors:errors,screenshots: values.output }));
 } finally { await browser.close(); }

@@ -8,6 +8,19 @@ const input = (requestId, content = requestId, extra = {}) => ({ roomId: 'room',
 const quote = (messageId = 'quoted') => ({ author: { role: 'user', name: 'ignored user alias' }, text: '公开原话',
   ref: { roomId: 'room', generation: 1, kind: 'user', messageId } });
 
+test('a one-message summary request is durable, cannot merge, and binds its idempotency receipt',async()=>{
+  const queue=createChatInputQueue({now:()=>0});
+  await queue.enqueue(input('plain'));
+  const selected=await queue.enqueue(input('work','原话保持原样',{summarize:true}));
+  assert.equal(selected.merged,false);
+  assert.equal((await queue.enqueue(input('after'))).merged,false);
+  await assert.rejects(queue.enqueue(input('work','原话保持原样')),/chat-input-conflict/);
+  const restored=createChatInputQueue({now:()=>0});await restored.restore(queue.snapshot());
+  const batch=await restored.retry('room','work');
+  assert.deepEqual(batch.parts,[{id:'work',text:'原话保持原样',at:0,summarize:true}]);
+  assert.equal((await restored.enqueue(input('work','原话保持原样',{summarize:true}))).created,false);
+});
+
 test('default transport has no room-wide cooldown and preserves raw split messages in a single bounded pending batch', async () => {
   let now = 0; const q = createChatInputQueue({ now: () => now });
   const first = await q.enqueue(input('one', '第一段原话。')), second = await q.enqueue(input('two', '第二段\n仍是原话。'));

@@ -8,16 +8,19 @@ import {fixture,newRoom,roomState,reply,whale,dragon,readChatInput,flush} from '
 const {values}=parseArgs({options:{deps:{type:'string'},'browser-deps':{type:'string'},executable:{type:'string'},output:{type:'string'}}});
 const deps=createRequire(path.resolve(values.deps)),bd=createRequire(path.resolve(values['browser-deps']??values.deps));
 const {buildSync}=deps('esbuild'),{chromium}=bd('playwright'),cleanup=[],checks=[],errors=[],requests=[];
-let releasePage,releaseReason,mode='research',actions=[],supportCalls=0,thinkingAvailable=true,failSupportSave=false,holdSupportSave=false,releaseSupportSave;
+let releasePage,releaseReason,releaseSummary,mode='research',actions=[],supportCalls=0,thinkingAvailable=true,failSupportSave=false,holdSupportSave=false,releaseSupportSave;
 const text=value=>(async function*(){yield{type:'text-delta',text:value};yield{type:'finish',reason:{kind:'stop'}};})();
 const f=fixture({after:fn=>cleanup.push(fn)},{config:{chatResearchEnabled:false,chatDeepReasoningEnabled:false},
  modelInfo:async(provider,id)=>({provider,id,...(thinkingAvailable?{reasoning:{efforts:[{id:'off',name:'关闭'},{id:'high',name:'思考'}]}}:{})}),
- extraServices:[['web',{search:async()=>({sources:[{url:'https://example.com/official',title:'公开官方资料'}]})}]],
+ extraServices:[['web',{search:async()=>({sources:[{url:'https://example.com/official',title:'公开官方资料'}]})}],
+   ['sessionQuery',{observeSession:async()=>({events:[{seq:1,type:'user/message',data:{content:[{type:'text',text:'暂未验证客户端。'}]}}]})}]],
  runtime:{chatIntervalMs:0,supportPageReader:async url=>{await new Promise(r=>releasePage=r);return{url,text:'真实读取的公开条件。'};}},
  directorScript:options=>{const input=readChatInput(options),latest=input.events.findLastIndex(e=>e.author.role==='user');if(input.events.slice(latest+1).some(e=>e.author.role==='assistant'))return text('WAIT');
+  if(mode==='summarize'||mode==='plain')return text(input.choices.find(c=>c.id===whale).choiceId+' N');
   const choice=input.supportChoices.find(c=>c.id===whale&&c.template===mode);return text(`${choice.choiceId} N ${input.sceneCatalog.options[0].key} | 核对问题或推演取舍`);},
  script:options=>{const input=readChatInput(options);if(input.task==='chat-support'){supportCalls++;
    if(input.template==='reason')return(async function*(){await new Promise(r=>releaseReason=r);yield{type:'text-delta',text:'一次未联网的取舍。'};yield{type:'finish',reason:{kind:'stop'}};})();
+   if(input.template==='summarize')return(async function*(){await new Promise(r=>releaseSummary=r);const ref=input.references.find(item=>item.passages.some(p=>p.text.includes('暂未验证客户端。')));assert.ok(ref);yield{type:'text-delta',text:JSON.stringify({points:[{ref:ref.ref,passage:ref.passages.find(p=>p.text.includes('暂未验证客户端。')).id}],unknowns:''})};yield{type:'finish',reason:{kind:'stop'}};})();
    return text(JSON.stringify(actions.shift()));}
   return reply([input.supportReference?.error==='thinking-unavailable'?'这次没有启用思考，先按已有内容聊。':input.supportReference?.status==='cancelled'?'好，先按现有条件接着聊。':'查到的公开条件在这里；我会先按小范围试。']);}});
 await f.ready();const room=await newRoom(f,[whale,dragon],'辅助讨论室','support-browser'),initial=await roomState(f,room);
@@ -88,5 +91,35 @@ try{
  for(let i=0;i<100&&!releaseSupportSave;i++)await page.waitForTimeout(10);assert.ok(releaseSupportSave);
  await dialog.getByRole('button',{name:'清空',exact:true}).click();await dialog.getByRole('button',{name:'确认清空聊天',exact:true}).click();await menu.waitFor({state:'hidden'});await input.fill('清空之后的新草稿');releaseSupportSave();await flush();
  assert.equal(await input.inputValue(),'清空之后的新草稿');await entry.click();assert.equal(await menu.getByRole('checkbox',{name:'允许按需调查资料',exact:true}).isEnabled(),true);assert.equal(supportCalls,4);checks.push('clearing the room cancels a pending insertion and retires its busy state without altering the new draft');
+ assert.equal(await menu.getByRole('checkbox',{name:'允许按需整理工作参考',exact:true}).isChecked(),false);
+ await page.keyboard.press('Escape');mode='summarize';
+ const summarize=dialog.getByRole('checkbox',{name:'本条整理工作参考',exact:true});
+ const composer=dialog.locator('.dsh-persona-chat-compose-row');
+ assert.equal(await summarize.isChecked(),false);
+ for(const width of [1100,752,585,390,280]){
+  await page.setViewportSize({width:width>500?width+20:width,height:700});
+  await dialog.evaluate((el,width)=>{el.style.width=width>500?width+'px':'';},width);
+  assert.equal(await summarize.isVisible(),true);assert.equal(await composer.evaluate(e=>{
+    const row=e.getBoundingClientRect(),tools=e.querySelector('.dsh-persona-chat-compose-tools').getBoundingClientRect(),
+      actions=e.querySelector('.dsh-persona-chat-compose-actions').getBoundingClientRect(),send=e.querySelector('button[data-primary]').getBoundingClientRect();
+    return e.scrollWidth<=e.clientWidth+1&&actions.left>=tools.right&&Math.abs(row.right-send.right)<1&&Math.abs(row.bottom-send.bottom)<1;
+  }),true,`tools and send fit together at ${width}px`);
+  if(values.output)await dialog.screenshot({path:path.join(values.output,`composer-${width}.png`)});
+ }
+ checks.push('summary shortcut remains visible and the send button stays at the right edge from 1100 to 280 px');
+ await input.fill('前后两轮差在哪？');await summarize.check();
+ assert.equal(await input.inputValue(),'前后两轮差在哪？');assert.equal(supportCalls,4);
+ const send=dialog.getByRole('button',{name:'发送',exact:true});await send.click();
+ await status.getByText(/正在整理会话原文/).waitFor();await status.getByRole('button',{name:'停止整理工作参考',exact:true}).waitFor();
+ const requested=requests.filter(r=>r.body?.action==='send').at(-1).body;
+ assert.equal(requested.content,'前后两轮差在哪？');assert.equal(requested.summarize,true);
+ releaseSummary();await status.getByText(/整理工作参考 · 已完成/).waitFor();
+ await page.waitForFunction(()=>document.querySelector('[aria-label="本条整理工作参考"]')?.checked===false);
+ assert.equal((await f.request('settings')).value.settings.chatSummarizeEnabled,false);
+ checks.push('checking affects the next send only, preserves raw text and leaves automatic mode off');
+ mode='plain';await input.fill('普通下一句');await send.click();
+ await page.waitForFunction(()=>document.querySelector('#dsh-persona-chat-input')?.value==='');
+ assert.equal(requests.filter(r=>r.body?.action==='send').at(-1).body.summarize,undefined);assert.equal(supportCalls,5);
+ checks.push('the next ordinary send makes no summary call');
  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',checks,pageErrors:errors,physicalProviderRequests:0,supportCalls}));
-}finally{releaseSupportSave?.();releasePage?.();releaseReason?.();await browser.close();for(const fn of cleanup.reverse())await fn();}
+}finally{releaseSupportSave?.();releasePage?.();releaseReason?.();releaseSummary?.();await browser.close();for(const fn of cleanup.reverse())await fn();}

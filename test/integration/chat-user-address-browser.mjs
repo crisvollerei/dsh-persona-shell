@@ -68,7 +68,10 @@ try {
   assert.equal((await profile()).userAddress, '阿晴 👩‍💻');
   assert.deepEqual(Object.keys(requests.filter(value => value.body).at(-1).body).sort(), ['revision', 'userAddress']);
   await room().getByLabel('用户头像显示').selectOption('hidden');
-  await page.waitForFunction(() => document.querySelector('[data-persona-shell="user-profile"] select')?.value === 'hidden');
+  await page.waitForFunction(() => {
+    const modes = [...document.querySelectorAll('select[aria-label="用户头像显示"]')];
+    return modes.length === 2 && modes.every(node => node.value === 'hidden');
+  });
   assert.equal((await profile()).userAddress, '阿晴 👩‍💻', 'display changes preserve the optional address');
 
   await room().getByRole('button', { name: '修改我的头像', exact: true }).click();

@@ -116,7 +116,8 @@ test('explicit builtin card copies keep their voice but never inherit builtin ch
   assert.equal(builtin.character.id,whale);assert.equal(builtin.character.gender,'female');assert.equal(builtin.character.relations.length,4);
   const changed=await f.request('settings',{pack:builtin.pack});
   assert.equal(changed.status,200);const fork=changed.value.presets.find(person=>!person.builtin);
-  assert.ok(fork);assert.notEqual(fork.id,whale);assert.deepEqual(fork.pack,builtin.pack);assert.equal(fork.character,undefined);
+  assert.ok(fork);assert.notEqual(fork.id,whale);assert.equal(fork.pack.identity,builtin.pack.identity);assert.equal(fork.character,undefined);
+  assert.equal(fork.pack.chat.gender,'female');assert.ok(fork.pack.chat.dialogueExamples.length && fork.pack.chat.workDialogueExamples.length);
   assert.equal(changed.value.presets.find(person=>person.id===whale).character.gender,'female');
   const binding=await newRoom(f,[fork.id,dragon],'自定义关系隔离','fork-relations');
   await roomSend(f,binding,fork.id,'按我的角色卡说话','fork-speaks');await settledRoom(f,binding);

@@ -64,6 +64,13 @@ test('keep guards do not invent risk navigation for a normal benefit or a next a
   assert.ok(plan.entries.every(entry => entry.reason === 'condition'));
 });
 
+test('ordinary linked prose and neutral Chinese wording can fold while an actual precondition stays visible', () => {
+  const s = source('开头介绍。\n\n团队不断完善这张示意图。\n\n详情见[样式文档](https://example.com/demo)。\n\n只有管理员确认后才允许清理。');
+  const plan = createReportReadingPlan(s, result(s.blocks.map(block => passage(block.id, 'detail', 3))));
+  assert.deepEqual(plan.entries.map(entry => entry.foldable), [false, true, true, false]);
+  assert.equal(plan.entries[2].matchText, '详情见样式文档。');
+});
+
 test('completed or explicitly unnecessary confirmation is not a pending decision', () => {
   for (const text of ['这项已经确认。', '无需你确认，界面沿用现有选择。', '不必确认。', 'Already confirmed.', 'No approval is required.']) {
     const s = source(text), plan = createReportReadingPlan(s, result([passage('b1', 'decision', 1)]));

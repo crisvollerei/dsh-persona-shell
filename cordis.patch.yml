@@ -17,9 +17,11 @@
         chatReasoningEffort: '' # 留空使用模型默认思考强度
         chatResearchEnabled: false # 允许按需调查公开资料，需要宿主搜索服务
         chatDeepReasoningEnabled: false # 允许按需深入推演，单次强制开启思考
+        chatSummarizeEnabled: false # 允许判断线程按需整理已接入的工作参考
         chatDeepReasoningProvider: '' # 留空跟随聊天室模型
         chatDeepReasoningModel: ''
         maxRewriteChars: 6000
         maxRatio: 1.35
         timeoutMs: 45000
+        readableTimeoutMs: 120000 # 顺畅阅读单独的生成超时
         keepSamples: 2

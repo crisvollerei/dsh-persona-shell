@@ -39,6 +39,7 @@
 | `chatReasoningEffort` | `''` · 聊天室思考强度；留空使用模型默认，非空为模型公开的档位 ID。关闭思考时保留该选择，但本次不使用。 |
 | `chatResearchEnabled` | `false` · 是否允许聊天室按需发起「调查资料」辅助任务：只匿名检索公开网页并保留来源，受调用、搜索、阅读与时间上限约束。需要宿主提供搜索服务。 |
 | `chatDeepReasoningEnabled` | `false` · 是否允许聊天室按需发起「深入推演」辅助任务：对已有资料做一次独立推理，不联网、不调用工具，单次强制开启思考。 |
+| `chatSummarizeEnabled` | `false` · 是否允许判断线程按需整理当前房间已接入的工作参考。输入区可单次勾选，无需打开该开关。 |
 | `chatDeepReasoningProvider` / `chatDeepReasoningModel` | `''` · 深入推演单独使用的提供方和模型；提供方留空时沿用聊天室路由，指定提供方但留空模型时使用该提供方默认模型。 |
 | `visualizationProvider` / `visualizationModel` | `''` · 报告阅读默认跟随转述路由，可单独指定提供方和模型；提供方非空、模型留空时使用该提供方默认模型。 |
 | `visualizationThinking` | `false` · 仅用于报告重点分析与旧概览的思考开关，不影响顺畅阅读润色或正式转述。 |
@@ -46,6 +47,7 @@
 | `maxRewriteChars` | `6000` · 超过此长度的汇报直接跳过改写。 |
 | `maxRatio` | `1.35` · 按打码文本校验长度；允许上限为原文的此倍数与原文加 200 字符中的较大值。 |
 | `timeoutMs` | `45000` · 单次改写超时，单位毫秒；包含默认模型查询，超时回落原文。 |
+| `readableTimeoutMs` | `120000` · 顺畅阅读独立超时，单位毫秒。包含模型查询与生成，超时保留原文和已有阅读稿。 |
 | `keepSamples` | `2` · 随转述请求带入的历史语气样例数；样例保持打码，切换或编辑人格时清空。 |
 | `maxRowsPerSession` | `240` · 每个会话保留的结果行上限。 |
 
@@ -72,7 +74,7 @@
 类型错误或超出范围的行配置回落默认值，不自动截到最近边界。完整约束以 [`lib/config.js`](../lib/config.js) 为准：
 
 - `maxRewriteChars`：`200..60000`；`maxRatio`：`1..4`。
-- `timeoutMs`：`1000..300000`；`keepSamples`：`0..8`；`maxRowsPerSession`：`20..5000`。
+- `timeoutMs`、`readableTimeoutMs`：`1000..300000`；`keepSamples`：`0..8`；`maxRowsPerSession`：`20..5000`。
 - `reviewThreshold`：`0..1`；`progressMinutes`：`1..60` 的整数。
 - `provider`、`model` 与 `reasoningEffort` 接受字符串并去除首尾空白；`chatReasoningEffort` 同样去除空白，最多 128 字符。
 
@@ -90,7 +92,7 @@
 
 聊天室默认开启思考。有效的自定义非关闭档位优先，否则使用模型公开的默认思考强度；如果模型默认是 `off`，则选择它公布的最低非关闭档。未公布默认档或能力未知时由提供方决定，不宣称已经确认开启；只有关闭档位的模型显示不支持开启。换模型后失效的自定义档位仍保留在设置中，本次回到默认策略，用户可手动改选。聊天室标题栏的「设置」与插件设置页使用同一份开关和强度；打开相关面板才查询当前实际模型的公开选项，不生成回复，不影响已有在途请求，也不改变轻量判断线程的思考策略。
 
-顺畅阅读润色默认开启思考，使用报告阅读页所选模型的公开默认强度；未公布默认档或能力未知时由提供方决定，不宣称已确认开启。它与重点分析使用同一报告模型路由，但思考开关独立保存。关闭 `readableThinking` 时优先请求 `off`，能力与兼容兜底沿用上述策略；旧设置只保存了 `visualizationThinking: false` 时，顺畅阅读仍使用自己的默认开启值。更改只影响之后明确发起的生成，不自动重新生成已有结果。正式转述与重新转述仍沿用 `reasoningEffort`，聊天室仍沿用自己的思考设置。
+顺畅阅读润色默认开启思考，优先采用报告阅读模型公开的非关闭默认档。默认档关闭或未公布时，选用能力目录中第一个可用的非关闭档；未声明可用能力时提示更换模型，或关闭本次阅读思考设置后重试。重点分析与顺畅阅读共用模型路由，各有独立的思考开关。关闭 `readableThinking` 时优先请求 `off`，能力与兼容处理沿用上述策略。更改只影响之后主动发起的生成。
 
 档位 ID 和顺序由适配器定义，不能把各家的 `low / high` 当成通用协议。参考官方[模型能力类型](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm/src/types.ts)与[提供方配置](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md)。
 

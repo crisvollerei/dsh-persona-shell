@@ -34,6 +34,19 @@ test('selective freshness checks never spend an unrelated source budget or clear
   f.context.detach('b');assert.throws(()=>f.context.selection(key),/chat-context-changed/);f.context.dispose();
 });
 
+test('a long primary report leaves room for a short result from another selected source',async()=>{
+  const f=fixture();
+  f.adapter.source=async id=>({name:id,cursor:3,turn:1,goalSeq:1,reportSeq:3,reportStatus:'final',
+    goal:'目'.repeat(id==='a'?2000:1300),report:id==='a'?'主会话已归档过程。\n\n'.repeat(440):'次会话终点验收明确失败。'});
+  await f.open();await f.context.attach('b');
+  const captured=f.context.capture(f.context.key(),{sourceIds:['a','b'],question:'对比两份验收结果'});
+  assert.deepEqual(captured.sources.map(source=>source.sessionId),['a','b']);
+  assert.equal(captured.sources[1].report,'次会话终点验收明确失败。');
+  assert.ok(captured.sources.reduce((chars,source)=>chars+source.goal.length+source.report.length,0)<=8000);
+  assert.equal(f.context.resolveReference(captured.sources[1]).report,captured.sources[1].report);
+  f.context.dispose();
+});
+
 test('an explicitly selected unavailable source can recover immediately without waiting for the polling interval',async()=>{
   const f=fixture();f.adapter.source=async()=>{f.calls.push('unavailable');throw Error('offline');};
   await f.open();const key=f.context.key();assert.equal(f.context.selection(key).sources[0].available,false);

@@ -46,6 +46,34 @@ test('middle caution blocks and their headings remain in original order with exp
   assert.equal(restoreWorkExcerpt(report,selected.excerpt).text,selected.text);
 });
 
+test('exact terms in the question prioritize complete blocks while preserving a separate condition',()=>{
+  const paragraphs=Array.from({length:16},(_,i)=>`背景 ${i}。${'资料。'.repeat(160)}`);
+  const condition='部署条件：尚未验证客户端，只允许本地试跑。';
+  const focus='## 队列恢复\n\n恢复参数 `retryDelayMs` 在配置文件内定义，默认 500 毫秒。'+'配置说明。'.repeat(85);
+  paragraphs[1]=focus;paragraphs[9]=condition;
+  const report=paragraphs.join('\n\n'),unfocused=selectWorkExcerpt(report,1400);
+  const selected=selectWorkExcerpt(report,1400,'队列恢复的 retryDelayMs 是多少？');
+  assert.ok(!unfocused.text.includes(focus));
+  assert.ok(selected.text.includes(focus));assert.ok(selected.text.includes(condition));
+  assert.ok(selected.text.indexOf(focus)<selected.text.indexOf(condition));
+  assert.equal(restoreWorkExcerpt(report,selected.excerpt).text,selected.text);
+  assert.deepEqual(selectWorkExcerpt(report,1400,'去吃芝麻汤圆'),unfocused);
+});
+
+test('a long work goal is recorded as verifiable fragment pointers and restored without another source read',async()=>{
+  const goal=Array.from({length:7},(_,i)=>`目标 ${i}：${'检查说明。'.repeat(130)}`).join('\n\n');
+  const f=await fixture({s:source('当前原始汇报。',{goal})});
+  try{
+    const row=f.capture().sources[0],before=f.calls.length;
+    assert.ok(row.goal.length>0&&row.goal.length<=2000);
+    assert.equal(row.goalOmitted,true);assert.equal(row.goalExcerpt.originalChars,goal.length);
+    assert.equal(f.context.resolveReference(row).goal,row.goal);
+    assert.equal(f.context.resolveReference({...row,goalExcerpt:{...row.goalExcerpt,digest:'0'.repeat(64)}}),null);
+    assert.equal(f.context.resolveReference({...row,goalExcerpt:undefined}).goal,'','a pre-upgrade omitted goal is still empty');
+    assert.equal(f.calls.length,before);
+  }finally{f.context.dispose();}
+});
+
 test('overlong atomic paragraphs and unfinished fences are omitted without fabricated partial sentences or code',()=>{
   const paragraph='完整但过长的单段：'+'长'.repeat(6000),whole=selectWorkExcerpt(paragraph,5000);
   assert.equal(whole.text,'');assert.equal(whole.omitted,true);assert.equal(whole.excerpt.omitted[0].reason,'oversize-block');
