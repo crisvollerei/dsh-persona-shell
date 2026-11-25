@@ -16,6 +16,7 @@
   <a href="#快速上手">快速上手</a> ·
   <a href="./docs/guide.md">使用指南</a> ·
   <a href="#文档">文档导航</a> ·
+  <a href="https://crisvollerei.github.io/dsh-persona-shell-release-notes/">互动更新手账</a> ·
   <a href="./CHANGELOG.md">更新记录</a>
 </p>
 
