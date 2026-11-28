@@ -26,8 +26,7 @@ function targetText(options, pointer) {
   assert.ok(event, 'the proposal points at a real included timeline event');
   const position = event.bubbles.findIndex(bubble => bubble.index === pointer.index);
   assert.ok(position >= 0);
-  const packet = JSON.parse(options.messages[event.messageIndex].content[0].text), bubble = packet.messages[position];
-  return typeof bubble === 'string' ? bubble : packet.messages.find(value => value.index === pointer.index)?.text;
+  return readChatInput(options).__events.get(event.eventId).bubbles[position].text;
 }
 
 test('a short scene proposal reaches only its actual actor and never becomes streamed speech, memory or the next director input', async t => {

@@ -8,6 +8,41 @@ const wire = (raw, edit = blocks => blocks) => JSON.stringify({ schemaVersion: 3
   blocks: edit(JSON.parse(buildReportReadablePrompt(raw).user).source.blocks.map(({ ref, text }) => ({ ref, text }))) });
 const raw = source('初始化完成；失败任务未重试，只有用户确认后恢复。\n\n本地修改 2 处，`config.yml` 保持不变，尚未推送。\n\n```sh\nnode --test\n```\n');
 
+test('unchanged generic prose and verbatim ANSI output round-trip through generation and cache validation', () => {
+  const original = source('参数类型为 <generic>。\n\n```text\n\x1b[32m通过\x1b[0m\n```\n');
+  const parsed = parseReportReadable(wire(original, blocks => blocks.map(b => ({ ...b, text: b.text.trim() }))), original,
+    { replacingDraft: true });
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(parsed.warnings, []);
+  assert.deepEqual(parsed.value.blocks.map(b => b.text), original.blocks.map(b => b.text));
+  const reloaded = validateReportReadable(parsed.value, original);
+  assert.deepEqual(reloaded.value, parsed.value);
+  assert.equal(reloaded.warnings, undefined);
+  for (const block of parsed.value.blocks) {
+    const changed = parsed.value.blocks.map(b => b === block ? { ...b, text: b.text + '\x1b' } : b);
+    assert.equal(validateReportReadable({ schemaVersion: 3, blocks: changed }, original).issue.code, 'unsafe-content');
+  }
+  const changed = parseReportReadable(wire(original, blocks => [{ ...blocks[0], text: '参数类型为 <another>。' }, blocks[1]]), original);
+  assert.equal(changed.warnings[0].code, 'readable-block-original');
+});
+
+test('readable restores a platform count swap even when the total uses Chinese digits', () => {
+  const original = source('Windows 完成 7 项，Linux 完成 2 项，共 9 项。');
+  const [block] = original.blocks;
+  const result = validateReportReadable({schemaVersion:3,blocks:[{ref:block.id,text:'Windows 完成 2 项，Linux 完成 7 项，共九项。'}]},original);
+  assert.equal(result.value.blocks[0].text,block.text);
+  assert.equal(result.warnings[0].code,'readable-block-original');
+});
+
+test('changes to Markdown reference images or multiline links retain the source block', () => {
+  for (const [before,after] of [['请查看[文档][doc]。','请查看![文档][doc]。'],
+    ['请查看文档。','请查看![doc]。'],['请查看文档。','请查看[项目\n文档](https://example.org)。']]) {
+    const original=source(before), block=original.blocks[0];
+    const result=validateReportReadable({schemaVersion:3,blocks:[{ref:block.id,text:after}]},original);
+    assert.equal(result.value.blocks[0].text,block.text);
+  }
+});
+
 test('readable prompt receives only the complete pinned source, masked literals and sentence-level instructions', () => {
   const prompt = buildReportReadablePrompt(raw), input = JSON.parse(prompt.user);
   assert.equal(input.task, 'report-readable'); assert.equal(input.source.hash, raw.hash);

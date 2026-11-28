@@ -36,56 +36,47 @@ test('partial JSON decoding shows only body prose, including fragmented escapes'
   assert.equal(parseProcessRewrite('{"rewrite":"body","extra":"no"}'), undefined);
 });
 
-test('real SDK tool blocks query once and preserve reasoning/replay plus correlated role-tool messages', async () => {
-  const replayState = { vendor: { opaque: 'signature' } };
-  const r = runner([[
-    { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'private reasoning', signature: 'sig' } },
-    { type: 'tool-call-delta', index: 1, id: 'query1', name: 'get_tool_usage', argumentsDelta: '{' },
-    { type: 'tool-call-delta', index: 1, id: 'query1', argumentsDelta: '}' },
-    tool(), { type: 'finish', reason: { kind: 'tool-calls' }, replayState },
-  ], answer()]);
+test('one tool-free request carries the frozen observation with the masked report', async () => {
+  const r = runner([answer()]);
   assert.deepEqual(await r.run(), { text: '鲸鲸接着看。', note: '哼，搜索了2次，还碰到1次报错。' });
-  assert.equal(r.calls.length, 2);
-  assert.deepEqual(r.calls[0].tools.map((t) => t.name), ['get_tool_usage']);
-  assert.equal(Object.hasOwn(r.calls[1], 'tools'), false);
-  const [, assistant, result] = r.calls[1].messages;
-  assert.equal(assistant.role, 'assistant');
-  assert.equal(assistant.content[0].type, 'reasoning');
-  assert.equal(assistant.content[1].id, 'query1');
-  assert.equal(assistant.source.replayState, replayState);
-  assert.equal(result.role, 'tool');
-  assert.equal(result.source.callId, result.toolCallId);
-  assert.equal(result.toolCallId, 'query1');
-  assert.deepEqual(JSON.parse(result.content[0].text), usage);
+  assert.equal(r.calls.length,1);assert.equal(r.calls[0].tools,undefined);
+  assert.deepEqual(JSON.parse(r.calls[0].messages[0].content.at(-1).text),{processUsage:usage});
   assert.doesNotMatch(r.partials.join(''), /private reasoning|signature|process_note|get_tool_usage|报错/);
 });
 
-test('querying is optional and an unqueried note is always discarded', async () => {
-  const r = runner([answer()]);
+test('an unavailable observation drops the note', async () => {
+  const r = runner([answer()],{usage:null});
   assert.deepEqual(await r.run(), { text: '鲸鲸接着看。', note: undefined });
   assert.equal(r.calls.length, 1);
 });
 
-test('delta-only providers and authoritative completed blocks follow the same query contract', async () => {
+test('process text accepts an unindexed single block and orders indexed blocks by position',async()=>{
+  const text='{"rewrite":"正文。","process_note":""}', stop={type:'finish',reason:{kind:'stop'}};
+  const delta=(index,text)=>({type:'text-delta',index,text});
+  for(const pieces of [[delta(undefined,text.slice(0,6)),delta(undefined,text.slice(6))],
+    [delta(3,text.slice(6)),delta(1,text.slice(0,6))]]){
+    assert.deepEqual(await runner([[...pieces,stop]]).run(),{text:'正文。',note:undefined});
+  }
+  for(const pieces of [[delta(undefined,'{'),delta(1,'}')],[delta(1,'{'),delta(undefined,'}')]]){
+    await assert.rejects(runner([[...pieces,stop]]).run(),/process-block-index/);
+  }
+});
+
+test('authoritative completed blocks ignore late deltas and private reasoning', async () => {
   const r = runner([[
     { type: 'block-start', index: 5, blockType: 'reasoning' },
     { type: 'reasoning-delta', index: 5, text: 'retained only for provider replay' },
-    { type: 'tool-call-delta', index: 2, id: 'query1', name: 'get_tool_usage', argumentsDelta: '{' },
-    { type: 'tool-call-delta', index: 2, id: 'query1', argumentsDelta: '}' },
-    { type: 'finish', reason: { kind: 'tool-calls' } },
-  ], [
     { type: 'block-end', index: 0, block: { type: 'text', text: JSON.stringify({ rewrite: '正文。', process_note: '' }) } },
     { type: 'text-delta', index: 0, text: 'ignored after closure' },
     { type: 'finish', reason: { kind: 'stop' } },
   ]]);
   assert.deepEqual(await r.run(), { text: '正文。', note: undefined });
-  assert.deepEqual(r.calls[1].messages[1].content.map((b) => b.type), ['reasoning', 'tool-call'], 'preserve SDK first-seen block order');
-  assert.equal(r.calls[1].messages[1].content[1].arguments, '{}');
+  assert.equal(r.calls.length,1);assert.doesNotMatch(r.partials.join(''),/replay/);
 });
 
 test('bad optional notes are dropped without damaging the body', async () => {
   for (const note of ['字'.repeat(41), '一行\n另一行', '你好。再见。', 'Busy. Again.', '测试通过啦。', '搜索了9次。', '搜索了1次。', '**真忙**']) {
-    const r = runner([[tool(), { type: 'finish', reason: { kind: 'tool-calls' } }], answer('正文。', note)]);
+    const r = runner([answer('正文。', note)]);
     assert.deepEqual(await r.run(), { text: '正文。', note: undefined }, note);
   }
   assert.equal(validateProcessNote('碰到1次报错。', { ...usage, categories: { search: { ...usage.categories.search, errors: 0 } } }), undefined);
@@ -103,10 +94,10 @@ test('unknown functions, arguments, repeated calls and extra rounds never dispat
     assert.equal(r.calls.length, 1);
   }
   const twice = runner([[tool(), { ...tool({ id: 'query2' }), index: 2 }, finish]]);
-  await assert.rejects(twice.run(), /process-tool-limit/);
+  await assert.rejects(twice.run(), /process-tool-denied/);
   const anotherRound = runner([[tool(), finish], [tool(), finish]]);
-  await assert.rejects(anotherRound.run(), /process-tool-limit/);
-  assert.equal(anotherRound.calls.length, 2);
+  await assert.rejects(anotherRound.run(), /process-tool-denied/);
+  assert.equal(anotherRound.calls.length, 1);
 });
 
 test('malformed/truncated streams fall back rather than accepting partial JSON', async () => {
@@ -136,7 +127,7 @@ test('work nature and independently known pacing support short asides without in
   assert.equal(validateProcessNote('这段只读，先慢慢看。', noTools), undefined);
   assert.equal(validateProcessNote('间隔0.5分钟，又见面啦。', { ...noTools,
     session_pacing: { ...enriched.session_pacing, is_first_report: false } }), undefined);
-  const r = runner([[tool(), { type: 'finish', reason: { kind: 'tool-calls' } }], answer('正文。', '第25轮啦，鲸鲸还在呢。')], { usage: noTools });
+  const r = runner([answer('正文。', '第25轮啦，鲸鲸还在呢。')], { usage: noTools });
   assert.deepEqual(await r.run(), { text: '正文。', note: '第25轮啦，鲸鲸还在呢。' });
 });
 
@@ -146,7 +137,7 @@ test('disabled gates prevent querying/continuation and aborted hanging providers
   assert.equal(off.calls.length, 0);
   let enabled = true;
   async function* disabledBeforeExecution() {
-    yield tool(); enabled = false;
+    yield {type:'text-delta',index:0,text:'{'}; enabled = false;
     yield { type: 'finish', reason: { kind: 'tool-calls' } };
   }
   const changed = runner([disabledBeforeExecution()], { allowed: () => enabled });

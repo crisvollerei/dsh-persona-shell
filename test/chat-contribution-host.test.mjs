@@ -55,8 +55,8 @@ test('one shared clarification is followed by waiting; later user details get a 
     const choice=body.choices.find(item=>item.id===(number===1?dragon:whale)&&item.to==='user');
     return taskWire(body,choice,number===0?'ask':number===1?'answer':'react',points[number]);
   },script:options=>{
-    const body=readChatInput(options),task=body.directorAssignment.contribution;
-    assert.equal(body.directorAssignment.goal,task.point);
+    const body=readChatInput(options),task=body.directorAssignment;
+    assert.equal(task.point,undefined);
     return reply([task.move==='ask'?'这次表上要记什么？':task.move==='answer'?'那就两列：昵称、是否到场。':'嗯，你先去。']);
   }});
   await f.ready();const room=await newRoom(f,[whale,dragon],'共同问题只问一次','contribution-multiturn');await broadcast(f,room);
@@ -78,7 +78,7 @@ test('a specific public side thread can still take two peer turns and then stop 
     const id=index===1?dragon:whale,choice=body.choices.find(item=>item.id===id&&item.kind===(index?'peer':'normal'));
     assert.ok(choice,'an actual peer invitation remains eligible');return taskWire(body,choice,moves[index],points[index]);
   },script:options=>{
-    const body=readChatInput(options),index=moves.indexOf(body.directorAssignment.contribution.move);
+    const body=readChatInput(options),index=moves.indexOf(body.directorAssignment.move);
     if(index)assert.equal(body.replyTarget.author.id,index===1?whale:dragon);
     return reply([['GPT，左边空着，你想放点什么？','鲸鲸，要不放个小台灯？','暖一点的那个就挺好。'][index]]);
   }});
@@ -97,7 +97,7 @@ test('a failed actor task is not recorded as completed and its explicit retry re
     if(body.events.some(event=>event.author.role==='assistant')||!choice)return wire('WAIT');
     return taskWire(body,choice,contribution.move,contribution.point);
   },script:options=>{
-    assert.deepEqual(readChatInput(options).directorAssignment.contribution,contribution);
+    assert.deepEqual(readChatInput(options).directorAssignment,{kind:'normal',to:'user',move:contribution.move});
     return reply(['我倾向先画草图。'],fail?'max-tokens':'stop');
   }});
   await f.ready();const room=await newRoom(f,[whale,dragon],'重试继续原小步','contribution-retry');
@@ -125,7 +125,7 @@ test('a newly invited member still receives old unread room words while her new 
   await roomSend(f,room,dragon,'GPT，你对两列怎么看？','unread-second');state=await settledRoom(f,room);
   assert.equal(state.directorFailure,null);assert.equal(f.calls.length,2);
   const request=readChatInput(f.calls[1]);assert.equal(request.message,'GPT，你对两列怎么看？');
-  assert.equal(request.directorAssignment.contribution.point,'只说你对两列的取舍，沿用纸质条件。');
+  assert.equal(request.directorAssignment.move,'opine');assert.equal(request.directorAssignment.point,undefined);
   assert.ok(request.inbox.some(item=>item.author.role==='user'&&item.messages.includes('先保留纸质签到。')));
   assert.ok(request.inbox.some(item=>item.author.id===whale&&item.messages.includes('先留纸质表，两列够用。')));
   assert.ok(!f.calls[1].messages.some(message=>message.role==='assistant'),'a peer\'s old words do not become the new actor\'s own history');

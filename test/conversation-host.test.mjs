@@ -6,7 +6,7 @@ const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(setIm
 const output = (text = '这份原始汇报已经重新表达。', finish = 'stop') => (async function* () {
   yield { type: 'text-delta', text }; yield { type: 'finish', reason: { kind: finish } };
 })();
-function fixture(t, { tables = new Map(), gate = Promise.resolve(), script, failWrite = () => false, beforeWrite = async () => {}, config = {},modelInfo=async()=>({reasoning:{efforts:[{id:'off',name:'off'},{id:'low',name:'low'}]}}) } = {}) {
+function fixture(t, { tables = new Map(), gate = Promise.resolve(), withoutStorage=false, script, failWrite = () => false, beforeWrite = async () => {}, config = {},modelInfo=async()=>({reasoning:{efforts:[{id:'off',name:'off'},{id:'low',name:'low'}]}}) } = {}) {
   const bus = new EventEmitter(), routes = [], disposers = [], calls = [];
   const services = new Map([
     ['storageDomain', { async open() { await gate; return { table(name) {
@@ -20,7 +20,8 @@ function fixture(t, { tables = new Map(), gate = Promise.resolve(), script, fail
     ['connection', { requestRejection: ({ headers }) => headers.authorization === 'owner' ? undefined : 403 }],
     ['llm', { listModels: async () => [{ id: 'm' }],resolveModelInfo:modelInfo, stream(options) { calls.push(options); return script?.(options, calls.length) ?? output(); } }],
   ]);
-  apply({ get: (id) => services.get(id),
+  if (withoutStorage) services.delete('storageDomain');
+  apply({ get: (id) => services.get(id), provide: (id, value) => services.set(id,value),
     on(type, fn) { bus.on(type, fn); return () => bus.off(type, fn); },
     inject(names, fn) { if (names.every((id) => services.has(id))) fn({ get: (id) => services.get(id) }); },
     effect(fn) { const d = fn(); if (typeof d === 'function') disposers.push(d); }, logger: { warn() {} },
@@ -38,7 +39,7 @@ function fixture(t, { tables = new Map(), gate = Promise.resolve(), script, fail
   const event = (id, type, seq, data, header = {}) => bus.emit('session/event', { id, header, append() { assert.fail('read only'); } }, { type, seq, data });
   const report = (id = 's', seq = 10, text = '这是一份需要保留原始事实的汇报。', header) => event(id, 'assistant/message', seq,
     { message: { role: 'assistant', content: [{ type: 'text', text }] } }, header);
-  return { tables, calls, request, report, event, dispose, ready: flush,
+  return { tables, calls, request, report, event, dispose, ready: flush, services, personaShell:services.get('personaShell'),
     conversation: async (id = 's') => (await request('conversation?session=' + id)).value,
     state: async (id = 's') => (await request('state?session=' + id)).value,
   };
@@ -53,6 +54,32 @@ async function feedback(f, extra = {}) {
   return f.request('feedback', { sessionId: 's', seq: row.seq, version: row.version, personaId: row.speaker.id,
     scope: 'once', ...(row.sourceHash?{sourceHash:row.sourceHash}:{}), content: '少一点调侃，先说结论', ...extra });
 }
+
+test('a report with several text blocks needs exactly one nonempty replacement target', async t=>{
+  const f=fixture(t);await f.ready();
+  const send=(seq,parts)=>f.event('s','assistant/message',seq,{message:{role:'assistant',content:parts.map(text=>({type:'text',text}))}});
+  send(10,['  ','这是一份需要保留原始事实的汇报。','']);await flush();
+  assert.equal(f.calls.length,1);
+  send(11,['第一份有独立正文。','第二份也有独立正文。']);await flush();
+  assert.equal(f.calls.length,1);
+});
+
+test('three persona trials accept an unsaved card and leave report history, presets and memory intact', async t=>{
+  const f=fixture(t,{script:opts=>{
+    if(opts.messages.some(m=>m.content.some(c=>c.text.includes('chat-control'))))return output('{"messages":["陪你聊聊。"]}');
+    const raw=opts.messages[0].content[0].text.replace(/^待改写：\n/u,'');return output(raw);
+  }});await f.ready();
+  await f.request('memory',{action:'add',entry:{kind:'preference',content:'仅保存的私密偏好',scope:'shared'}});
+  const before=(await f.request('presets')).value, memory=(await f.request('memory')).value;
+  for(const mode of ['report','strict','chat']){
+    const result=await f.request('presets',{action:'preview',mode,pack:{identity:'临时草稿里的试说身份'},personaId:before.presets[0].id});
+    assert.equal(result.status,200,JSON.stringify(result.value));assert.ok(result.value.text);
+    assert.match(f.calls.at(-1).system,/临时草稿里的试说身份/);assert.doesNotMatch(JSON.stringify(f.calls.at(-1)),/仅保存的私密偏好/);
+    if(mode==='strict')assert.ok(result.value.reasons.includes('self-reference'));
+  }
+  assert.equal(f.calls.length,3);assert.deepEqual((await f.request('presets')).value.presets,before.presets);
+  assert.deepEqual((await f.request('memory')).value.entries,memory.entries);assert.deepEqual((await f.state()).rows,[]);
+});
 
 test('manual adjustment defaults to thinking independently of automatic rewrite and accepts an explicit one-off opt-out',async t=>{
  const f=fixture(t);await f.ready();f.report();await flush();assert.equal(f.calls.at(-1).reasoningEffort,'off');
@@ -119,7 +146,109 @@ test('relay rewrites the next raw source once, preserving old signature and isol
   const rows = (await f.state()).rows;
   assert.equal(rows[0].speaker.id, '大肥鱼（默认）'); assert.equal(rows[1].speaker.id, 'Claude小姐');
   assert.equal((await f.conversation()).relay.consumedSeq, 12);
+  assert.match(prompt.system, /"relayFrom":"大肥鱼（默认）"/);
+  f.report('s', 13); await flush(); assert.doesNotMatch(f.calls[2].system, /"relayFrom"/);
 });
+
+test('a relay card is bound to one report, rejects private records and closes on cancellation',async t=>{
+  const f=fixture(t);await f.ready();await f.request('settings',{memory:true});
+  const target='Claude小姐', path='memory/handoffs?session=s&persona='+encodeURIComponent(target);
+  const privateEntry=(await f.request('memory',{action:'add',entry:{scope:'persona',personaId:'大肥龙',kind:'episode',content:'私有经历'}})).value.result;
+  const schedule=async(ids=[])=>f.request('conversation',{action:'relay',sessionId:'s',revision:(await f.conversation()).revision,
+    toPersonaId:target,handoff:{summary:'协调前先核实环境',memoryIds:ids}});
+  assert.equal((await schedule([privateEntry.id])).value.error,'private-handoff-memory');
+  const cancelled=(await schedule()).value.relay;
+  await f.request('conversation',{action:'cancel',sessionId:'s',revision:(await f.conversation()).revision,relayId:cancelled.id});await flush();
+  assert.equal((await f.request(path)).value.handoffs[0].status,'closed');
+  assert.equal((await schedule()).status,200);f.report();await flush();f.report('s',11);await flush();
+  assert.match(f.calls[0].system,/协调前先核实环境/);assert.doesNotMatch(f.calls[1].system,/协调前先核实环境/);
+  assert.ok((await f.request(path)).value.handoffs.every(h=>h.status==='closed'));
+  await f.dispose();
+  const saved=f.tables.get('profile').get('structuredMemory');saved.handoffs.at(-1).status='pending';
+  const next=fixture(t,{tables:f.tables});await next.ready();await flush();assert.equal((await next.request(path)).value.handoffs.at(-1).status,'closed');
+});
+
+test('clearing a pending relay card still lets the next persona rewrite its first report',async t=>{
+  const f=fixture(t);await f.ready();await f.request('settings',{memory:true});
+  const target='Claude小姐',summary='这段交接说明应随清空消失';
+  const scheduled=await f.request('conversation',{action:'relay',sessionId:'s',revision:(await f.conversation()).revision,
+    toPersonaId:target,handoff:{summary,memoryIds:[]}});
+  assert.ok(scheduled.value.relay.handoffId);assert.equal((await f.request('settings',{clearMemory:true})).status,200);
+  f.report();await flush();const [row]=(await f.state()).rows;
+  assert.equal(row.status,'ready');assert.equal(row.speaker.id,target);assert.equal(f.calls.length,1);
+  assert.match(f.calls[0].system,/"relayFrom"/);assert.ok(!f.calls[0].system.includes(summary));
+});
+
+test('report address opt-in survives restart and local subscribers receive only automatic rewrite receipts', async t => {
+  const tables = new Map();
+  const f = fixture(t, {tables, script: (_, n) => n === 2 ? output('', 'error') : output()});
+  await f.ready();
+  const service = f.personaShell;
+  assert.equal(service.apiVersion, 1);
+  assert.equal(service.getActivePersona('s').id, '大肥鱼（默认）');
+  const receipts = [];
+  const stop = service.subscribe(value => receipts.push(value));
+  service.subscribe(() => { throw Error('consumer failure'); });
+  assert.equal((await f.request('chat-profile',{revision:0,userAddress:'阿晴'})).status,200);
+  f.report(); await flush(); assert.doesNotMatch(f.calls[0].system,/阿晴/);
+  assert.equal((await f.request('chat-profile',{revision:1,reportAddress:true})).status,200);
+  f.report('s',11); await flush(); assert.match(f.calls[1].system,/"userAddress":"阿晴"/);
+  assert.deepEqual(receipts.map(e=>e.type),['rewrite:started','rewrite:ready','rewrite:started','rewrite:fallback']);
+  assert.deepEqual(Object.keys(receipts[0]).sort(),['personaId','seq','sessionId','type','version']);
+  stop(); f.report('s',12); await flush(); assert.equal(receipts.length,4);
+  await f.dispose(); assert.equal(service.getActivePersona('s'),null);
+  const restored = fixture(t,{tables}); await restored.ready();
+  restored.report('s',13); await flush(); assert.match(restored.calls[0].system,/阿晴/);
+});
+test('local events distinguish disabled, pure literal, missing model and committed persona changes',async t=>{
+  const f=fixture(t);await f.ready();const events=[],service=f.personaShell;
+  service.subscribe(()=>{throw Error('consumer')});service.subscribe(e=>events.push(e));
+  assert.deepEqual(events,[]);await choose(f,'s','Claude小姐');
+  assert.deepEqual(events.splice(0),[{version:1,type:'persona:switched',sessionId:'s',personaId:'Claude小姐',enabled:true}]);
+  await f.request('session-switch',{sessionId:'s',enabled:false});assert.equal(service.getActivePersona('s').enabled,false);
+  events.length=0;f.report();await flush();assert.deepEqual(events,[]);
+  await f.request('session-switch',{sessionId:'s',enabled:true});events.length=0;
+  f.report('s',11,'```js\nconst x=1;\n```');await flush();assert.deepEqual(events,[]);
+  f.services.delete('llm');f.report('s',12);await flush();assert.deepEqual(events.map(e=>e.type),['rewrite:started','rewrite:fallback']);
+  assert.equal(events.at(-1).category,'failed');events.length=0;
+  await f.request('settings',{enabled:false});assert.equal(events.length,1);assert.equal(events[0].sessionId,null);
+  assert.equal(service.getActivePersona('s'.repeat(200)).enabled,false);
+});
+
+test('a memory-only host exposes runtime persona switches while memory collection stays closed',async t=>{
+  const f=fixture(t,{withoutStorage:true});const events=[];f.personaShell.subscribe(e=>events.push(e));
+  assert.equal(f.personaShell.getActivePersona('s').enabled,true);
+  await f.request('settings',{enabled:false});assert.equal(f.personaShell.getActivePersona('s').enabled,false);
+  assert.deepEqual(events.map(e=>[e.type,e.enabled]),[['persona:switched',false]]);
+  f.event('s','user/message',1,{content:[{type:'text',text:'以后叫我 Alice'}]});
+  assert.deepEqual((await f.request('memory')).value.entries,[]);
+  const gate=Promise.withResolvers(),opening=fixture(t,{gate:gate.promise});
+  assert.equal(opening.personaShell.getActivePersona('s'),null);gate.resolve();await opening.ready();
+  assert.equal(opening.personaShell.getActivePersona('s').enabled,true);
+});
+
+test('strict relay keeps a validated draft ready with a self-reference review reason',async t=>{
+  const f=fixture(t,{script:()=>output('姐姐改好了超时，我看了下测试，有两项失败。')});await f.ready();
+  const pack=(await f.request('settings')).value.settings.pack;
+  assert.equal((await f.request('settings',{pack:{...pack,narration:{mode:'relay',assistant:'姐姐',selfReference:'none'}}})).status,200);
+  f.report('s',10,'我改好了超时，并且检查了测试结果，有两项失败。');await flush();
+  const row=(await f.state()).rows[0];assert.equal(row.status,'ready',row.reason);assert.ok(row.review.reasons.includes('self-reference'));
+  assert.ok(!Object.hasOwn(row,'rev'));
+});
+
+test('a memory change during a rewrite produces one skipped fallback event', async t => {
+  const {promise,resolve}=Promise.withResolvers();
+  const f=fixture(t,{script:()=>(async function*(){await promise;yield* output();})()});
+  t.after(resolve);await f.ready();
+  await f.request('settings',{memory:true});
+  const events=[];f.personaShell.subscribe(event=>events.push(event));
+  f.report();await flush();assert.equal(f.calls.length,1);
+  assert.equal((await f.request('settings',{memory:false})).status,200);
+  await flush();resolve();await flush();
+  assert.deepEqual(events.map(event=>[event.type,event.category]),[['rewrite:started',undefined],['rewrite:fallback','skipped']]);
+  assert.equal((await f.state()).rows[0].reason,'memory-changed');
+});
+
 test('a failed relay write does not consume the relay or spend a model call', async (t) => {
   let fail = false;
   const f = fixture(t, { failWrite: (key) => fail && key === 'conversations' }); await f.ready();
@@ -327,6 +456,33 @@ test('deleting an inactive custom persona cancels its pinned rewrite and falls b
   const state = await f.conversation(); assert.equal(state.missingPersona, true);
   assert.equal(state.effectivePersonaId, '大肥鱼（默认）');
 });
+for (const restarted of [false,true]) test('a deleted persona retires queued extraction and both sides of open handoffs '+(restarted?'on recovery':'immediately'),async t=>{
+  const f=fixture(t,{config:{memory:true,memoryExtraction:true}});await f.ready();
+  const saved=await f.request('presets',{action:'save',name:'即将删除的人格',pack:{identity:'临时身份'}});
+  const custom=saved.value.presets.find(p=>p.name==='即将删除的人格').id;
+  f.event('s','user/message',1,{content:[{type:'text',text:'以后叫我 Alice'}]});
+  const other='Claude小姐';
+  for (const [fromPersonaId,toPersonaId] of [[custom,other],[other,custom]]) {
+    const card=await f.request('memory/handoffs',{action:'create',sessionId:'s',fromPersonaId,toPersonaId,memoryIds:[],summary:'交接事项'});
+    assert.equal(card.status,200);
+  }
+  const before=(await f.request('memory')).value;assert.equal(before.extraction.pending,1);
+  let current=f;
+  if (restarted) {
+    await f.dispose();f.tables.get('presets').delete(custom);
+    current=fixture(t,{tables:f.tables});await current.ready();
+  } else {
+    assert.equal((await f.request('presets',{action:'delete',id:custom})).status,200);
+  }
+  const after=(await current.request('memory')).value;
+  assert.equal(after.extraction.pending,0);
+  for(const id of [custom,other]) {
+    const response=await current.request('memory/handoffs?session=s&persona='+encodeURIComponent(id));
+    assert.deepEqual(response.value.handoffs.map(h=>h.status),['closed']);
+  }
+  assert.deepEqual(after.entries,before.entries);
+});
+
 test('default report scope persists and cannot change a separately selected session scope', async (t) => {
   const f = fixture(t); await f.ready(); await choose(f, 'pinned', 'Claude小姐', 'step');
   await f.request('settings', { trigger: 'report' });

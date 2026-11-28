@@ -30,15 +30,15 @@ test('a reply link requires a real earlier bubble with matching author and canon
   assert.equal(chatReplyTarget({...b,id:'opaque'},[u,a]),null);
 });
 
-test('all public refs remain audible while only the actual reply target receives a normal continuation trigger',()=>{
+test('ordinary replies can target two recent peer statements while the original user entry stays consumed',()=>{
   const{s,publish}=fixture(),u=user();publish(u);const first=s.claim('room','a','first');s.finish('room','a',first.token);
   const a=peer('a','a',['我先回应用户。'],u),b=peer('b','b',['我也回应用户。'],u);publish(a);publish(b);
   assert.deepEqual(s.pending('room','a').map(event=>event.id),[b.id]);
-  assert.deepEqual(s.read('room','a').normalPendingEventIds,[],'a new peer answer to the user is not another invitation to A');
-  assert.deepEqual(s.read('room','c').normalPendingEventIds,[u.id],'untouched members retain the original user entry');
+  assert.deepEqual(s.read('room','a').normalPendingEventIds,[b.id]);
+  assert.deepEqual(s.read('room','c').normalPendingEventIds,[u.id,a.id,b.id]);
   const linked=peer('b-to-a','b',['我想追问A的观点。'],a);publish(linked);
-  assert.deepEqual(s.read('room','a').normalPendingEventIds,[linked.id]);
-  assert.deepEqual(s.read('room','c').normalPendingEventIds,[u.id],'C can hear the exchange without being its target');
+  assert.deepEqual(s.read('room','a').normalPendingEventIds,[b.id,linked.id]);
+  assert.deepEqual(s.read('room','c').normalPendingEventIds,[u.id,b.id,linked.id]);
   assert.deepEqual(s.pending('room','c').map(event=>event.id),[u.id,a.id,b.id,linked.id]);
 });
 
@@ -55,21 +55,22 @@ test('a directed public chain may continue autonomously under the unchanged five
   assert.equal(s.readyAt('room','a'),null,'peer traffic never refills the normal maximum');
 });
 
-test('an unrelated peer does not reopen a considered scene, while a new directed reply can use the unspent quota',()=>{
+test('silence consumes every considered source; only a genuinely new public statement can reopen the ordinary opportunity',()=>{
   const{s,publish}=fixture(0),u=user();publish(u);const a=peer('prior-a','a',['A此前说过的话。'],u);publish(a);
   const slot=s.claim('room','a','considered');assert.equal(s.abstain('room','a',slot.token),true);
-  publish(peer('unrelated','b',['B只回答用户。'],u));assert.equal(s.readyAt('room','a'),null);
+  assert.equal(s.readyAt('room','a'),null);
   assert.equal(s.claim('room','a','same-scene'),null);assert.equal(s.read('room','a').level,0);
-  const directed=peer('directed','b',['B接着问A。'],a);publish(directed);assert.equal(s.readyAt('room','a'),0);
+  const directed=peer('new','b',['B回答用户时提出新的观点。'],u);publish(directed);assert.equal(s.readyAt('room','a'),0);
   const next=s.claim('room','a','fresh-link');assert.ok(next);assert.equal(next.normalRemainingAfterThis,2);
   assert.equal(s.abstain('room','a',next.token),true);assert.equal(s.readyAt('room','a'),null);
   assert.equal(s.publish('room',ref(directed)),false,'a duplicate public event cannot refresh the same scene');
 });
 
-test('a real peer call retains its independent reviewed opportunity without giving normal reply rights to everybody',()=>{
+test('a real peer call retains its independent opportunity alongside the ordinary reply',()=>{
   const{s,publish}=fixture(0),u=user();publish(u);const own=s.claim('room','a','a-first');s.finish('room','a',own.token);
   const named=peer('named','b',['甲甲，你愿意补充吗？'],u);publish(named);
-  assert.deepEqual(s.read('room','a').normalPendingEventIds,[]);
+  assert.deepEqual(s.read('room','a').normalPendingEventIds,[named.id]);
+  assert.equal(s.read('room','a').peerGrant,null);
   assert.equal(s.grantPeer('room','a',{sourceEventId:named.id,fromId:'b'}),true);
   const extra=s.claim('room','a','a-extra','peer');assert.ok(extra);s.finish('room','a',extra.token);
   assert.deepEqual([s.read('room','a').level,s.read('room','a').peerRemaining],[1,0]);
@@ -122,20 +123,20 @@ test('retention, scope edits and restart replay cannot turn an old relation or u
   assert.equal(restored.read('room','a').level,1,'replaying the timeline cannot refill its original user entry');
 });
 
-test('director options keep public context but bind normal peer actions to the same verified target chain',()=>{
+test('director binds ordinary continuation to a recent real peer bubble and never targets a previously consumed statement',()=>{
   const u=user(),a=peer('a','a',['A已经回答。'],u),b=peer('b','b',['B接A。'],a),c=peer('c','c',['C独自回答用户。'],u),events=[u,a,b,c];
   const options={message:u.messages[0],members,events,states:[state('a',[b,c]),state('b',[c]),state('c',[u,a,b])]},body=view(options);
   assert.equal(body.events.length,4,'all public context remains visible');
-  assert.deepEqual(body.choices.filter(choice=>choice.id==='a').map(choice=>[choice.kind,choice.to,choice.eventId]),[['normal','b','e3']]);
-  assert.deepEqual(body.choices.filter(choice=>choice.id==='b'),[]);
-  assert.deepEqual(body.choices.filter(choice=>choice.id==='c'),[],'an actor that already spoke cannot reopen the old user entry');
+  assert.deepEqual(body.choices.filter(choice=>choice.id==='a').map(choice=>[choice.kind,choice.to,choice.eventId]),[['normal','c','e4'],['normal','b','e3']]);
+  assert.deepEqual(body.choices.filter(choice=>choice.id==='b').map(choice=>choice.to),['c']);
+  assert.deepEqual(body.choices.filter(choice=>choice.id==='c'),[],'neither the original user entry nor a peer before the last own reply can be reused');
   assert.deepEqual(body.events[2].replyTo,{to:'a',eventId:'e2',index:0});
   assert.doesNotMatch(JSON.stringify(body),/attempt-|room:sources/,'canonical relation refs stay local too');
   const picked=body.choices[0],parsed=parseDirector(JSON.stringify({choiceId:picked.choiceId}),options);
-  assert.equal(parsed.next.evidence.eventId,b.id);assert.equal(parsed.next.to,'b');
+  assert.equal(parsed.next.evidence.eventId,c.id);assert.equal(parsed.next.to,'c');
   const legacy={context:{work:'not-needed',sourceIds:[],request:'answer',evidence:options.message},
     next:{id:'a',kind:'normal',to:'c',evidence:{eventId:c.id,index:0,text:c.messages[0]},goal:'接C。'}};
-  assert.equal(parseDirector(JSON.stringify(legacy),options).reason,'normal-ineligible');
+  assert.deepEqual(parseDirector(JSON.stringify(legacy),options).next.evidence,legacy.next.evidence);
 });
 
 test('director fails closed without normal trigger authority and a forged or future relation cannot create it',()=>{

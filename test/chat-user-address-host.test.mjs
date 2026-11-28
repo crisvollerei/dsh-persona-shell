@@ -103,3 +103,22 @@ test('address-like instructions remain quoted data, and invalid standalone build
   assert.ok(build('').system.includes('称呼用户为：卡片中的称呼'));
   for(const value of [null,1,'x'.repeat(41),'名字\n下一行','\u202e名字'])assert.doesNotMatch(build(value).system,/## 用户在聊天室设置中填写的称呼/);
 });
+test('solo room opening uses one actor request and only current, scoped history records', async t => {
+  const f = fixture(t); await f.ready();
+  const add = async (kind,personaId,content) => {
+    const result=await f.request('memory',{action:'add',entry:{kind,personaId,scope:'persona',content}});
+    assert.equal(result.status,200);return result.value.result;
+  };
+  const episode=await add('episode',whale,'一起选过蓝色封面');
+  await add('episode','大肥龙','隔壁角色的经历');
+  await f.send('还记得我们的封面吗？');await f.ready();
+  assert.equal(f.directors.length,0);assert.equal(f.calls.length,1);
+  const wire=JSON.stringify(f.calls[0].messages);
+  assert.match(wire,/一起选过蓝色封面/);assert.doesNotMatch(wire,/隔壁角色的经历/);
+  assert.equal((await f.request('memory',{action:'delete',id:episode.id,version:episode.version})).status,200);
+  await f.send('再聊聊。',whale,'second');await f.ready();
+  assert.doesNotMatch(JSON.stringify(f.calls.at(-1).messages),/一起选过蓝色封面/);
+  const room=(await f.state()).room;
+  const records=await f.request('chat-references?room='+encodeURIComponent(room.id));
+  assert.equal(records.status,200);assert.doesNotMatch(JSON.stringify(records.value),/一起选过蓝色封面/);
+});

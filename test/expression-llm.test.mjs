@@ -146,12 +146,22 @@ test('dispatch observation happens after capability preparation and never on met
   await assert.rejects(collect(failed), /metadata/); assert.equal(dispatches, 0);
 });
 
-test('dispatch observations cover actual compatibility attempts and continuations without creating new logical policies', async () => {
-  let calls = 0, observations = 0;
+test('compatibility fallback shares a logical dispatch and continuations have their own budget', async () => {
+  let calls = 0, observations = 0, checks = 0, attempts = 0;
   const policy = createExpressionLlm({ stream() { calls++; if (calls === 1) throw unsupported(); return answer(); } },
-    { onDispatch: () => observations++ });
+    { beforeAttempt: () => checks++, onDispatch: () => observations++, onAttempt: () => { attempts++; } });
   await collect(policy); await collect(policy, { ...options(), messages: [{ role: 'tool', content: [] }] });
-  assert.equal(observations, 3); assert.equal(observations, calls);
+  assert.equal(observations, 2); assert.equal(checks, 3); assert.equal(attempts, calls); assert.equal(calls, 3);
+});
+
+test('a stale request cannot dispatch its compatibility fallback', async () => {
+  let checks = 0, receipts = 0;
+  const policy = createExpressionLlm({ stream() { throw unsupported(); } }, {
+    beforeAttempt() { if (++checks > 1) throw Error('source-changed'); },
+    onAttempt() { receipts++; },
+  });
+  await assert.rejects(collect(policy), /source-changed/);
+  assert.equal(receipts, 1);
 });
 
 test('chat thinking uses the published model default while disabling it does not inherit rewrite effort',async()=>{

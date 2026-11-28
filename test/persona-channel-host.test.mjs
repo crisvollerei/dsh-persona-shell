@@ -139,7 +139,7 @@ test('saved custom cards retain their literal chat and report material without i
     samples: ['CUSTOM_SAMPLE：这句话保持原样……'],
     avoid: ['CUSTOM_AVOID：不要替换我的用语。'],
     address: { user: 'CUSTOM_USER', subagent: 'CUSTOM_WORKER' },
-    narration: { mode: 'relay', assistant: 'CUSTOM_ACTUAL_WORKER' },
+    narration: { mode: 'relay', assistant: 'CUSTOM_ACTUAL_WORKER', selfReference:'natural' },
   };
   const saved = await f.request('presets', { action: 'save', name: '大肥鱼（自定义）', pack: card });
   assert.equal(saved.status, 200);

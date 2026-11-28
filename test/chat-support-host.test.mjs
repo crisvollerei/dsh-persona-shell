@@ -22,13 +22,14 @@ function workReferenceEvents(){
  return events;
 }
 
-for(const mode of ['checked','checked-wait','automatic','bad-quote','partly-invalid','source-updated'])test(`work summary ${mode} uses grounded work excerpts and releases ordinary chat`,async t=>{
+for(const mode of ['checked','checked-wait','automatic','bad-quote','partly-invalid','source-updated','compatibility-retry'])test(`work summary ${mode} uses grounded work excerpts and releases ordinary chat`,async t=>{
  const events=workReferenceEvents(),auto=mode==='automatic';let calls=0,actors=0,release,startCall;
  const started=new Promise(resolve=>startCall=resolve);
  const services=[['sessions',{get:id=>({header:{id,title:'项目工作'}})}],
    ['sessionQuery',{observeSession:async id=>({events:id==='work'?events:[{seq:1,type:'user/message',data:{content:[{type:'text',text:'UNATTACHED_CANARY'}]}}]})}],
    ['web',{search(){assert.fail('summary has no network access');}}]];
- const f=fixture(t,{config:{chatSummarizeEnabled:auto},extraServices:services,directorScript:options=>{
+ const fallback = mode === 'compatibility-retry';
+ const f=fixture(t,{...(fallback?{modelInfo:undefined}:{}),config:{chatSummarizeEnabled:auto},extraServices:services,directorScript:options=>{
    const input=readChatInput(options),last=input.events.findLastIndex(e=>e.author.role==='user');
    if(input.events.slice(last+1).some(e=>e.author.role==='assistant'))return wire('WAIT');
    if(!input.message.includes('对照')){
@@ -43,6 +44,11 @@ for(const mode of ['checked','checked-wait','automatic','bad-quote','partly-inva
    const input=readChatInput(options);
    if(input.task==='chat-support'){
      calls++;assert.equal(input.template,'summarize');assert.equal(options.tools,undefined);
+     if(fallback && calls===1) {
+       assert.equal(options.reasoningEffort,'off');
+       throw Object.assign(Error('unsupported effort'),{code:'UNSUPPORTED_REASONING_EFFORT'});
+     }
+     if(fallback)assert.equal(options.reasoningEffort,undefined);
      assert.equal(input.question,'能对照一下前后两次吗？');
      assert.doesNotMatch(JSON.stringify(input),/PRIVATE_SUMMARY_SENTINEL|UNATTACHED_CANARY/);
      assert.ok(input.references.some(item=>item.passages.some(p=>p.text===currentReport)&&item.seq===7));
@@ -78,13 +84,55 @@ for(const mode of ['checked','checked-wait','automatic','bad-quote','partly-inva
  assert.equal(done.supportTasks[0].template,'summarize');
  assert.equal(done.supportTasks[0].status,['bad-quote','source-updated'].includes(mode)?'failed':mode==='partly-invalid'?'partial':'completed');
  assert.deepEqual(done.supportTasks[0].counts,{calls:1,searches:0,reads:0});
+ if(fallback) {
+   const usage=(await f.request('model-usage')).value;
+   const totals=usage.purposes.find(p=>p.purpose==='chat-support-summarize');
+   assert.equal(totals.calls,2);assert.equal(totals.failedCalls,1);
+   assert.equal(done.supportTasks[0].model.thinking,'provider-default');
+ }
  assert.equal((await f.request('settings')).value.settings.chatSummarizeEnabled,auto);
  assert.doesNotMatch(JSON.stringify(f.directors),/尚未验证客户端|PRIVATE_SUMMARY_SENTINEL/);
  await roomSend(f,room,whale,'今天只闲聊。','summary-casual');await settledRoom(f,room);
- assert.equal(calls,1);assert.equal(actors,2);
+ assert.equal(calls,fallback?2:1);assert.equal(actors,2);
  await f.dispose();
+ if(fallback)assert.equal(f.storage.tables.get('profile').get('modelUsage').chatTiming.find(s=>s.path==='support').calls.support,1);
  const saved=f.storage.tables.get('profile').get('chatSupport');
  assert.doesNotMatch(JSON.stringify(saved),/尚未验证客户端|新配置|前后两次|PRIVATE_SUMMARY_SENTINEL/);
+});
+
+test('the same-round summary follows the selected work sources even when its original requester speaks again',async t=>{
+ const actors=[];
+ const f=fixture(t,{config:{chatSummarizeEnabled:true},extraServices:[
+   ['sessions',{get:id=>({header:{id,title:'项目工作'}})}],
+   ['sessionQuery',{observeSession:async()=>({events:workReferenceEvents()})}]
+ ],directorScript:options=>{
+   const input=readChatInput(options);
+   if(!actors.length){
+     const helper=input.supportChoices.find(c=>c.id===whale && c.template==='summarize');
+     return wire(`${helper.choiceId} s1 ${input.sceneCatalog.options[0].key} | 整理原始报告`);
+   }
+   if(actors.length===3)return wire('WAIT');
+   const [id,to,work]=actors.length===1?[dragon,whale,'s1']:[whale,dragon,'N'];
+   const choice=input.choices.find(c=>c.kind==='normal' && c.id===id && c.to===to);
+   return wire(`${choice.choiceId} ${work}`);
+ },script:options=>{
+   const input=readChatInput(options);
+   if(input.task==='chat-support'){
+     const target=input.references.find(item=>item.seq===3);
+     return wire(JSON.stringify({points:[{ref:target.ref,passage:target.passages[0].id}],unknowns:''}));
+   }
+   actors.push(input);
+   return reply([`${input.speaker.name}公开回应。`]);
+ }});
+ await f.ready();const room=await newRoom(f,[whale,dragon]);
+ assert.equal((await roomSend(f,room,whale,'请帮我看看之前的报告。','review')).status,200);
+ const done=await settledRoom(f,room);
+ assert.equal(done.directorFailure,null);
+ assert.deepEqual(actors.map(a=>a.speaker.id),[whale,dragon,whale]);
+ assert.equal(actors[0].supportReference.kind,'summarize');
+ assert.equal(actors[1].supportReference.notes.length,1);
+ assert.deepEqual(actors[2].workContext.sources,[]);
+ assert.equal(actors[2].supportReference,undefined);
 });
 
 test('research really searches and reads, returns only to its actor, and spends no extra speech quota',async t=>{

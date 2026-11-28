@@ -8,11 +8,14 @@
 
 ---
 
-使用支持 ES Modules 和内置测试运行器的 Node.js，在仓库根目录运行：
+开发检查与 CI 使用 Node.js 24。在仓库根目录运行：
 
 ```bash
-node --test 'test/*.test.mjs'
+npm run check
+npm run pack:check
 ```
+
+`npm run check` 先校验客户端同步，再运行离线测试。只跑测试可用 `npm test`。`npm run pack:check` 使用 npm 的打包预检清单，核对发布入口和开发文件排除规则，并从隔离目录载入 Host 来验证本地静态导入。GitHub Actions 在 Windows 与 Linux 上运行这两项检查。
 
 ## 测试结构
 
@@ -30,21 +33,28 @@ node --test 'test/*.test.mjs'
 
 ## 状态同步开发与联调
 
-`lib/remote-contract.js` 是 Host/Client 共用的严格 Remote 描述符与边界校验；`lib/client-transport.js` 管理订阅生命周期。`lib/floating-layout.js` 提供独立于聊天与报告的本地窗口几何约束。为保持零运行时依赖，当前采用公共描述符/codec 接口，不引入 Typert TypeScript 生成工具链。浏览器副本由以下脚本嵌入现有 `client.js`，测试会检查副本与源实现逐字一致：
+`lib/remote-contract.js` 是 Host/Client 共用的严格 Remote 描述符与边界校验；`lib/client-transport.js` 管理订阅生命周期。`lib/floating-layout.js` 提供独立于聊天与报告的本地窗口几何约束。客户端源码在 `client/`，按同步脚本中的顺序组装并注入共享函数，全部片段共用宿主加载器的 `factory` 作用域。开发时编辑 `client/` 或相应的共享模块，再重新生成随仓库和 npm 包分发的根目录 `client.js`。源码在 Git 中统一使用 LF，检查允许 LF 和 CRLF 的差异。
 
 ```bash
-node scripts/build-client-sync.mjs
-node scripts/build-client-sync.mjs --check
+npm run sync:client
+npm run sync:check
 ```
+
+JavaScript 使用两个空格缩进、单引号和显式分号。独立语句各占一行，过长的参数列表和条件表达式按逻辑换行。客户端共享模块格式调整后也要重新组装 `client.js`。
 
 可选集成脚本位于 `test/integration/`，不属于默认离线测试，也不安装项目运行时依赖：
 
 - `remote-runtime.mjs --deps <测试依赖目录/package.json>`：使用脚本锁定的 `0.2.1-rc.3` Cordis、Typert Registry、Gateway、Connection 和流监督器，验证开关推送、重连、Host 独立重载、注入作用域、卸载及 owner-only 边界；模型为禁止调用的替身。
 - `desktop-runtime.mjs --executable <已安装客户端.exe> --browser-deps <playwright/package.json>`：使用临时 `DSH_HOME` 和临时 Electron 用户目录运行官方 Desktop，检查推送、开关、空闲请求、页面重载和连接恢复；不读取现有密钥或会话，不调用真实模型。
-- `process-runtime.mjs --deps <SDK 测试依赖目录/package.json>`：用已发布的 `0.2.1-rc.3` 和 `0.2.2-rc.1` LLM SDK 分别核对增量/完整工具块、原生 assistant/tool 消息和提供方重放信息；不调用真实模型。
+- `process-runtime.mjs --deps <SDK 测试依赖目录/package.json>` 使用已发布的 `0.2.1-rc.3` 或 `0.2.2-rc.1` LLM SDK，核对单次请求中的统计快照、增量文本和完整内容块。加 `--baseline 525316b` 可在同机比较旧版与当前版的调用数和首字耗时，两版使用相同的受控模型延迟。
 - `official-renderer.mjs`、`review-browser.mjs`、`comparison-browser.mjs`、`progress-runtime.mjs`：官方渲染、布局和播报生命周期的独立回归；具体依赖参数见各脚本开头。
 - `memory-browser.mjs --deps <React/esbuild 依赖目录/package.json> --browser-deps <Playwright 依赖目录/package.json>`：运行真实 React 和实际记忆状态模块，检查原话核对、更正、撤销、采用、失败重试、角色隔离与键盘、深浅色及手机布局；不调用外部模型，可通过 `--executable` 指定浏览器。
 - `settings-browser.mjs`：沿用上述依赖参数检查完整设置页的默认折叠、草稿保留、生成预设重试、键盘展开、模型选择及深浅色/窄屏布局；使用本地模拟 Host，不调用模型。
+- `node test/integration/chat-latency-runtime.mjs` 使用 300 ms 判断和 500 ms 角色首字延迟核对真实 Host 调度顺序。真实模型对照使用 `node test/integration/chat-latency-runtime.mjs --live --rounds 10 --deps <SDK 依赖目录/package.json>`。该目录须能加载 `@deepseek-ai/cordis`、`@deepseek-ai/dsh-llm` 和 `@deepseek-ai/dsh-llm-deepseek`。脚本从环境读取 `DEEPSEEK_API_KEY`，可用 `DSH_TEST_MODEL` 选择模型，每条路径只输出数值摘要。
+- `node test/integration/chat-conversation-runtime.mjs` 用独立测试房间复跑双人闲聊和三人定向提问，列出发言人、判断与辅助调用次数、精简后续拍和署名泄漏数。加 `--live --deps <SDK 依赖目录/package.json>` 使用已配置的官方 DeepSeek 模型服务，依赖目录需包含 Cordis、LLM 和对应的凭据及模型插件。加 `--transcript` 可逐句核对本次合成对话和判断失败时的返回。
+- `node test/integration/report-eval-runtime.mjs` 评测 18 组固定汇报。`--live --deps <SDK 依赖目录/package.json>` 可改用真实模型生成候选，并汇总首字分位数、回落原因、软提示率与实际返回的 token 用量。
+- `node test/integration/process-runtime.mjs --deps <SDK 依赖目录/package.json> --baseline 525316b` 使用 100 ms 受控模型等待比较新旧过程转述，验证计数快照、单轮调用与 SDK 流式块协议。
+- 「筛选工作参考」涵盖本轮交给 Director 判断已接入来源的情况，包括最终无需读取来源的判断。`directorDone` 记录首次判断返回，`contextDone` 记录首次筛选结束，选中来源时包含刷新和读取耗时。选择未完成的轮次保留空值。一次联合判断只计入 `calls.director`，当前没有独立筛选请求，`calls.context` 为零。显式拒绝工作参考的轮次跳过筛选。有辅助任务时按辅助路径统计。轮数包含失败与取消，延迟和平均调用只取成功轮次。
 - `expression-runtime.mjs --deps <SDK 依赖目录/package.json>`：使用正式发布的 LLM SDK 与本地适配器，检查汇报默认关闭、聊天室的模型默认与自定义思考档、未知能力、准备后配置一致性和单次参数降级；不请求真实模型。
 - `conversations-browser.mjs`：同样使用本地模拟 Host 和真实 React，检查会话选择冲突、接力取消、逐条反馈、关闭保留草稿、迟到响应、键盘焦点及深浅色/窄屏布局。
 - `report-visualization-browser.mjs`：沿用 React/esbuild 与 Playwright 参数，检查完整原文、导览定位与临时侧标清理、重点阅读的展开与还原、顺畅阅读的主动生成与逐段原文核对、风险和相关上下文保留、原有代码样式、取消、独立缓存、双入口排列与深浅色/窄屏布局；模型使用受控替身。
@@ -68,10 +78,20 @@ node scripts/build-client-sync.mjs --check
 ## 源码导览
 
 ```text
-index.js              Host：事件判定、改写调用、校验、路由与持久化
-client.js             Client：官方助手渲染委托、原文与变化提示、设置页
+index.js              Host 入口：依赖组装、服务生命周期与统一 HTTP 鉴权
+client/               客户端源码：状态同步、浮窗、聊天室、报告和设置
+client.js             组装后的单文件客户端，供 DSH 加载
 lib/
+  host-chat.js        聊天输入排空、角色生成与房间判断循环
+  host-rewrite.js     转述请求、运行校验与改写队列
+  host-session-events.js 按源会话顺序处理工作事件
+  host-report-rows.js 转述记录恢复、剪枝、增量通知与保存
+  host-memory-presets.js 设置、预设、记忆与用量的持久化协调
+  host-storage.js     打开存储、恢复状态与合并启动期间的变更
+  host-*-routes.js    聊天、报告、设置、记忆与状态的授权后处理
   mask.js             字面量打码与回填
+  markdown-fence.js   打码、报告分段与聊天工作摘录共用的代码围栏边界
+  http-body.js        路由按字节限长并完整解码 UTF-8 请求体
   prompt.js           提示词构造与改写校验
   review.js           本地措辞变化评估与版本化元数据
   progress.js         静默状态播报的调度、事实摘要与校验
@@ -104,7 +124,7 @@ lib/
   avatar.js           本地头像格式与版本地址，和模型语气卡分开
   chat-profile.js     用户头像与可选称呼的独立版本记录、并发校验与串行持久化
   config.js           默认配置与 Standard Schema
-  store.js            结果、预设与风格记忆的存储
+  store.js            结果、预设、记忆与聊天室的存储接口
   remote-contract.js  Host/Client 共享的严格 Remote 边界
   state-stream.js     Host 快照、增量与合并通知
   client-transport.js 官方流监督、订阅引用计数、兼容回退与续租
@@ -113,9 +133,10 @@ lib/
   report-reading.js   原文导览与保守折叠计划，Host/Client 共用
   report-theme.js     阅读页主题色与对比度适配，浏览器副本由脚本生成
   report-views.js     最终报告的独立快照与有界阅读缓存
+  host-report-views.js 阅读生成、取消、请求去重与保存阶段协调
   report-readable.js  按原段落润色的独立阅读稿与可疑段落原文保留
   report-fidelity.js  数值、显式工作者称呼与少量许可语气的本地守卫
-scripts/              共享状态与阅读规则的浏览器嵌入和一致性检查
+scripts/              客户端组装、同步检查和 npm 包预检
 locale/               中文与英文插件文案
 assets/avatars/       随插件提供的内置人格头像及来源说明
 test/                 离线与可选集成测试
@@ -123,7 +144,31 @@ test/                 离线与可选集成测试
 
 ## 聊天室辅助能力验证
 
-`chat-support`、`chat-support-wire`、`chat-support-web` 和 `chat-support-host` 离线测试分别覆盖收据、有限协议、公开网络边界及真实 Host 调度入口；`test/integration/chat-support-browser.mjs` 检查等待进度、窄窗口、停止、来源与迟到结果，`chat-support-sdk.mjs` 核对已发布 SDK 的实际分派路线和物理请求预算。浏览器与适配器使用受控模型响应，不能据此判断模型正文质量。真实模型样本需固定输入与预算、保留格式失败和推演错误，分别记录路线、思考、延迟和 token；不能把任务到达等同于履行正确。
+`chat-support`、`chat-support-wire`、`chat-support-web` 和 `chat-support-host` 离线测试分别覆盖收据、有限协议、公开网络边界及真实 Host 调度入口；`test/integration/chat-support-browser.mjs` 检查等待进度、窄窗口、停止、来源与迟到结果，`chat-support-sdk.mjs` 核对已发布 SDK 的分派路线、模型步骤预算和实际请求次数。浏览器与适配器使用受控模型响应，不能据此判断模型正文质量。真实模型样本需固定输入与预算、保留格式失败和推演错误，分别记录路线、思考、延迟和 token；不能把任务到达等同于履行正确。
+
+## 聊天室存储
+
+`personaChats` 仍以一个聚合记录保存在 `persona_shell` 存储域。DSH Desktop 的默认 JSON 布局会在每次提交时原子替换整个域文件。评估磁盘写放大时，应观察宿主实际替换的文件和字节数。
+
+## 本地插件联动
+
+在 Windows、Node 24.14 上，对 240 行连续生成 150 次增量，每行含重复 220 次的「报告正文 」，仅更新最后一行，计时排除首个快照。七次取中位数，v0.5.4 为 54.3 ms，`4a33004` 为 16.2 ms，行版本缓存为 3.6 ms。此前前两版测得约 101 ms、36 ms，绝对耗时随机器和输入变化。这些数字只覆盖状态流编码与增量比较。
+
+其他 Host 插件可注入 `personaShell` 服务。`apiVersion === 1` 时，`getActivePersona(sessionId)` 返回 `{ id, name, mode, avatar, enabled }`。`enabled` 合并全局开关和该会话的开关。服务正在恢复或已卸载时返回 `null`。头像字段是插件资源地址或 `null`。
+
+`subscribe(listener)` 只推送订阅后发生的变化，并返回退订函数。消费方先查询初始状态，再订阅。`persona:switched` 携带 `sessionId`、`personaId` 和 `enabled`，涵盖会话选择、接力消费和开关切换。全局变化只发送一条 `sessionId: null` 的事件。
+
+自动转述用 `sessionId` 和 `seq` 配对。每条 `rewrite:started` 后恰有一条 `rewrite:ready` 或 `rewrite:fallback`。模型不可用时也会收到 `started` 和 `fallback`，后者的 `category` 是 `failed`、`rejected` 或 `skipped`。全局或会话关闭、范围未包含该报告、纯代码跳过时均无事件。手动重说和历史恢复不会重播。宿主中途卸载可能只发出 `started`，消费插件应在自身卸载时清理进行中的状态和订阅。
+
+```js
+ctx.inject(['personaShell'], owner => {
+  const shell = owner.get('personaShell');
+  if (shell.apiVersion !== 1) return;
+  owner.effect(() => shell.subscribe(event => {
+    if (event.type === 'rewrite:ready') showPersona(event.personaId);
+  }));
+});
+```
 
 ## 文档与分发
 

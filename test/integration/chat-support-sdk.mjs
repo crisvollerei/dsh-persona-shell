@@ -25,7 +25,7 @@ try{
  },search:async()=>({sources:[{url:'https://example.com/page'}]}),readPage:async url=>({url,text:'真实读取的受控网页正文'})})});
  const scope={roomId:'room',generation:0,scopeKey:null,referenceRevision:0,messageId:'one',actorId:'fish',template:'research',goal:'核对公开资料',question:'当前条件？'};
  actions=[{action:'search',query:'official'},{action:'read',sourceId:'w1'},{action:'finish',answer:'条件在这里。',sources:['w1']}];
- const research=await manager.start(scope);assert.equal(research.status,'completed');assert.equal(research.counts.calls,4);assert.equal(physical.length,4);assert.ok(physical.every(p=>p.model==='flash'));
+ const research=await manager.start(scope);assert.equal(research.status,'completed');assert.equal(research.counts.calls,3);assert.equal(physical.length,4);assert.ok(physical.every(p=>p.model==='flash'));
  retry=true;const reason=await manager.start({...scope,messageId:'two',template:'reason'});assert.equal(reason.error,'thinking-unavailable');assert.equal(reason.counts.calls,1);assert.equal(physical.length,5);assert.equal(physical.at(-1).model,'strong');assert.equal(physical.at(-1).reasoningEffort,'high');
- await manager.dispose();console.log(JSON.stringify({result:'passed',sdk:require('@deepseek-ai/dsh-llm/package.json').version,checks:['native prepared route','research compatibility retry costs physical budget','no native tools','separate reasoning route and thinking','reason retry stopped before second physical dispatch'],physicalProviderRequests:0,controlledPhysicalRequests:physical.length}));
+ await manager.dispose();console.log(JSON.stringify({result:'passed',sdk:require('@deepseek-ai/dsh-llm/package.json').version,checks:['native prepared route','three research steps with four physical attempts','no native tools','separate reasoning route and thinking','reason retry stopped before second physical dispatch'],physicalProviderRequests:0,controlledPhysicalRequests:physical.length}));
 }finally{await ctx.fiber.dispose();}

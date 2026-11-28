@@ -57,10 +57,10 @@ window.fetch=async(url,options)=>{
 };
 plugin.__testing.applyControls({instanceId:'test',controlRev:1,settings:{enabled:true},sessionSwitches:{rev:1,values:{}}},1);
 window.refreshConversation=()=>plugin.__testing.refreshState('s');
-const originalBlocks=[{kind:'text',text:'原始工作汇报，保留必要条件和风险。'}];
+const originalBlocks=[{kind:'text',text:'  '},{kind:'text',text:'原始工作汇报，保留必要条件和风险。'}];
 const reportNode={key:'assistant:10',location:{kind:'step',turn:{status:'closed'}},data:{status:'settled',blocks:originalBlocks,finalNode:{seq:10,blocks:originalBlocks},step:1}};
 function OfficialReport({node}){React.useEffect(()=>{window.officialReportMounts=(window.officialReportMounts??0)+1;return()=>{window.officialReportUnmounts=(window.officialReportUnmounts??0)+1}},[]);
- return h('p',{'data-preview-report':''},node.data.blocks.find(block=>block.kind==='text').text)}
+ return h('p',{'data-preview-report':''},node.data.blocks.filter(block=>block.kind==='text'&&block.text.trim()).map(block=>block.text).join(''))}
 const officialDelegate={entry:{component:OfficialReport}};
 function App(){const[,update]=React.useState(0);window.repaint=()=>{update(n=>n+1);void plugin.__testing.refreshState('s')};
  return h(React.Fragment,null,h('header',null,h(plugin.__testing.SessionPersonaSwitch,{sessionId:'s'})),
@@ -148,6 +148,9 @@ try {
   await visible('已取消等待中的接力。');
   await page.keyboard.press('Escape'); assert.equal(await page.locator('dialog').count(), 0);
   assert.match(await page.evaluate(() => document.activeElement.textContent), /设置/);
+  await page.locator('[data-persona-shell="controls"] button').first().click();
+  assert.equal(await page.locator('[data-comparison-side="original"]').innerText(),'原始工作汇报，保留必要条件和风险。');
+  await page.keyboard.press('Escape');
   await page.getByRole('button', { name: '调整表达', exact: true }).click();
   const beforeQuick=await page.evaluate(()=>window.conversationMock.posts.length);
   const thinkingToggle=page.getByRole('checkbox',{name:'本次调整开启思考',exact:true});assert.equal(await thinkingToggle.isChecked(),true);
@@ -166,6 +169,8 @@ try {
   await page.evaluate(()=>{window.conversationMock.failNext='feedback-thinking-unavailable';});await page.getByRole('button',{name:'重新转述',exact:true}).click();
   await visible('当前模型无法启用思考，原汇报与输入已保留；可更换模型，或关闭本次思考后重试。');assert.equal(await thinkingToggle.isChecked(),true);assert.equal(await page.getByLabel('表达反馈').inputValue(),'少一点调侃，先给结论。');
   await thinkingToggle.click();assert.equal(await thinkingToggle.isChecked(),false);
+  await page.getByRole('button',{name:'清空输入'}).click();assert.equal(await thinkingToggle.isChecked(),false);
+  await page.getByLabel('表达反馈').fill('少一点调侃，先给结论。');
   assert.equal(await page.locator('[data-preview-report]').textContent(), '原来已经可读的汇报。');
   assert.equal(await page.getByLabel('反馈作用范围').count(), 0);
   assert.equal(await page.getByText('本次参考的偏好（1）', { exact: true }).count(), 0);

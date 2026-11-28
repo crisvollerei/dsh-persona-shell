@@ -450,52 +450,98 @@ window.__ModuleLoader__.load({
      */
     // BEGIN GENERATED CHAT PALETTE
     function createChatPalette() {
-  const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
-  const wrap=value=>(value%360+360)%360;
-  const distance=(a,b)=>Math.min(Math.abs(a-b),360-Math.abs(a-b));
-  const hash=value=>{let result=2166136261;for(let i=0;i<value.length;i++)result=Math.imul(result^value.charCodeAt(i),16777619);return result>>>0;};
-  const builtins={ '大肥鱼（默认）':{h:222,s:58,offset:-4},'鲸鲸（实验性）':{h:205,s:52,offset:-18},
-    '大肥龙':{h:255,s:44,offset:-14},'Claude小姐':{h:25,s:62,offset:0},Gemini:{h:280,s:56,offset:24} };
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const wrap = (value) => ((value % 360) + 360) % 360;
+  const distance = (a, b) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b));
+  const hash = (value) => {
+    let result = 2166136261;
+    for (let i = 0; i < value.length; i++) result = Math.imul(result ^ value.charCodeAt(i), 16777619);
+    return result >>> 0;
+  };
+  const builtins = {
+    '大肥鱼（默认）': { h: 222, s: 58, offset: -4 },
+    '鲸鲸（实验性）': { h: 205, s: 52, offset: -18 },
+    '大肥龙': { h: 255, s: 44, offset: -14 },
+    'Claude小姐': { h: 25, s: 62, offset: 0 },
+    Gemini: { h: 280, s: 56, offset: 24 }
+  };
   function dominant(pixels) {
-    if(!pixels||pixels.length<4||pixels.length%4||pixels.length>128*128*4)return null;
-    const bins=Array.from({length:24},()=>({weight:0,x:0,y:0,s:0}));
-    for(let at=0;at<pixels.length;at+=4){
-      const r=pixels[at]/255,g=pixels[at+1]/255,b=pixels[at+2]/255,a=pixels[at+3]/255;
-      if(![r,g,b,a].every(Number.isFinite)||a<.5)continue;
-      const max=Math.max(r,g,b),min=Math.min(r,g,b),delta=max-min,l=(max+min)/2;
-      if(delta<.055||l<.1||l>.93)continue;
-      const s=delta/(1-Math.abs(2*l-1));if(s<.12)continue;
-      let h=max===r?((g-b)/delta)%6:max===g?(b-r)/delta+2:(r-g)/delta+4;h=wrap(h*60);
-      const skin=h<52&&l>.62&&r>g&&g>b&&g-b<.2,weight=a*(.2+s*s)*(skin?0.25:1);
-      const bin=bins[Math.round(h/15)%24];bin.weight+=weight;bin.x+=Math.cos(h*Math.PI/180)*weight;
-      bin.y+=Math.sin(h*Math.PI/180)*weight;bin.s+=s*weight;
+    if (!pixels || pixels.length < 4 || pixels.length % 4 || pixels.length > 128 * 128 * 4) return null;
+    const bins = Array.from({ length: 24 }, () => ({ weight: 0, x: 0, y: 0, s: 0 }));
+    for (let at = 0; at < pixels.length; at += 4) {
+      const r = pixels[at] / 255,
+        g = pixels[at + 1] / 255,
+        b = pixels[at + 2] / 255,
+        a = pixels[at + 3] / 255;
+      if (![r, g, b, a].every(Number.isFinite) || a < 0.5) continue;
+      const max = Math.max(r, g, b),
+        min = Math.min(r, g, b),
+        delta = max - min,
+        l = (max + min) / 2;
+      if (delta < 0.055 || l < 0.1 || l > 0.93) continue;
+      const s = delta / (1 - Math.abs(2 * l - 1));
+      if (s < 0.12) continue;
+      let h = max === r ? ((g - b) / delta) % 6 : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4;
+      h = wrap(h * 60);
+      const skin = h < 52 && l > 0.62 && r > g && g > b && g - b < 0.2,
+        weight = a * (0.2 + s * s) * (skin ? 0.25 : 1);
+      const bin = bins[Math.round(h / 15) % 24];
+      bin.weight += weight;
+      bin.x += Math.cos((h * Math.PI) / 180) * weight;
+      bin.y += Math.sin((h * Math.PI) / 180) * weight;
+      bin.s += s * weight;
     }
-    const best=bins.reduce((a,b)=>a.weight>=b.weight?a:b);if(best.weight<1)return null;
-    return{h:Math.round(wrap(Math.atan2(best.y,best.x)*180/Math.PI)),s:Math.round(clamp(best.s/best.weight*100,30,68))};
+    const best = bins.reduce((a, b) => (a.weight >= b.weight ? a : b));
+    if (best.weight < 1) return null;
+    return {
+      h: Math.round(wrap((Math.atan2(best.y, best.x) * 180) / Math.PI)),
+      s: Math.round(clamp((best.s / best.weight) * 100, 30, 68))
+    };
   }
   function allocate(people) {
-    const tones=new Map(),used=[];
-    const members=(Array.isArray(people)?people:[]).filter((person,index,all)=>typeof person?.id==='string'&&person.id.length<=200
-      &&all.findIndex(other=>other?.id===person.id)===index).slice(0,64).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
-    for(const person of members){
-      const seed=hash(person.id),builtin=Object.hasOwn(builtins,person.id)?builtins[person.id]:null;
-      const sampled=person.color&&Number.isFinite(person.color.h)&&Number.isFinite(person.color.s)?person.color:null;
-      const base=sampled??builtin??{h:210+seed%65,s:38},offset=sampled?(builtin?.offset??seed%17-8):0;
-      const desired=wrap(base.h+offset),s=Math.round(clamp(base.s,44,66)),gap=members.length<=6?14:10;
-      let h=desired;
-      for(const step of [0,-1,1,-2,2,-3,3,-4,4,-5,5]){
-        const candidate=wrap(desired+step*gap);if(used.every(other=>distance(candidate,other)>=gap)){h=candidate;break;}
+    const tones = new Map(),
+      used = [];
+    const members = (Array.isArray(people) ? people : [])
+      .filter(
+        (person, index, all) =>
+          typeof person?.id === 'string' &&
+          person.id.length <= 200 &&
+          all.findIndex((other) => other?.id === person.id) === index
+      )
+      .slice(0, 64)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const person of members) {
+      const seed = hash(person.id),
+        builtin = Object.hasOwn(builtins, person.id) ? builtins[person.id] : null;
+      const sampled =
+        person.color && Number.isFinite(person.color.h) && Number.isFinite(person.color.s)
+          ? person.color
+          : null;
+      const base = sampled ?? builtin ?? { h: 210 + (seed % 65), s: 38 },
+        offset = sampled ? builtin?.offset ?? (seed % 17) - 8 : 0;
+      const desired = wrap(base.h + offset),
+        s = Math.round(clamp(base.s, 44, 66)),
+        gap = members.length <= 6 ? 14 : 10;
+      let h = desired;
+      for (const step of [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5]) {
+        const candidate = wrap(desired + step * gap);
+        if (used.every((other) => distance(candidate, other) >= gap)) {
+          h = candidate;
+          break;
+        }
       }
-      used.push(h);tones.set(person.id,{h:Math.round(h),s});
+      used.push(h);
+      tones.set(person.id, { h: Math.round(h), s });
     }
     return tones;
   }
-  const style=tone=>tone?{'--chat-persona-color':`hsl(${wrap(tone.h)} ${clamp(tone.s,44,66)}% 48%)`}:undefined;
-  return{dominant,allocate,style};
+  const style = (tone) =>
+    tone ? { '--chat-persona-color': `hsl(${wrap(tone.h)} ${clamp(tone.s, 44, 66)}% 48%)` } : undefined;
+  return { dominant, allocate, style };
 }
     // END GENERATED CHAT PALETTE
 
-const CLIENT_BUILD = 2026112301;
+const CLIENT_BUILD = 2026112802;
 
     // --- host data -----------------------------------------------------------
 
@@ -1068,33 +1114,57 @@ const CLIENT_BUILD = 2026112301;
     }
     // BEGIN GENERATED FLOATING LAYOUT
     function createFloatingLayout() {
-  const number=(value,fallback)=>Number.isFinite(value)?value:fallback;
-  const clamp=(value,min,max)=>Math.max(min,Math.min(value,max));
-  const area=value=>({left:number(value?.left,8),top:number(value?.top,52),
-    width:Math.max(1,number(value?.width,800)),height:Math.max(1,number(value?.height,600))});
-  const limits=(bounds,options)=>({width:Math.min(bounds.width,Math.max(1,number(options?.minWidth,280))),
-    height:Math.min(bounds.height,Math.max(1,number(options?.minHeight,240)))});
-  function fit(rect,view,options){
-    const b=area(view),min=limits(b,options);
-    const width=clamp(number(rect?.width,min.width),min.width,b.width),height=clamp(number(rect?.height,min.height),min.height,b.height);
-    return {left:clamp(number(rect?.left,b.left),b.left,b.left+b.width-width),
-      top:clamp(number(rect?.top,b.top),b.top,b.top+b.height-height),width,height};
+  const number = (value, fallback) => (Number.isFinite(value) ? value : fallback);
+  const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
+  const area = (value) => ({
+    left: number(value?.left, 8),
+    top: number(value?.top, 52),
+    width: Math.max(1, number(value?.width, 800)),
+    height: Math.max(1, number(value?.height, 600))
+  });
+  const limits = (bounds, options) => ({
+    width: Math.min(bounds.width, Math.max(1, number(options?.minWidth, 280))),
+    height: Math.min(bounds.height, Math.max(1, number(options?.minHeight, 240)))
+  });
+  function fit(rect, view, options) {
+    const b = area(view),
+      min = limits(b, options);
+    const width = clamp(number(rect?.width, min.width), min.width, b.width),
+      height = clamp(number(rect?.height, min.height), min.height, b.height);
+    return {
+      left: clamp(number(rect?.left, b.left), b.left, b.left + b.width - width),
+      top: clamp(number(rect?.top, b.top), b.top, b.top + b.height - height),
+      width,
+      height
+    };
   }
-  function move(rect,dx,dy,view,options){
-    const start=fit(rect,view,options);
-    return fit({...start,left:start.left+number(dx,0),top:start.top+number(dy,0)},view,options);
+  function move(rect, dx, dy, view, options) {
+    const start = fit(rect, view, options);
+    return fit({ ...start, left: start.left + number(dx, 0), top: start.top + number(dy, 0) }, view, options);
   }
-  function resize(rect,direction,dx,dy,view,options){
-    const b=area(view),min=limits(b,options),start=fit(rect,b,options),next={...start};
-    if(!['n','ne','e','se','s','sw','w','nw'].includes(direction))return next;
-    dx=number(dx,0);dy=number(dy,0);
-    if(direction.includes('e'))next.width=clamp(start.width+dx,min.width,b.left+b.width-start.left);
-    if(direction.includes('s'))next.height=clamp(start.height+dy,min.height,b.top+b.height-start.top);
-    if(direction.includes('w')){next.width=clamp(start.width-dx,min.width,start.left+start.width-b.left);next.left=start.left+start.width-next.width;}
-    if(direction.includes('n')){next.height=clamp(start.height-dy,min.height,start.top+start.height-b.top);next.top=start.top+start.height-next.height;}
-    return fit(next,b,options);
+  function resize(rect, direction, dx, dy, view, options) {
+    const b = area(view),
+      min = limits(b, options),
+      start = fit(rect, b, options),
+      next = { ...start };
+    if (!['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'].includes(direction)) return next;
+    dx = number(dx, 0);
+    dy = number(dy, 0);
+    if (direction.includes('e'))
+      next.width = clamp(start.width + dx, min.width, b.left + b.width - start.left);
+    if (direction.includes('s'))
+      next.height = clamp(start.height + dy, min.height, b.top + b.height - start.top);
+    if (direction.includes('w')) {
+      next.width = clamp(start.width - dx, min.width, start.left + start.width - b.left);
+      next.left = start.left + start.width - next.width;
+    }
+    if (direction.includes('n')) {
+      next.height = clamp(start.height - dy, min.height, start.top + start.height - b.top);
+      next.top = start.top + start.height - next.height;
+    }
+    return fit(next, b, options);
   }
-  return {fit,move,resize};
+  return { fit, move, resize };
 }
     // END GENERATED FLOATING LAYOUT
     const floatingLayout=createFloatingLayout(),floatingRects=new Map();
@@ -1533,6 +1603,7 @@ const CLIENT_BUILD = 2026112301;
       .dsh-persona-chat{transition:width 210ms cubic-bezier(.2,.8,.2,1),height 210ms cubic-bezier(.2,.8,.2,1)}
       .dsh-persona-chat .dsh-persona-chat-compose textarea{transition:height 190ms ease,border-color 120ms ease,box-shadow 120ms ease}
       .dsh-persona-chat :is(button,select):not(:where(.dsh-persona-chat-body *)),.dsh-persona-chat-dock button{transition:background-color 120ms ease,border-color 120ms ease,color 120ms ease,box-shadow 120ms ease,opacity 120ms ease}
+      .dsh-persona-chat-info[role=dialog]{max-height:min(52vh,55%);box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain}
       .dsh-persona-chat :is(.dsh-persona-work-draft,.dsh-persona-chat-room-panel,.dsh-persona-chat-appearance,.dsh-persona-chat-sources),.dsh-persona-chat-info[role=group]{animation:dsh-chat-panel-in 160ms ease-out}
       .dsh-persona-chat-message[data-arriving=true],.dsh-persona-chat-typing{animation:dsh-chat-message-in 170ms ease-out}
       @media(prefers-reduced-motion:reduce){
@@ -1541,10 +1612,40 @@ const CLIENT_BUILD = 2026112301;
         html[data-dsh-chat-motion]::view-transition-group(*),html[data-dsh-chat-motion]::view-transition-old(*),html[data-dsh-chat-motion]::view-transition-new(*){animation:none!important}
       }
     `;
+    const CHAT_THEMES = [
+      { id:'blue', name:'海蓝', color:'#3566c9' },
+      { id:'jade', name:'青竹', color:'#237463' },
+      { id:'violet', name:'藤紫', color:'#79559d' },
+      { id:'rose', name:'玫瑰', color:'#a54765' },
+    ];
+    const CHAT_THEME_KEY = 'dsh-persona-shell:chat-theme:v1';
+    const chatThemeFor = id => CHAT_THEMES.find(theme => theme.id === id) ?? CHAT_THEMES[0];
+    function readChatTheme() {
+      try { return chatThemeFor(localStorage.getItem(CHAT_THEME_KEY)); }
+      catch { return CHAT_THEMES[0]; }
+    }
+    function useChatTheme() {
+      const [theme,setTheme] = React.useState(readChatTheme);
+      const [notice,setNotice] = React.useState('');
+      React.useEffect(() => {
+        const sync = event => {
+          if (event.key !== CHAT_THEME_KEY && event.key !== null) return;
+          setTheme(readChatTheme()); setNotice('');
+        };
+        window.addEventListener('storage',sync);
+        return () => window.removeEventListener('storage',sync);
+      },[]);
+      const choose = value => {
+        setTheme(value);
+        try { localStorage.setItem(CHAT_THEME_KEY,value.id); setNotice(''); }
+        catch { setNotice('主题已切换，本机暂时无法保存。'); }
+      };
+      return { theme, choose, notice };
+    }
     const CHAT_CSS = `
       .dsh-persona-chat-message[data-chat-persona]>.dsh-persona-chat-bubble{background:color-mix(in srgb,var(--chat-persona-color,var(--chat-brand)) 12%,var(--chat-bg));border-color:color-mix(in srgb,var(--chat-persona-color,var(--chat-brand)) 25%,var(--chat-border))}
       .dsh-persona-chat-message[data-chat-persona] .dsh-persona-chat-speaker{color:color-mix(in srgb,var(--chat-text) 65%,var(--chat-persona-color,var(--chat-brand)))}
-      .dsh-persona-chat{--chat-bg:var(--dsw-alias-bg-layer-1,#fff);--chat-soft:var(--dsw-alias-bg-layer-2,#f3f5f8);--chat-border:var(--dsw-alias-border-l1,#d6dfe9);--chat-text:var(--dsw-alias-label-primary,#203044);--chat-muted:var(--dsw-alias-label-secondary,#65758a);--chat-brand:var(--dsw-alias-brand-primary,#3976c3);position:fixed;right:20px;bottom:20px;width:min(430px,calc(100vw - 32px));height:min(650px,calc(100dvh - 40px));z-index:1100;display:flex;flex-direction:column;min-width:0;border:1px solid var(--chat-border);border-radius:16px;background:var(--chat-bg);color:var(--chat-text);box-shadow:0 18px 70px #0003;font:14px/1.65 system-ui,sans-serif;overflow:hidden}
+      .dsh-persona-chat{--chat-bg:var(--dsw-alias-bg-layer-1,#fff);--chat-soft:var(--dsw-alias-bg-layer-2,#f3f5f8);--chat-border:var(--dsw-alias-border-l1,#d6dfe9);--chat-text:var(--dsw-alias-label-primary,#203044);--chat-muted:var(--dsw-alias-label-secondary,#65758a);--chat-brand:${CHAT_THEMES[0].color};position:fixed;right:20px;bottom:20px;width:min(430px,calc(100vw - 32px));height:min(650px,calc(100dvh - 40px));z-index:1100;display:flex;flex-direction:column;min-width:0;border:1px solid var(--chat-border);border-radius:16px;background:var(--chat-bg);color:var(--chat-text);box-shadow:0 18px 70px #0003;font:14px/1.65 system-ui,sans-serif;overflow:hidden}
       .dsh-persona-chat[data-wide=true]{width:min(740px,calc(100vw - 32px));height:min(780px,calc(100dvh - 40px))}
       .dsh-persona-chat-sources{max-height:36%;overflow:auto;flex:none}.dsh-persona-chat-sources p{font-size:11px;margin:8px 0}.dsh-persona-chat-sources button{font-size:11px;min-height:26px;padding:2px 7px}.dsh-persona-source-item{display:flex;align-items:center;gap:8px;margin:7px 0}.dsh-persona-source-item>span{flex:1;min-width:0;overflow-wrap:anywhere}.dsh-persona-chat-source-actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.dsh-persona-chat-source-actions select{min-width:0;max-width:100%;font-size:12px;border:1px solid var(--chat-border);border-radius:6px;background:var(--chat-bg);padding:5px}.dsh-persona-context-notices{flex:none;max-height:20%;overflow:auto;padding:8px 14px;border-bottom:1px solid var(--chat-border);font-size:12px}.dsh-persona-context-notices summary{cursor:pointer}
       /* The room owns its controls; MarkdownText owns the controls inside a reply. */
@@ -1555,21 +1656,23 @@ const CLIENT_BUILD = 2026112301;
       .dsh-persona-chat :is(button,select,textarea):not(:where(.dsh-persona-chat-body *)):focus-visible{outline:2px solid var(--chat-brand);outline-offset:2px}
       .dsh-persona-chat-top{flex:none;min-height:64px;height:auto;margin:0;transform:none;overflow:visible;display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--chat-border);background:var(--chat-bg)}.dsh-persona-chat-title{min-width:0;flex:1}.dsh-persona-chat-title strong{display:block;font-size:14px}.dsh-persona-chat-title small{display:block;color:var(--chat-muted);font-size:11px}.dsh-persona-chat-top button{padding:3px 8px;font-size:12px}
       .dsh-persona-chat select:not(:where(.dsh-persona-chat-body *)){max-width:100%;min-width:0;border:0;border-radius:5px;background:var(--chat-soft);padding:3px 5px;font-size:13px}
-      .dsh-persona-chat-avatar{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:var(--chat-soft);border:1px solid var(--chat-border);font-size:13px;font-weight:600}.dsh-persona-chat-top>.dsh-persona-chat-avatar{color:var(--chat-brand);width:36px;height:36px}
+      .dsh-persona-chat{--chat-brand-ink:color-mix(in srgb,var(--chat-brand) 55%,var(--chat-text))}
+      .dsh-persona-chat-avatar{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:var(--chat-soft);border:1px solid var(--chat-border);font-size:13px;font-weight:600}.dsh-persona-chat-top>.dsh-persona-chat-avatar{color:var(--chat-brand-ink);width:36px;height:36px}
       .dsh-persona-chat-avatar-spacer{display:block;flex:none;width:32px;height:32px}.dsh-persona-chat-message[data-chat-continuation=true]{margin-top:-6px}
       .dsh-persona-chat-input-state{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:7px;margin:-5px 0 13px;font-size:10px;line-height:1.6;color:var(--chat-muted)}.dsh-persona-chat-input-state button{font-size:10px!important;min-height:24px!important;padding:1px 7px!important}
       .dsh-persona-chat-thread{position:relative;min-height:0;flex:1;overflow:auto;overscroll-behavior:contain;padding:16px 14px;background:var(--chat-soft);scroll-padding:14px}.dsh-persona-chat-time{text-align:center;font-size:10px;color:var(--chat-muted);margin:0 0 14px}.dsh-persona-chat-message{display:flex;align-items:flex-start;gap:8px;margin:0 0 12px}.dsh-persona-chat-message[data-user=true]{flex-direction:row-reverse}.dsh-persona-chat-bubble{max-width:calc(100% - 48px);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--chat-bg);border:1px solid var(--chat-border);border-radius:3px 12px 12px;padding:9px 12px}.dsh-persona-chat-message[data-user=true]>.dsh-persona-chat-bubble{background:var(--chat-brand);color:#fff;border-color:transparent;border-radius:12px 3px 12px 12px}.dsh-persona-chat-turn-state{font-size:11px;color:var(--chat-muted);text-align:right;margin:-5px 0 14px}.dsh-persona-chat-turn-state button{font-size:11px;padding:2px 8px;min-height:26px;margin-left:8px}
       .dsh-persona-chat-empty{height:100%;min-height:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--chat-muted);gap:8px;padding:18px}.dsh-persona-chat-empty strong{font-size:15px;color:var(--chat-text)}.dsh-persona-chat-empty p{margin:0;font-size:12px;max-width:270px}.dsh-persona-chat-compose{flex:none;padding:12px 14px;background:var(--chat-bg);border:0}.dsh-persona-chat-compose textarea{display:block;width:100%;min-height:70px;max-height:140px;resize:vertical;border:0;outline:0;background:transparent;line-height:1.65;padding:2px;color:var(--chat-text)}.dsh-persona-chat-compose-row{margin-top:6px;display:flex;align-items:center;justify-content:space-between;gap:10px}.dsh-persona-chat-compose-row small{font-size:10px;color:var(--chat-muted)}.dsh-persona-chat-compose button[data-primary]{background:var(--chat-brand);color:#fff;border-color:transparent;min-width:68px}.dsh-persona-chat-info{flex:none;font-size:11px;color:var(--chat-muted);padding:7px 14px;border-bottom:1px solid var(--chat-border);overflow-wrap:anywhere}.dsh-persona-chat-info button{font-size:11px;min-height:25px;margin-left:6px}
       .dsh-persona-chat-suggest{padding-bottom:8px;margin-bottom:7px;border-bottom:1px solid var(--chat-border)}.dsh-persona-chat-suggest-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px}.dsh-persona-chat-suggest-head label{display:flex;align-items:center;gap:5px}.dsh-persona-chat-suggest-head button{font-size:11px;min-height:28px;padding:3px 8px}.dsh-persona-chat-suggest small{display:block;font-size:10px;color:var(--chat-muted);margin:5px 0}.dsh-persona-chat-suggestions{max-height:155px;overflow:auto;display:grid;gap:5px}.dsh-persona-chat-suggestions button{font-size:12px;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--chat-soft)}
       @media(max-width:520px){.dsh-persona-chat,.dsh-persona-chat[data-wide=true]{right:8px;bottom:max(8px,env(safe-area-inset-bottom));width:calc(100vw - 16px);height:calc(100dvh - 24px);border-radius:12px}.dsh-persona-chat-top{padding:10px}.dsh-persona-chat-compose-row small{max-width:200px}.dsh-persona-chat-top button{font-size:11px;padding:3px 6px}}
-      .dsh-persona-chat{--chat-brand:#4f6cdb}.dsh-persona-chat-top{display:grid;grid-template-columns:36px minmax(0,1fr) repeat(4,auto);gap:9px}.dsh-persona-chat-title{display:contents}.dsh-persona-chat-title strong{grid-column:2;grid-row:1}.dsh-persona-chat-title select{grid-column:1/-1;grid-row:2;width:100%;padding:7px 9px;background:var(--chat-soft);border:1px solid var(--chat-border);border-radius:7px}.dsh-persona-chat-top>.dsh-persona-chat-avatar{grid-column:1;grid-row:1}.dsh-persona-chat-top>button{grid-row:1}
+      .dsh-persona-chat-top{display:grid;grid-template-columns:36px minmax(0,1fr) repeat(4,auto);gap:9px}.dsh-persona-chat-title{display:contents}.dsh-persona-chat-title strong{grid-column:2;grid-row:1}.dsh-persona-chat-title select{grid-column:1/-1;grid-row:2;width:100%;padding:7px 9px;background:var(--chat-soft);border:1px solid var(--chat-border);border-radius:7px}.dsh-persona-chat-top>.dsh-persona-chat-avatar{grid-column:1;grid-row:1}.dsh-persona-chat-top>button{grid-row:1}
       .dsh-persona-chat-compose textarea{padding:9px 10px;border:1px solid var(--chat-border);border-radius:9px;background:var(--chat-soft);font-size:13px;box-shadow:none}.dsh-persona-chat-compose textarea:focus-visible{outline:none!important;border-color:#7890e8;box-shadow:0 0 0 2px #7185e520}
       .dsh-persona-chat-thread-wrap{position:relative;min-height:0;flex:1;display:flex;overflow:hidden}
       /* Sticky code banners belong to the scrolling messages, below room panels and the jump button. */
       .dsh-persona-chat-thread{isolation:isolate;min-width:0;width:100%}
       .dsh-persona-chat-thread[data-following=true]{overflow-anchor:none}
       .dsh-persona-chat-thread-content{display:flow-root}
-      .dsh-persona-chat .dsh-persona-chat-quote-action{align-self:center;flex:none;width:22px;min-height:24px;padding:0;border:0;background:transparent;color:var(--chat-muted);font-size:15px;opacity:0;pointer-events:none}
+      .dsh-persona-chat .dsh-persona-chat-quote-action{align-self:center;flex:none;display:grid;place-items:center;width:26px;height:28px;min-height:28px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--chat-muted);opacity:0;pointer-events:none}
+      .dsh-persona-chat .dsh-persona-chat-quote-action:is(:hover,:focus-visible){background:var(--chat-soft);color:var(--chat-text)}
       .dsh-persona-chat-message:has(>.dsh-persona-chat-quote-action)>.dsh-persona-chat-bubble{max-width:calc(100% - 70px)}
       .dsh-persona-chat-message:hover>.dsh-persona-chat-quote-action,.dsh-persona-chat-message:focus-within>.dsh-persona-chat-quote-action{opacity:1;pointer-events:auto}
       .dsh-persona-chat-quote{display:flex;align-items:flex-start;gap:8px;border-inline-start:2px solid currentColor;padding:4px 8px;margin:2px 0 7px;min-width:0;opacity:.9;font-size:11px;line-height:1.5;white-space:normal}
@@ -1602,20 +1705,29 @@ const CLIENT_BUILD = 2026112301;
       @media(max-width:520px){.dsh-persona-chat,.dsh-persona-chat[data-wide=true]{right:8px;bottom:max(8px,env(safe-area-inset-bottom,0px));width:calc(100vw - 16px);height:calc(100dvh - var(--chat-top-safe) - max(8px,env(safe-area-inset-bottom,0px)));max-height:calc(100dvh - var(--chat-top-safe) - max(8px,env(safe-area-inset-bottom,0px)))}.dsh-persona-chat-top{grid-template-columns:28px minmax(0,1fr) auto;padding:8px 10px 7px;gap:5px 7px}.dsh-persona-chat-top>.dsh-persona-chat-avatar{width:28px;height:28px}.dsh-persona-chat-actions{gap:3px}.dsh-persona-chat-actions button{padding:2px 6px}.dsh-persona-chat-compose{padding:7px 10px}}
     `;
     const CHAT_APPEARANCE_CSS = `
+      .dsh-persona-chat-themes{min-width:0;margin:4px 0 14px;padding:0 0 12px;border:0;border-bottom:1px solid var(--chat-border)}
+      .dsh-persona-chat-themes legend{padding:0;margin-bottom:8px;font-weight:600;font-size:13px}
+      .dsh-persona-chat-swatches{display:flex;flex-wrap:wrap;gap:6px}
+      .dsh-persona-chat-swatches label{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid transparent;border-radius:7px;font-size:12px;cursor:pointer}
+      .dsh-persona-chat-swatches label:has(:checked){border-color:color-mix(in srgb,var(--swatch) 50%,var(--chat-border));background:color-mix(in srgb,var(--swatch) 9%,var(--chat-bg))}
+      .dsh-persona-chat-swatches input{appearance:none;display:grid;place-content:center;width:16px;height:16px;flex:none;margin:0;border:1px solid var(--swatch);border-radius:50%;background:var(--swatch);cursor:pointer}
+      .dsh-persona-chat-swatches input:checked::after{content:'';width:7px;height:4px;border:solid white;border-width:0 0 2px 2px;transform:translateY(-1px) rotate(-45deg)}
+      .dsh-persona-chat-swatches input:focus-visible{outline:2px solid var(--chat-text);outline-offset:2px}
+      @media(forced-colors:active){.dsh-persona-chat-swatches input{appearance:auto}.dsh-persona-chat-swatches input:checked::after{display:none}}
       .dsh-persona-chat-appearance{position:absolute;z-index:2;top:8px;right:8px;width:calc(100% - 16px);height:calc(100% - 16px);max-height:calc(100% - 16px);box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;padding:0;border:1px solid var(--chat-border);border-radius:12px;background:var(--chat-bg);box-shadow:0 12px 32px #0003}
       .dsh-persona-chat-settings-heading{position:relative;flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0;padding:12px 14px 10px;background:var(--chat-bg,var(--dsw-alias-bg-layer-1,#fff))}
       .dsh-persona-chat-settings-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;box-sizing:border-box;padding:4px 14px 14px;background:var(--chat-bg,var(--dsw-alias-bg-layer-1,#fff))}
     `;
     const ROOM_CHAT_CSS = `
       .dsh-persona-chat-compose{position:relative}
-      .dsh-persona-chat-compose[data-image-dragging=true]{outline:2px dashed var(--chat-brand);outline-offset:-4px;background:color-mix(in srgb,var(--chat-brand) 7%,var(--chat-bg))}.dsh-persona-chat-drop-hint{position:absolute;inset:0;z-index:1;display:grid;place-items:center;pointer-events:none;background:color-mix(in srgb,var(--chat-bg) 90%,transparent);border-radius:8px;font-size:13px;color:var(--chat-brand)}
+      .dsh-persona-chat-compose[data-image-dragging=true]{outline:2px dashed var(--chat-brand);outline-offset:-4px;background:color-mix(in srgb,var(--chat-brand) 7%,var(--chat-bg))}.dsh-persona-chat-drop-hint{position:absolute;inset:0;z-index:1;display:grid;place-items:center;pointer-events:none;background:color-mix(in srgb,var(--chat-bg) 90%,transparent);border-radius:8px;font-size:13px;color:var(--chat-brand-ink)}
       .dsh-persona-room-avatar-display{position:relative}.dsh-persona-chat-member-activity{position:absolute;right:-2px;top:-2px;display:flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:var(--chat-bg);pointer-events:none}.dsh-persona-chat-member-activity i{display:block;width:6px;height:6px;border-radius:50%;background:#299b66}.dsh-persona-chat-member-activity[data-state=listening] i{animation:dsh-chat-listening 1.8s ease-in-out infinite}.dsh-persona-chat-member-activity[data-state=typing]{right:-6px}.dsh-persona-chat-member-activity[data-state=typing] i{width:3px;height:3px;opacity:.25;animation:dsh-chat-member-typing 1.2s ease-in-out infinite}.dsh-persona-chat-member-activity[data-state=typing] i:nth-child(2){animation-delay:.18s}.dsh-persona-chat-member-activity[data-state=typing] i:nth-child(3){animation-delay:.36s}
       @keyframes dsh-chat-listening{0%,100%{opacity:.4}50%{opacity:1}}@keyframes dsh-chat-member-typing{0%,65%,100%{opacity:.25}20%,45%{opacity:1}}
       @media(prefers-reduced-motion:reduce){.dsh-persona-chat-member-activity i{animation:none!important;opacity:1!important}}
       .dsh-persona-chat-images{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;max-width:100%}.dsh-persona-chat-images a{display:block;max-width:min(210px,100%);line-height:0}.dsh-persona-chat-images img{display:block;max-width:100%;max-height:150px;object-fit:contain;border-radius:7px}.dsh-persona-chat-images>span{font-size:11px;color:var(--chat-muted)}
       .dsh-persona-chat-image-drafts{display:flex;gap:7px;flex:none;overflow-x:auto;padding:3px 3px 5px}.dsh-persona-chat-image-drafts>div{position:relative;flex:none;width:68px;height:60px}.dsh-persona-chat-image-drafts img{width:68px;height:60px;object-fit:cover;border-radius:7px;border:1px solid var(--chat-border)}.dsh-persona-chat-image-drafts button{position:absolute;top:-3px;right:-3px;min-height:22px!important;width:22px;padding:0!important;border-radius:50%!important;font-size:15px!important}
       .dsh-persona-chat-image-note{flex:none;font-size:11px;color:var(--chat-muted);line-height:1.7;overflow-wrap:anywhere}.dsh-persona-chat-image-note button{margin-left:6px;min-height:25px;font-size:11px}
-      .dsh-persona-chat-dock{--chat-bg:var(--dsw-alias-bg-layer-1,#fff);--chat-border:var(--dsw-alias-border-l1,#d6dfe9);--chat-soft:var(--dsw-alias-bg-layer-2,#f3f5f8);--chat-muted:var(--dsw-alias-label-secondary,#65758a);--chat-text:var(--dsw-alias-label-primary,#203044);--chat-brand:var(--dsw-alias-brand-primary,#3976c3);position:fixed;z-index:1100;right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));display:flex;align-items:center;gap:2px;max-width:calc(100vw - 32px);padding:3px 4px 3px 3px;border:1px solid var(--chat-border);border-radius:18px;background:var(--chat-bg);box-shadow:0 3px 16px #0002;color:var(--chat-text);font:12px/1.35 system-ui,sans-serif}
+      .dsh-persona-chat-dock{--chat-bg:var(--dsw-alias-bg-layer-1,#fff);--chat-border:var(--dsw-alias-border-l1,#d6dfe9);--chat-soft:var(--dsw-alias-bg-layer-2,#f3f5f8);--chat-muted:var(--dsw-alias-label-secondary,#65758a);--chat-text:var(--dsw-alias-label-primary,#203044);--chat-brand:${CHAT_THEMES[0].color};position:fixed;z-index:1100;right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));display:flex;align-items:center;gap:2px;max-width:calc(100vw - 32px);padding:3px 4px 3px 3px;border:1px solid var(--chat-border);border-radius:18px;background:var(--chat-bg);box-shadow:0 3px 16px #0002;color:var(--chat-text);font:12px/1.35 system-ui,sans-serif}
       .dsh-persona-chat-dock button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:2px 6px;border:0;border-radius:12px;background:transparent;color:inherit;cursor:pointer;font:inherit}.dsh-persona-chat-dock button:hover{background:var(--chat-soft)}.dsh-persona-chat-dock button:focus-visible{outline:2px solid var(--chat-brand);outline-offset:1px}.dsh-persona-chat-dock button:first-of-type{padding-left:2px;min-height:36px}.dsh-persona-chat-dock button:last-of-type{color:var(--chat-muted);width:24px;height:28px;font-size:16px}.dsh-persona-chat-dock .dsh-persona-room-avatar{width:30px;height:30px}
       .dsh-persona-chat-dock-count{min-width:16px;box-sizing:border-box;padding:2px 4px;border-radius:10px;text-align:center;background:var(--chat-brand);color:#fff;font:600 10px/1.2 system-ui,sans-serif;font-variant-numeric:tabular-nums}.dsh-persona-chat-dock-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
       @keyframes dsh-persona-chat-arrived{0%,100%{transform:scale(1)}45%{transform:scale(1.22)}}@media(prefers-reduced-motion:no-preference){.dsh-persona-chat-dock-count{animation:dsh-persona-chat-arrived .52s ease-out 2}}
@@ -1629,7 +1741,7 @@ const CLIENT_BUILD = 2026112301;
         .dsh-persona-chat-top[data-room=true] .dsh-persona-chat-actions button:nth-child(-n+2){grid-row:2;min-height:20px;border:none;color:var(--chat-muted)}
         .dsh-persona-chat-actions button:nth-child(3){grid-column:3}.dsh-persona-chat-actions button:is(:nth-child(1),:nth-child(4)){grid-column:4}.dsh-persona-chat-actions button:is(:nth-child(2),:nth-child(5)){grid-column:5}
       }
-      .dsh-persona-chat-top[data-room=true]{grid-template-columns:44px minmax(0,1fr) auto}.dsh-persona-chat-room-heading{grid-column:2;grid-row:1;min-width:0;display:flex;flex-direction:column;gap:2px}.dsh-persona-chat-room-title{display:flex;align-items:center;gap:5px;min-width:0;min-height:20px!important;border:0!important;background:transparent!important;padding:0!important;text-align:left;font-weight:600;font-size:13px!important;line-height:20px}.dsh-persona-chat-room-title>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-persona-chat-room-title>span:last-child{font-size:10px;color:var(--chat-muted)}.dsh-persona-room-avatar-display{grid-column:1;grid-row:1;align-self:center}.dsh-persona-chat-room-tools{display:flex;align-items:center;gap:10px;min-width:0}.dsh-persona-chat-room-tools button{border:0;min-height:20px;padding:0;font-size:10px;background:transparent;white-space:nowrap;color:var(--chat-muted)}.dsh-persona-chat-room-tools button:hover{color:var(--chat-brand)}.dsh-persona-chat-room-tools button[aria-expanded=true]{color:var(--chat-brand)}.dsh-persona-chat-room-heading+.dsh-persona-chat-actions{align-self:start}
+      .dsh-persona-chat-top[data-room=true]{grid-template-columns:44px minmax(0,1fr) auto}.dsh-persona-chat-room-heading{grid-column:2;grid-row:1;min-width:0;display:flex;flex-direction:column;gap:2px}.dsh-persona-chat-room-title{display:flex;align-items:center;gap:5px;min-width:0;min-height:20px!important;border:0!important;background:transparent!important;padding:0!important;text-align:left;font-weight:600;font-size:13px!important;line-height:20px}.dsh-persona-chat-room-title>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-persona-chat-room-title>span:last-child{font-size:10px;color:var(--chat-muted)}.dsh-persona-room-avatar-display{grid-column:1;grid-row:1;align-self:center}.dsh-persona-chat-room-tools{display:flex;align-items:center;gap:10px;min-width:0}.dsh-persona-chat-room-tools button{border:0;min-height:20px;padding:0;font-size:10px;background:transparent;white-space:nowrap;color:var(--chat-muted)}.dsh-persona-chat-room-tools button:is(:hover,[aria-expanded=true]){color:var(--chat-brand-ink)}.dsh-persona-chat-room-heading+.dsh-persona-chat-actions{align-self:start}
       .dsh-persona-room-avatar{--room-avatar-letter:9px;position:relative;display:block;width:44px;height:44px;flex:none;isolation:isolate}.dsh-persona-room-avatar-tile{position:absolute;display:block;border:1px solid var(--chat-bg);border-radius:24%;background:var(--chat-bg);transform:translate(-50%,-50%) rotate(var(--tile-angle,0deg));transform-origin:center;box-shadow:0 1px 0 var(--chat-border),0 2px 4px #0002}.dsh-persona-room-avatar-tile::after{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,#ffffff0c,transparent 55%);pointer-events:none}.dsh-persona-room-avatar[data-count='1']{--room-avatar-letter:12px}.dsh-persona-room-avatar[data-count='2']{--room-avatar-letter:10px}.dsh-persona-room-avatar-more{display:grid;place-items:center;color:var(--chat-muted);background:var(--chat-soft);font-size:var(--room-avatar-letter);line-height:1;font-weight:600}.dsh-persona-chat-empty>.dsh-persona-room-avatar{--room-avatar-letter:12px;width:64px;height:64px;margin-bottom:5px}.dsh-persona-chat-mentions{display:block;font-size:9px;line-height:1.4;opacity:.72;margin-bottom:3px;font-weight:400}
       .dsh-persona-chat-participants{min-width:0;flex:none;container:chat-participants / inline-size}
       .dsh-persona-chat-room-tools{container:chat-room-tools / inline-size}
@@ -1655,6 +1767,56 @@ const CLIENT_BUILD = 2026112301;
       .dsh-persona-chat-recipient-name{display:var(--recipient-name-display,block)}
       .dsh-persona-chat-room-panel{position:absolute;z-index:5;inset:84px 10px auto;max-height:calc(100% - 98px);overflow:auto;padding:12px;border:1px solid var(--chat-border);border-radius:11px;background:var(--chat-bg);box-shadow:0 12px 35px #0003;font-size:12px}.dsh-persona-chat-room-panel header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.dsh-persona-chat-room-panel header button{min-height:25px;padding:2px 7px;font-size:11px}.dsh-persona-chat-room-panel p{font-size:11px;color:var(--chat-muted);line-height:1.7}.dsh-persona-chat-room-panel input[type=text]{box-sizing:border-box;width:100%;padding:7px 9px;margin:6px 0 10px;border:1px solid var(--chat-border);border-radius:7px;background:var(--chat-soft);font:inherit;color:inherit}.dsh-persona-chat-room-list{display:grid;gap:5px}.dsh-persona-chat-room-list>button{display:flex;align-items:center;gap:9px;width:100%;text-align:left}.dsh-persona-chat-room-list>button[aria-pressed=true]{border-color:var(--chat-brand);background:var(--chat-soft)}.dsh-persona-chat-room-list>button>span:last-child{min-width:0;display:grid;gap:2px}.dsh-persona-chat-room-list strong{font-size:12px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.dsh-persona-chat-room-list small{font-size:10px;color:var(--chat-muted)}.dsh-persona-chat-room-buttons{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.dsh-persona-chat-room-buttons button{font-size:12px;min-height:29px}
       .dsh-persona-chat-room-members{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:8px 0}.dsh-persona-chat-room-members label{display:flex;align-items:center;gap:6px;min-width:0;padding:6px;border:1px solid var(--chat-border);border-radius:7px}.dsh-persona-chat-room-members label>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-persona-chat-room-members .dsh-persona-chat-avatar{width:26px;height:26px;font-size:10px}.dsh-persona-chat-speaker{display:block;font-size:10px;line-height:1.5;color:var(--chat-muted);margin-bottom:3px}.dsh-persona-chat-message[data-user=true] .dsh-persona-chat-speaker{color:inherit;opacity:.8}.dsh-persona-chat-room-loading{padding:24px;display:grid;gap:10px;font-size:12px}
+      .dsh-persona-chat{--chat-hair:color-mix(in srgb,var(--chat-border) 70%,transparent);box-shadow:0 1px 2px #0000000f,0 12px 40px -8px #00000038}
+      .dsh-persona-chat-top{border-bottom-color:var(--chat-hair)}
+      .dsh-persona-chat-room-title,.dsh-persona-chat-title strong{font-weight:600;letter-spacing:.01em}
+      .dsh-persona-chat-actions button,.dsh-persona-chat-top[data-room=true] .dsh-persona-chat-room-tools button{border-color:transparent;background:transparent;color:var(--chat-muted)}
+      .dsh-persona-chat-actions button:not(:disabled):hover,.dsh-persona-chat-room-tools button:not(:disabled):hover,.dsh-persona-chat-actions button[aria-expanded=true],.dsh-persona-chat-room-tools button[aria-expanded=true]{background:var(--chat-soft);color:var(--chat-text)}
+      .dsh-persona-chat-thread{background:color-mix(in srgb,var(--chat-brand) 3%,var(--chat-bg))}
+      .dsh-persona-chat-time{font-variant-numeric:tabular-nums;letter-spacing:.04em}
+      .dsh-persona-chat-message[data-chat-persona]>.dsh-persona-chat-bubble{background:color-mix(in srgb,var(--chat-persona-color,var(--chat-brand)) 7%,var(--chat-bg));border-color:color-mix(in srgb,var(--chat-persona-color,var(--chat-brand)) 14%,var(--chat-bg));border-radius:5px 14px 14px;transition:box-shadow 420ms ease}
+      .dsh-persona-chat-message[data-chat-continuation=true]>.dsh-persona-chat-bubble{border-top-left-radius:12px}
+      .dsh-persona-chat-message[data-user=true]>.dsh-persona-chat-bubble{background:var(--chat-brand);border-radius:14px 5px 14px 14px;color:white}
+      .dsh-persona-chat-message[data-chat-persona] .dsh-persona-chat-speaker{font-weight:600;font-size:11px}
+      .dsh-persona-chat-message[data-user=true] .dsh-persona-chat-mentions{display:block;color:inherit;opacity:.96;margin-bottom:2px}
+      .dsh-persona-chat-avatar{border-color:var(--chat-hair)}
+      .dsh-persona-chat-compose{border-top:0;box-shadow:0 -1px 0 var(--chat-hair)}
+      .dsh-persona-chat-compose textarea{background:var(--chat-bg);border-color:var(--chat-border)}
+      .dsh-persona-chat-compose textarea:focus-visible{border-color:var(--chat-brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--chat-brand) 16%,transparent)}
+      .dsh-persona-chat-compose-tools>button{border-color:transparent;background:var(--chat-soft)}
+      .dsh-persona-chat-compose-tools>button:not(:disabled):hover,.dsh-persona-chat-compose-tools>button[aria-expanded=true]{background:color-mix(in srgb,var(--chat-brand) 10%,var(--chat-soft))}
+      .dsh-persona-chat-compose-tools label{color:var(--chat-muted)}
+      .dsh-persona-chat-compose-tools label:has(input:checked){color:var(--chat-text)}
+      .dsh-persona-chat-compose button[data-primary]{background:var(--chat-brand);font-weight:600}
+      .dsh-persona-chat-compose button[data-primary]:disabled{opacity:1;background:color-mix(in srgb,var(--chat-brand) 22%,var(--chat-soft));color:color-mix(in srgb,var(--chat-text) 45%,transparent)}
+      .dsh-persona-chat button.dsh-persona-chat-recipient-option[aria-checked=true]{background:color-mix(in srgb,var(--chat-brand) 10%,var(--chat-bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--chat-brand) 28%,transparent)}
+      .dsh-persona-chat-quote[data-draft=true]{border-radius:0 8px 8px 0;background:color-mix(in srgb,var(--chat-brand) 6%,var(--chat-soft))}
+      /* Motion answers events only: a message arriving, a reply being written, a press, a jump. */
+      .dsh-persona-chat{--chat-spring:linear(0,.009,.035 2.1%,.141,.281 6.7%,.723 12.9%,.938 16.7%,1.017,1.077,1.121,1.149 24.3%,1.159,1.163,1.161,1.154 29.9%,1.129 32.8%,1.051 39.6%,1.017 43.1%,.991,.977 51%,.974 53.8%,.975 57.1%,.997 69.8%,1.003 76.9%,1.004 83.8%,1);--chat-settle:linear(0,.25 6%,.6 15%,.86 26%,.97 38%,1.01 50%,1.005 70%,1)}
+      @keyframes dsh-chat-bubble-out{from{opacity:0;transform:translate(10px,14px) scale(.86)}to{opacity:1;transform:none}}
+      @keyframes dsh-chat-bubble-in{from{opacity:0;transform:translate(-6px,8px) scale(.9)}to{opacity:1;transform:none}}
+      @keyframes dsh-chat-avatar-in{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:none}}
+      @keyframes dsh-chat-writing{from{box-shadow:inset 2px 0 0 color-mix(in srgb,var(--chat-persona-color,var(--chat-brand)) 55%,transparent),0 0 0 0 color-mix(in srgb,var(--chat-persona-color,var(--chat-brand)) 0%,transparent)}to{box-shadow:inset 2px 0 0 var(--chat-persona-color,var(--chat-brand)),0 0 0 4px color-mix(in srgb,var(--chat-persona-color,var(--chat-brand)) 16%,transparent)}}
+      @keyframes dsh-chat-badge-pop{from{transform:scale(0)}to{transform:none}}
+      @keyframes dsh-chat-found{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--chat-brand) 45%,transparent)}100%{box-shadow:0 0 0 14px color-mix(in srgb,var(--chat-brand) 0%,transparent)}}
+      @keyframes dsh-chat-rise{from{opacity:0;transform:translateY(10px) scale(.94)}to{opacity:1;transform:none}}
+      .dsh-persona-chat-message[data-arriving=true]{animation:none}
+      .dsh-persona-chat-message[data-arriving=true]>.dsh-persona-chat-bubble{animation:dsh-chat-bubble-in 460ms cubic-bezier(.2,1.3,.4,1) both;animation-timing-function:var(--chat-spring);transform-origin:0 0}
+      .dsh-persona-chat-message[data-arriving=true][data-user=true]>.dsh-persona-chat-bubble{animation-name:dsh-chat-bubble-out;transform-origin:100% 0}
+      .dsh-persona-chat-message[data-arriving=true][data-chat-continuation=true]>.dsh-persona-chat-bubble{animation-delay:90ms}
+      .dsh-persona-chat-message[data-arriving=true]>.dsh-persona-chat-avatar{animation:dsh-chat-avatar-in 380ms cubic-bezier(.2,1.3,.4,1) both;animation-timing-function:var(--chat-spring)}
+      .dsh-persona-chat-message[data-chat-persona]>.dsh-persona-chat-bubble[data-live=true]{animation:dsh-chat-writing 1.1s ease-in-out infinite alternate}
+      .dsh-persona-chat-message[data-arriving=true][data-chat-persona]>.dsh-persona-chat-bubble[data-live=true]{animation:dsh-chat-bubble-in 460ms both,dsh-chat-writing 1.1s 460ms ease-in-out infinite alternate;animation-timing-function:var(--chat-spring),ease-in-out}
+      .dsh-persona-chat-recipient-option[aria-checked=true] .dsh-persona-chat-recipient-portrait::after{animation:dsh-chat-badge-pop 320ms cubic-bezier(.2,1.5,.4,1) both;animation-timing-function:var(--chat-spring)}
+      .dsh-persona-chat-thread .dsh-persona-chat-quoted-highlight{animation:dsh-chat-found 900ms ease-out 2}
+      .dsh-persona-chat button.dsh-persona-chat-jump{animation:dsh-chat-rise 360ms both;animation-timing-function:var(--chat-settle)}
+      .dsh-persona-chat :is(button,select):not(:where(.dsh-persona-chat-body *)),.dsh-persona-chat-dock button{transition:background-color 120ms ease,border-color 120ms ease,color 120ms ease,box-shadow 120ms ease,opacity 120ms ease,transform 160ms cubic-bezier(.2,1.4,.4,1)}
+      .dsh-persona-chat button:not(:disabled):not(:where(.dsh-persona-chat-body *)):active,.dsh-persona-chat-dock button:active{transform:scale(.95);transition-duration:60ms}
+      @media(prefers-reduced-motion:reduce){
+        .dsh-persona-chat-message>:is(.dsh-persona-chat-bubble,.dsh-persona-chat-avatar),.dsh-persona-chat-recipient-option .dsh-persona-chat-recipient-portrait::after,.dsh-persona-chat .dsh-persona-chat-quoted-highlight,.dsh-persona-chat button.dsh-persona-chat-jump{animation:none!important}
+        .dsh-persona-chat-message>.dsh-persona-chat-bubble{transition:none!important}
+        .dsh-persona-chat button:active,.dsh-persona-chat-dock button:active{transform:none!important}
+      }
     `;
     const chatPalette=createChatPalette(),avatarColors=new Map(),avatarColorListeners=new Set();
     function sampleAvatarColor(src,image,catPortrait){
@@ -1791,8 +1953,7 @@ const CLIENT_BUILD = 2026112301;
     function useChatContext(sessionId,roomId,paused) {
       const [value,setValue]=React.useState(()=>chatContextCache?.roomId===roomId?chatContextCache:undefined),[error,setError]=React.useState(''),[busy,setBusy]=React.useState(false);
       const state=React.useRef({live:false,request:0,sequence:0,viewer:chatNonce(),abort:null,busy:false,value});
-      state.current.value=value;
-      const accept=next=>{chatContextCache=next;setValue(next);};
+      const accept=next=>{state.current.value=next;chatContextCache=next;setValue(next);};
       const action=async(body,quiet=false)=>{
         const own=state.current;if(!own.live||(own.busy&&!quiet))return;
         const token=++own.request;if(!quiet){own.busy=token;setBusy(true);}own.abort?.abort();const abort=new AbortController();own.abort=abort;
@@ -1817,7 +1978,7 @@ const CLIENT_BUILD = 2026112301;
             else{
               const token=++own.request;const abort=new AbortController();own.abort?.abort();own.abort=abort;
               try{const r=await fetch(ROUTE+'/chat-context?'+new URLSearchParams({...(roomId?{room:roomId}:{}),viewer:own.viewer,sequence:String(++own.sequence)}),{signal:abort.signal});
-                const next=await r.json();if(own.live&&token===own.request){if(r.ok){accept(next);setError('');}else{chatContextCache=undefined;own.value=undefined;setError('参考服务需要重新连接，正在重试。');}}}catch{if(own.live&&!abort.signal.aborted)setError('参考信息暂未更新，已有来源保留。');}
+                const next=await r.json();if(own.live&&token===own.request){if(r.ok){accept(next);setError('');}else if(r.status===409&&next.error==='context-not-open'){accept(undefined);setError('参考服务需要重新连接，正在重试。');}else{setError('参考信息暂未更新，已有来源保留。');}}}catch{if(own.live&&token===own.request&&!abort.signal.aborted)setError('参考信息暂未更新，已有来源保留。');}
             }
           }
           if(active&&document.visibilityState!=='hidden')timer=setTimeout(loop,15000);
@@ -1840,6 +2001,7 @@ const CLIENT_BUILD = 2026112301;
     const CHAT_ROUND_SEATS=32;
     const CHAT_SILENT_RECEIPTS=8;
     const roomLiveConnections=new Map();
+    const roomLiveDisconnects=new Set();
     function subscribeRoomLive(roomId,instance,attempt,listener) {
       const key=JSON.stringify([roomId,instance]);let own=roomLiveConnections.get(key);
       if(!own){
@@ -1865,6 +2027,7 @@ const CLIENT_BUILD = 2026112301;
             }}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
           }catch{/* Canonical snapshot polling remains available. */}
           finally{if(own.live&&token===own.generation){own.abort=null;own.connected=false;emit();
+            for(const notify of roomLiveDisconnects)notify(key);
             if(needed()&&document.visibilityState!=='hidden'){
               own.timer=setTimeout(()=>{own.timer=null;void own.start();},own.delay);own.delay=Math.min(8000,own.delay*2);
             }}}
@@ -1943,6 +2106,14 @@ const CLIENT_BUILD = 2026112301;
         h('div',{className:'dsh-persona-chat-quote-actions'},onJump?h('button',{type:'button',disabled:!available,'aria-label':'查看引用原消息',title:available?'定位到原消息':'原消息暂不可用',onClick:onJump},'↗'):null,
           draft?h('button',{type:'button','aria-label':'取消引用',title:'取消引用 · Esc',onClick:onCancel},'×'):null));
     }
+    function ChatMessageAction({remember=false,label,title,onClick}) {
+      // Lucide bookmark and reply, bundled locally; see LICENSE.
+      return h('button',{type:'button',className:'dsh-persona-chat-quote-action','aria-label':label,title,onClick},
+        h('svg',{width:16,height:16,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:1.8,
+          strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true,focusable:false},
+          !remember && h('polyline',{points:'9 17 4 12 9 7'}),
+          h('path',{d:remember?'m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z':'M20 18v-2a4 4 0 0 0-4-4H4'})));
+    }
     function ChatReplyBubbles({turn,frame,avatar,colorStyle,onPresented,latest=true,running=false,showSpeaker=false,showTyping=true,onQuote}) {
       const animate=latest&&(chatAnimatedAttempts.has(turn.attemptId)||turn.status==='pending');
       const [entrance]=React.useState(()=>animate&&!chatSurfaceMotion);
@@ -1969,7 +2140,7 @@ const CLIENT_BUILD = 2026112301;
         'data-chat-continuation':position>0||undefined,'data-provisional':turn.status==='pending'},portrait(position>0),h('div',{className:'dsh-persona-chat-bubble','data-live':!message.complete},
           showSpeaker&&position===0?h('small',{className:'dsh-persona-chat-speaker'},turn.speakerName):null,
           h('div',{className:'dsh-persona-chat-body'},renderMarkdown(message.text,turn.status==='pending'&&!message.complete,{margin:0}))),
-          onQuote&&turn.status==='ready'?h('button',{type:'button',className:'dsh-persona-chat-quote-action','aria-label':'引用'+turn.speakerName+'的第'+(index+1)+'条消息',title:'引用这句；回复对象仍按 @ 选择',onClick:()=>onQuote(turn,index,message.text)},'↩'):null)),
+          onQuote&&turn.status==='ready'?h(ChatMessageAction,{label:'引用'+turn.speakerName+'的第'+(index+1)+'条消息',title:'引用这句；回复对象仍按 @ 选择',onClick:()=>onQuote(turn,index,message.text)}):null)),
         typing&&showTyping ? h('div', { key:visible.length, className:'dsh-persona-chat-message dsh-persona-chat-typing', 'data-user':'false',
           'data-chat-persona':turn.recipientId,style:colorStyle,
           'data-chat-continuation':displayed.length>0||undefined,role:'status','aria-label':turn.status==='pending'?'角色输入中':'还有后续消息','aria-live':'polite','aria-atomic':true }, portrait(displayed.length>0),
@@ -1994,6 +2165,89 @@ const CLIENT_BUILD = 2026112301;
       const value={};try{const offset=-new Date().getTimezoneOffset();if(Number.isInteger(offset)&&Math.abs(offset)<=840)value.utcOffsetMinutes=offset;}catch{}
       try{const zone=Intl.DateTimeFormat().resolvedOptions().timeZone;if(typeof zone==='string'&&zone.length>0&&zone.length<=80&&!/[\s\u0000-\u001f\u007f]/u.test(zone))value.timeZone=zone;}catch{}
       return Object.keys(value).length?value:undefined;
+    }
+    const memoryTagList = value => [...new Set(value.trim().split(/[\s,，、]+/u).filter(Boolean))];
+    function suggestedMemoryTags(text) {
+      if (!Intl.Segmenter) return '';
+      const words = [...new Intl.Segmenter('zh',{granularity:'word'}).segment(text)].filter(s=>s.isWordLike)
+        .map(s=>s.segment).filter(s=>s.length>=2 && s.length<=12 && !/^(?:以后|今天|昨天|我们|你们|他们|希望|一起|觉得|可以|还是|一下|就是|一个|已经|不要|自己)$/u.test(s));
+      return [...new Set(words)].slice(0,3).join('，');
+    }
+    function MemoryMetadataFields({value, change}) {
+      return h(React.Fragment,null,h('label',null,'标签（最多 6 个）',h('input',{value:value.tags??'',onChange:e=>change({tags:e.target.value}),placeholder:'用逗号或空格分隔'})),
+        h('label',null,'有效期',h('select',{'aria-label':'有效期',value:value.ttl??'',onChange:e=>change({ttl:e.target.value})},...['','7','30','long'].map((id,i)=>h('option',{key:id,value:id},['默认','7 天','30 天','长期'][i])))),
+        h('label',null,'发生日期（可选）',h('input',{type:'date',value:value.date??'',onChange:e=>change({date:e.target.value})})));
+    }
+    function memoryMetadata(value) {
+      return {tags:memoryTagList(value.tags??''),expiresAt:value.ttl==='long'?null:value.ttl?Date.now()+Number(value.ttl)*86400000:undefined,
+        occurredAt:value.date?new Date(value.date+'T00:00:00').getTime():undefined};
+    }
+    function RememberChatPart({room, contacts, head, part, scopeKey, onClose}) {
+      const [content,setContent]=React.useState(part.text.slice(0,240)), [kind,setKind]=React.useState('agreement');
+      const [target,setTarget]=React.useState(head.recipients.find(p=>room.memberIds.includes(p.id))?.id??room.memberIds[0]);
+      const [busy,setBusy]=React.useState(false), [error,setError]=React.useState('');
+      const [selection,setSelection]=React.useState(null),[excerpt,setExcerpt]=React.useState(null);
+      const [meta,setMeta]=React.useState(()=>({tags:suggestedMemoryTags(part.text)}));
+      const [includeReply,setIncludeReply]=React.useState(false);
+      const [capacityData,setCapacityData]=React.useState(null);
+      async function organize(action){
+        setBusy(true);try{const result=await fetch(ROUTE+'/memory',action?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(action)}:undefined);
+          if(!result.ok)throw Error();setCapacityData(await result.json());}catch{setError('整理未完成，请重新读取当前记录。');}finally{setBusy(false);}}
+      const save=async event=>{
+        event.preventDefault(); if (busy || !content.trim()) return;
+        const form = event.currentTarget;
+        setBusy(true); setError('');
+        try {
+          const response=await fetch(ROUTE+'/chat/memory',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+            room:room.id,generation:room.generation,scopeKey,messageId:head.messageId,part:head.userParts?.findIndex(p=>p.id===part.id)??0,
+            kind,scope:target?'persona':'room',personaId:target||undefined,content,includeReply,...memoryMetadata(meta),...excerpt})});
+          const value=await response.json(); if (!response.ok) throw Error(value.capacity?'记忆已满（200 条）。请到设置 → 记忆管理整理。可清理 '+value.capacity.cleanable+' 条，相近 '+value.capacity.groups+' 组。':value.error);
+          if (form.isConnected) onClose(true);
+        } catch (e) {setBusy(false);setError(({'chat-memory-source':'原话或参考范围已变化，请重新选择。','chat-memory-member':'这位人格已离开房间。',
+          'memory-disabled':'请先在设置中开启记忆。','invalid-memory-tags':'最多 6 个标签，每个最多 32 字。'})[e.message]??(e.message.startsWith('记忆已满')?e.message:'未能保存，请重试。'));}
+      };
+      const returnToForm=()=>{setCapacityData(null);setError('');};
+      if(capacityData)return h('section',{role:'dialog','aria-label':'整理记忆',className:'dsh-persona-chat-info',onKeyDown:e=>{
+        if(e.key==='Escape'&&!e.nativeEvent?.isComposing){e.stopPropagation();e.preventDefault();if(!busy)returnToForm();}}},h('h3',null,'记忆占用 '+capacityData.capacity.used+' / '+capacityData.capacity.limit),
+        h(CapacityTools,{data:capacityData,write:organize,busy}),h('button',{type:'button',autoFocus:true,disabled:busy,onClick:returnToForm},'返回记住这句'),!error.startsWith('记忆已满')?h('p',{role:'status'},error):null);
+      return h('form',{onSubmit:save,role:'dialog','aria-label':'记住这句',className:'dsh-persona-chat-info',style:{display:'grid',gap:6,minWidth:0},
+        onKeyDown:e=>{if(e.key==='Escape'&&!e.nativeEvent?.isComposing){e.stopPropagation();if(!busy)onClose(false);}}},h('strong',null,'记住这句'),
+        h('label',null,'原话',h('textarea',{readOnly:true,value:part.text,style:{width:'100%',boxSizing:'border-box'},onSelect:e=>{
+          const {selectionStart:start,selectionEnd:end}=e.currentTarget;setSelection(start<end && (start>0||end<part.text.length)?{start,end}:null);}})),
+        excerpt?h('div',null,h('blockquote',null,part.text.slice(excerpt.start,excerpt.end)),h('span',null,'所选片段仅留档核对，不会自动带入聊天。要在聊天中使用，请选择整段原话。'),
+          h('button',{type:'button',onClick:()=>setExcerpt(null)},'使用整段原话')):selection?h('button',{type:'button',onClick:()=>setExcerpt(selection)},'以所选片段为依据'):null,
+        h('label',null,'类型 ',h('select',{autoFocus:true,value:kind,onChange:e=>setKind(e.target.value)},h('option',{value:'agreement'},'约定'),h('option',{value:'episode'},'经历'))),
+        h('label',null,'范围 ',h('select',{value:target,onChange:e=>setTarget(e.target.value)},...room.memberIds.map(id=>h('option',{key:id,value:id},'只限 '+(contacts.find(p=>p.id===id)?.name??id))),h('option',{value:''},'本房间所有成员'))),
+        h('label',null,'内容',h('textarea',{style:{width:'100%',boxSizing:'border-box'},maxLength:240,value:content,onChange:e=>setContent(e.target.value)})),
+        h('details',null,h('summary',null,'标签与日期'),h(MemoryMetadataFields,{value:meta,change:patch=>setMeta({...meta,...patch})})),
+        room.turns.some(t=>t.messageId===head.messageId && t.phase!=='anchor' && t.status==='ready' && t.assistant?.length)?h('label',null,h('input',{type:'checkbox',checked:includeReply,onChange:e=>setIncludeReply(e.target.checked)}),'附上紧邻回复供设置页核对'):null,
+        error?h('span',{role:'alert'},error):null,error.startsWith('记忆已满')?h('button',{type:'button',disabled:busy,onClick:()=>organize()},'去整理'):null,
+        h('div',null,h('button',{type:'button',disabled:busy,onClick:()=>onClose(false)},'取消'),h('button',{type:'submit',disabled:busy||!content.trim()},'记住')));
+    }
+    function ReplyMemory({roomId,turn,count,revision}) {
+      const [open,setOpen]=React.useState(false),[record,setRecord]=React.useState(null),[error,setError]=React.useState('');
+      const [edit,setEdit]=React.useState(null),[busy,setBusy]=React.useState(false),[refresh,setRefresh]=React.useState(0);
+      React.useEffect(()=>{
+        if (!open) return;
+        const abort=new AbortController();setRecord(null);setEdit(null);setError('');
+        (async()=>{const res=await fetch(ROUTE+'/chat-references?room='+encodeURIComponent(roomId),{signal:abort.signal});
+          if (!res.ok) throw Error();const data=await res.json();if(abort.signal.aborted)return;
+          setRecord(data.records.find(r=>r.inScope && r.attemptId===turn.attemptId && r.messageId===turn.messageId)??{memory:[]});
+        })().catch(()=>{if(!abort.signal.aborted)setError('暂时读不到参考记录。');});return ()=>abort.abort();
+      },[roomId,turn.attemptId,revision,open,refresh]);
+      const submit=async e=>{e.preventDefault();if(busy)return;const fields=e.currentTarget.elements;setBusy(true);setError('');
+        const write=async body=>{const res=await fetch(ROUTE+'/memory',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!res.ok)throw Error();return (await res.json()).result;};
+        try {const op=await write({action:'propose',operation:edit.op,id:edit.ref.id,version:edit.ref.version,
+          statement:fields.statement?.value??'用户在回复中撤销了这条记忆',content:fields.content?.value});
+          await write({action:'confirm',id:op.id,version:op.version});setEdit(null);setRefresh(v=>v+1);
+        }catch{setError('未能保存，请重新核对当前版本。');}finally{setBusy(false);}};
+      return h('details',{onToggle:e=>{if(e.target===e.currentTarget)setOpen(e.currentTarget.open);},style:{maxWidth:'100%',overflowWrap:'anywhere'}},
+        h('summary',null,'参考了 '+count+' 条记忆'),open?h('div',null,...(record?.memory??[]).filter(r=>r.personal).map(ref=>h('div',{key:ref.id},ref.available?h(React.Fragment,null,
+          h('p',null,ref.content+' · '+(ref.scope==='persona'?'只限 '+record.personaName:'本房间')+(ref.recordedAt?' · '+new Date(ref.recordedAt).toLocaleDateString():'')),
+          ...ref.evidence.map((q,i)=>h('blockquote',{key:i},q)),h('button',{type:'button',disabled:busy,onClick:()=>setEdit({op:'revise',ref})},'这条不对'),h('button',{type:'button',disabled:busy,onClick:()=>setEdit({op:'retract',ref})},'不再用于聊天')):ref.status??'原版本已不可用')),
+          edit?h('form',{key:edit.ref.id+edit.op,onSubmit:submit},edit.op==='revise'?h(React.Fragment,null,h('label',null,'更正内容',h('textarea',{required:true,name:'content',maxLength:240,defaultValue:edit.ref.content})),h('label',null,'更正说明',h('input',{name:'statement',required:true,maxLength:1000}))):h('p',null,'撤销后，这条记忆在原适用范围内停用。'),
+            h('button',{disabled:busy},edit.op==='revise'?'确认更正':'确认撤销'),h('button',{type:'button',disabled:busy,onClick:()=>setEdit(null)},'取消')):null,
+          error?h('span',{role:'status'},error):null):null);
     }
     function ChatImages({images,roomId,generation=0}){
       const [failed,setFailed]=React.useState({});
@@ -2056,8 +2310,8 @@ const CLIENT_BUILD = 2026112301;
         task.error?h('p',{style:{margin:'3px 0 0'}},errors[task.error]??'本次任务未完整完成；不会当作已经查明。'):null,
         h('details',null,h('summary',{style:{cursor:'pointer',marginTop:3}},'任务详情'),
           h('p',{style:{margin:'4px 0'}},task.goal),
-          h('p',{style:{margin:'4px 0'}},task.countsIncomplete?'上次任务中断，计数可能未完整保存；不会自动重跑。':'模型请求 '+(task.counts?.calls??0)+' / '+(task.limits?.calls??4)
-            +(task.template==='research'?' · 搜索 '+(task.counts?.searches??0)+' / 3 · 阅读 '+(task.counts?.reads??0)+' / 5':' · 未联网')),
+          h('p',{style:{margin:'4px 0'}},task.countsIncomplete?'上次任务中断，计数可能未完整保存；不会自动重跑。':'模型步骤 '+(task.counts?.calls??0)+' / '+(task.limits?.calls??4)
+            +(task.template==='research'?' · 搜索 '+(task.counts?.searches??0)+' / '+(task.limits?.searches??3)+' · 阅读 '+(task.counts?.reads??0)+' / '+(task.limits?.reads??4):' · 未联网')),
           task.model?h('p',{style:{margin:'4px 0'}},'模型：'+task.model.model+(task.model.provider?' · '+task.model.provider:'')+(task.model.thinking?' · 思考：'+task.model.thinking:'')):null,
           ...(task.sources??[]).filter(s=>typeof s.url==='string'&&/^https:\/\//u.test(s.url)).map((source,i)=>h('p',{key:i,style:{margin:'4px 0'}},h('a',{href:source.url,target:'_blank',rel:'noopener noreferrer'},source.title||source.url)))));
     }
@@ -2091,7 +2345,8 @@ const CLIENT_BUILD = 2026112301;
     function chatMemberStatus(data,id){
       const state=data?.running&&data.memberActivity?.find(item=>item.id===id)?.state;
       if(!['listening','typing'].includes(state))return null;
-      const text=state==='typing'?'输入中':'在听',elapsed=Number.isFinite(data.roundElapsedMs)?' · 本轮 '+Math.floor(Math.max(0,data.roundElapsedMs)/1000)+' 秒':'';
+      const text=state==='typing'?'输入中':'在听',elapsed=(Number.isFinite(data.roundElapsedMs)?' · 本轮 '+Math.floor(Math.max(0,data.roundElapsedMs)/1000)+' 秒':'')
+        +(Number.isFinite(data.roundFirstTextMs)?' · 首字 '+(data.roundFirstTextMs/1000).toFixed(1)+' s':'');
       const model=typeof data.roundModel?.model==='string'?' · 模型 '+data.roundModel.model:'';
       return {state,text,detail:text+elapsed+model};
     }
@@ -2152,7 +2407,7 @@ const CLIENT_BUILD = 2026112301;
       };
     }
 
-    function WorkDraftPanel({roomId,scopeKey,generation,discussionRevision,onClose,onMinimize}){
+    function WorkDraftPanel({roomId,scopeKey,generation,referenceRevision,discussionRevision,onClose,onMinimize}){
       const [saved,setSaved]=React.useState(()=>chatWorkDrafts.get(roomId)??{instruction:'',refs:[],draft:'',basis:null});
       const [data,setData]=React.useState(null),[loading,setLoading]=React.useState(false),[busy,setBusy]=React.useState(false),[placing,setPlacing]=React.useState(false);
       const [info,setInfo]=React.useState(''),[filter,setFilter]=React.useState(''),[confirmation,setConfirmation]=React.useState(null),[,redraw]=React.useState(0);
@@ -2180,14 +2435,14 @@ const CLIENT_BUILD = 2026112301;
       React.useEffect(()=>{own.current.live=true;heading.current?.focus({preventScroll:true});void load();
         const refresh=()=>redraw(v=>v+1);workInputListeners.add(refresh);chatForegroundListeners.add(refresh);
         return()=>{own.current.live=false;stop(false);workInputListeners.delete(refresh);chatForegroundListeners.delete(refresh);};},[]);
-      const context=React.useRef({scopeKey,generation,discussionRevision});
-      React.useEffect(()=>{const previous=context.current;context.current={scopeKey,generation,discussionRevision};
-        if(previous.scopeKey===scopeKey&&previous.generation===generation&&previous.discussionRevision===discussionRevision)return;
+      const context=React.useRef({scopeKey,generation,referenceRevision,discussionRevision});
+      React.useEffect(()=>{const previous=context.current;context.current={scopeKey,generation,referenceRevision,discussionRevision};
+        if(previous.scopeKey===scopeKey&&previous.generation===generation&&previous.referenceRevision===referenceRevision&&previous.discussionRevision===discussionRevision)return;
         stop();setData(null);setInfo('房间参考或讨论状态已变化，请刷新核对原话。已有草稿保留。');
-      },[scopeKey,generation,discussionRevision]);
+      },[scopeKey,generation,referenceRevision,discussionRevision]);
       const edit=value=>{own.current.editing++;setConfirmation(null);keep({...state.current,...value});};
       const sameBasis=(basis,expected)=>basis?.roomId===roomId&&basis.scopeKey===expected.scopeKey&&basis.epoch===expected.epoch
-        &&basis.discussionRevision===expected.discussionRevision&&JSON.stringify(basis.refs)===JSON.stringify(expected.refs);
+        &&(basis.referenceRevision??0)===(expected.referenceRevision??0)&&basis.discussionRevision===expected.discussionRevision&&JSON.stringify(basis.refs)===JSON.stringify(expected.refs);
       const emptyInput=value=>value?.phase==='plain'&&value.draft===''
         &&Array.isArray(value.attachmentIds)&&value.attachmentIds.length===0&&Array.isArray(value.occurrences)&&value.occurrences.length===0;
       const captureTarget=()=>{
@@ -2223,14 +2478,14 @@ const CLIENT_BUILD = 2026112301;
         const captured=mode==='conclusion'?captureTarget():null;if(mode==='conclusion'&&!captured)return;
         const current=own.current,editing=current.editing,token=++current.token,abort=new AbortController(),previous=data;
         current.targetTitle = captured?.title ?? null;
-        const intent={mode,captured,editing,basis:{roomId,epoch:data.epoch,scopeKey:data.scopeKey,discussionRevision:data.discussionRevision,refs:saved.refs},instruction:saved.instruction};
+        const intent={mode,captured,editing,basis:{roomId,epoch:data.epoch,scopeKey:data.scopeKey,referenceRevision:data.referenceRevision??0,discussionRevision:data.discussionRevision,refs:saved.refs},instruction:saved.instruction};
         current.abort?.abort();current.abort=abort;current.busy=true;setLoading(true);setInfo('');setConfirmation(null);
         let checkedIntent=null,timedOut=false;const timeout=setTimeout(()=>{timedOut=true;abort.abort();},10000);
         try{const response=await fetch(ROUTE+'/chat-work-draft?room='+encodeURIComponent(roomId),{signal:abort.signal}),value=await response.json();
           if(!response.ok)throw Error(value.error);
           if(!current.live||current.token!==token||abort.signal.aborted)return;
           if(value.room?.id!==roomId||!Array.isArray(value.choices))throw Error('invalid');
-          if(value.scopeKey!==intent.basis.scopeKey||value.discussionRevision!==intent.basis.discussionRevision){
+          if(value.scopeKey!==intent.basis.scopeKey||(value.referenceRevision??0)!==intent.basis.referenceRevision||value.discussionRevision!==intent.basis.discussionRevision){
             setData(value);setInfo('房间参考或讨论状态已变化，请刷新核对原话。已有草稿保留。');return;}
           if(current.editing!==editing){setData(value);setInfo('你已修改选择或草稿，请核对后重新整理。');return;}
           const missing=intent.basis.refs.filter(ref=>!value.choices.some(q=>refKey(q.ref)===refKey(ref)));
@@ -2342,6 +2597,7 @@ const CLIENT_BUILD = 2026112301;
     function RoomChatWorkspace({sessionId,conversation,onClose}) {
       const [data,setData]=React.useState(null),[roomId,setRoomId]=React.useState(null),[panel,setPanel]=React.useState(null);
       const [notice,setNotice]=React.useState(''),[busy,setBusy]=React.useState(false),[name,setName]=React.useState(''),[members,setMembers]=React.useState([]),[deleting,setDeleting]=React.useState(false);
+      const [retractMemories,setRetractMemories]=React.useState(true);
       const [search,setSearch]=React.useState('');
       const openingSurface=React.useRef(null);
       const openingFloating=useFloatingWindow({id:'chat',ref:openingSurface,active:!(roomId&&data?.room&&data.chatSchema===3&&data.discussionVersion===2),wide:chatRoomLayout.wide,onWideChange:value=>{chatRoomLayout.wide=value;},minHeight:360});
@@ -2372,7 +2628,19 @@ const CLIENT_BUILD = 2026112301;
           if(own.live&&token===own.sequence)accept(value);
         }catch(error){if(own.live&&token===own.sequence&&!abort.signal.aborted)setNotice(chatErrorText(error.message));}
       };
-      React.useEffect(()=>{lifetime.current.live=true;void load(true);return()=>{lifetime.current.live=false;lifetime.current.sequence++;lifetime.current.readAbort?.abort();};},[]);
+      React.useEffect(()=>{lifetime.current.live=true;void load(true);return()=>{lifetime.current.live=false;lifetime.current.sequence++;lifetime.current.readAbort?.abort();lifetime.current.discovery?.abort();};},[]);
+      const dismissPanel=()=>{setPanel(null);lifetime.current.discovery?.abort();};
+      const discover=async()=>{
+        const own=lifetime.current;if(!own.live||own.busy||selected.current!==roomId)return;
+        const abort=new AbortController(),token=++own.sequence;own.discovery=abort;own.busy=true;setBusy(true);setNotice('');
+        const current=()=>own.live&&!abort.signal.aborted&&token===own.sequence&&selected.current===roomId;
+        try{
+          const response=await fetch(ROUTE+'/chat/memory',{method:'POST',headers:{'content-type':'application/json'},signal:abort.signal,
+            body:JSON.stringify({action:'discover',room:roomId,generation:room.generation??0,referenceRevision:room.referenceRevision??0,scopeKey:data.scopeKey})});
+          const result=await response.json();if(current())setNotice(response.ok?'已整理 '+result.count+' 条候选，可在设置页「待确认」核对。':'整理未完成，请核对房间与记忆开关后重试。');
+        }catch{if(current())setNotice('整理未完成，请重试。');}
+        finally{if(own.discovery===abort){own.discovery=null;own.busy=false;if(own.live)setBusy(false);}}
+      };
       const change=async(body)=>{
         const own=lifetime.current;if(own.busy)return;own.busy=true;setBusy(true);setNotice('');const token=++own.sequence;
         chatUiFlushers.get(selected.current)?.();
@@ -2399,13 +2667,14 @@ const CLIENT_BUILD = 2026112301;
         return()=>abort.abort();
       },[panel]);
       const openEdit=()=>{if(!data?.room)return;setName(data.room.name);setMembers([...data.room.memberIds]);editVersion.current=data.room.configRevision;setPanel('edit');setDeleting(false);setNotice('');};
-      const openRooms=()=>{setPanel('rooms');setDeleting(false);void load(false);};
+      const openRooms=()=>{lifetime.current.discovery?.abort();setPanel('rooms');setDeleting(false);void load(false);};
       const contacts=data?.contacts??[],room=data?.room;
       const matchingRooms=(data?.rooms??[]).filter(item=>!search.trim()||(item.name+' '+item.memberIds.map(id=>contacts.find(person=>person.id===id)?.name??'').join(' ')).toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()))
         .sort((a,b)=>(chatUi.get(b.id)?.visitedAt??b.at??0)-(chatUi.get(a.id)?.visitedAt??a.at??0));
       const panelView=panel?h('div',{className:'dsh-persona-chat-room-panel',role:'region','aria-label':panel==='rooms'?'聊天室列表':panel==='create'?'创建聊天室':'管理聊天室'},
-        h('header',null,h('strong',null,panel==='rooms'?'聊天室':panel==='create'?'新建聊天室':'房间资料与成员'),h('button',{type:'button',onClick:()=>setPanel(null)},'收起面板')),
+        h('header',null,h('strong',null,panel==='rooms'?'聊天室':panel==='create'?'新建聊天室':'房间资料与成员'),h('button',{type:'button',onClick:dismissPanel},'收起面板')),
         notice?h('p',{role:'status'},notice):null,
+        panel==='edit' && data.memoryEnabled?h('button',{type:'button',disabled:busy,onClick:discover},'整理本房近期记忆候选'):null,
         panel==='rooms'?h(React.Fragment,null,h('input',{type:'search','aria-label':'搜索聊天室',value:search,placeholder:'搜索房间或成员',onChange:event=>setSearch(event.target.value),style:{width:'100%',minWidth:0,marginBottom:10,padding:'7px 9px',border:'1px solid var(--chat-border)',borderRadius:7,background:'var(--chat-soft)',color:'inherit'}}),
           h('div',{className:'dsh-persona-chat-room-list'},...matchingRooms.map(item=>h('button',{
           key:item.id,type:'button','aria-label':'打开聊天室 '+item.name,'aria-pressed':item.id===roomId,disabled:busy,onClick:()=>void change({action:'select',roomId:item.id})},
@@ -2423,14 +2692,15 @@ const CLIENT_BUILD = 2026112301;
               ?{action:'create',requestId:creation.current,name:name.trim(),memberIds:members,targetPersonaId:members[0]}
               :{action:'update',roomId,configRevision:editVersion.current,name:name.trim(),memberIds:members})},busy?'保存中…':panel==='create'?'创建聊天室':'保存聊天室'),
               panel==='edit'?h('button',{type:'button',disabled:busy,onClick:openEdit},'重新载入成员'):null,
-              panel==='edit'?h('button',{type:'button',disabled:busy,onClick:()=>setDeleting(true)},'删除聊天室'):null),
-            deleting?h('div',null,h('p',null,'删除这个聊天室及其聊天记录？其他聊天室、人格和长期记忆都会保留。'),h('div',{className:'dsh-persona-chat-room-buttons'},
-              h('button',{type:'button',disabled:busy,onClick:()=>void change({action:'delete',roomId,revision:room.revision})},'确认删除聊天室'),
+              panel==='edit'?h('button',{type:'button',disabled:busy,onClick:()=>{setRetractMemories(true);setDeleting(true);}},'删除聊天室'):null),
+            deleting?h('div',null,h('p',null,'删除「'+room.name+'」？聊天记录和房间讨论状态会一起删除。'),data.roomMemoryCount>0?h('label',null,
+              h('input',{type:'checkbox',checked:retractMemories,onChange:e=>setRetractMemories(e.target.checked)}),'同时撤销本房间的 '+data.roomMemoryCount+' 条房间记忆（人格专属约定保留）'):null,h('div',{className:'dsh-persona-chat-room-buttons'},
+              h('button',{type:'button',disabled:busy,onClick:()=>void change({action:'delete',roomId,revision:room.revision,retractMemories:data.roomMemoryCount>0&&retractMemories})},'确认删除聊天室'),
               h('button',{type:'button',onClick:()=>setDeleting(false)},'取消删除'))):null)) : null;
       if(roomId&&room&&data.chatSchema===3&&data.discussionVersion===2)return h(PersonaChatWindow,{key:roomId,roomId,initialState:data,roomBusy:busy,sessionId:chatForegroundSession??sessionId,conversation,onClose,animateEntrance:false,
-        roomPanel:panelView,onDismissPanel:()=>setPanel(null),onOpenRooms:openRooms,onOpenMembers:openEdit,
+        roomPanel:panelView,onDismissPanel:dismissPanel,onOpenRooms:openRooms,onOpenMembers:openEdit,
         onRoomState:value=>{if(lifetime.current.live&&value.room?.id===selected.current)setData(value);},onRoomMissing:()=>{selected.current=null;setRoomId(null);setPanel('rooms');void load(false);}});
-      return h('section',{ref:openingSurface,className:'dsh-persona-chat','data-wide':String(chatRoomLayout.wide),role:'dialog','aria-label':'聊天室',onKeyDown:e=>{if(e.key==='Escape'&&!e.nativeEvent?.isComposing){e.stopPropagation();if(panel)setPanel(null);else onClose();}}},h('style',null,CHAT_CSS,ROOM_CHAT_CSS,FLOATING_WINDOW_CSS),
+      return h('section',{ref:openingSurface,className:'dsh-persona-chat',style:{'--chat-brand':readChatTheme().color},'data-wide':String(chatRoomLayout.wide),role:'dialog','aria-label':'聊天室',onKeyDown:e=>{if(e.key==='Escape'&&!e.nativeEvent?.isComposing){e.stopPropagation();if(panel)setPanel(null);else onClose();}}},h('style',null,CHAT_CSS,ROOM_CHAT_CSS,FLOATING_WINDOW_CSS),
         h(FloatingWindowHandles,{controls:openingFloating,label:'聊天室'}),
         h('header',{...openingFloating.dragProps,style:{display:'flex',justifyContent:'space-between',padding:'12px'}},h('strong',null,'聊天室'),h('button',{type:'button','aria-label':'关闭聊天室',onClick:onClose},'关闭')),
         h('div',{className:'dsh-persona-chat-room-loading'},h('p',{role:'status'},notice||(!data?'正在读取聊天室…':!data.ready?'聊天存储正在准备，稍后可重新读取。':'选择一个聊天室，或新建一段讨论。')),
@@ -2483,7 +2753,9 @@ const CLIENT_BUILD = 2026112301;
       const [clearConfirm, setClearConfirm] = React.useState(false);
       const [retryConfirm, setRetryConfirm] = React.useState(null);
       const [appearance, setAppearance] = React.useState(false);
+      const { theme, choose:chooseTheme, notice:themeNotice } = useChatTheme();
       const [workOpen,setWorkOpen]=React.useState(false);
+      const [remember,setRemember]=React.useState(null);
       const [suggestMode, setSuggestMode] = React.useState(false);
       const [suggestions, setSuggestions] = React.useState([]);
       const [suggestBusy, setSuggestBusy] = React.useState(false);
@@ -2771,19 +3043,24 @@ const CLIENT_BUILD = 2026112301;
       React.useEffect(() => {
         if ((!pending&&!queueWaiting&&!syncDelayed) || busy) return;
         let timer,sequence=0,alive=true,interval=1000;
+        const streamKey=JSON.stringify([explicitRoomId,data?.instanceId]);
         const poll=async()=>{
           if(!alive||busyRef.current||document.visibilityState==='hidden')return;
           const token=++sequence,ok=await currentLoad.current(undefined,true);
           if(!alive||token!==sequence||document.visibilityState==='hidden'||(ok&&!latestData.current?.running&&!(latestData.current?.queuedInputs??[]).some(batch=>batch.status==='pending'||batch.status==='sending')))return;
-          interval=ok?1000:Math.min(8000,interval*2);
+          const state=latestData.current,stream=roomLiveConnections.get(streamKey);
+          const covered=ok&&state?.roundPhase==='speaking'&&!state.queuedInputs?.length&&stream?.connected
+            &&stream.frames.some(frame=>frame.status==='streaming'&&state.activeAttemptIds?.includes(frame.attemptId));
+          interval=ok?(covered?8000:1000):Math.min(8000,interval*2);
           timer=setTimeout(poll,interval);
         };
         const visibility=()=>{sequence++;clearTimeout(timer);interval=1000;
           if(document.visibilityState!=='hidden')void poll();else reading.current?.abort();
         };
         if(document.visibilityState!=='hidden')timer=setTimeout(poll,interval);
-        document.addEventListener('visibilitychange',visibility);
-        return()=>{alive=false;sequence++;clearTimeout(timer);document.removeEventListener('visibilitychange',visibility);};
+        const disconnected=key=>{if(key===streamKey&&interval===8000){clearTimeout(timer);interval=1000;timer=setTimeout(poll,0);}};
+        roomLiveDisconnects.add(disconnected);document.addEventListener('visibilitychange',visibility);
+        return()=>{alive=false;sequence++;clearTimeout(timer);roomLiveDisconnects.delete(disconnected);document.removeEventListener('visibilitychange',visibility);};
       }, [pending,queueWaiting,syncDelayed,busy,explicitRoomId,persona,data?.instanceId]);
       const resetSuggestions = () => {
         suggestRequest.current.revision += 1; suggestRequest.current.abort?.abort(); suggestRequest.current.busy = false;
@@ -2960,14 +3237,15 @@ const CLIENT_BUILD = 2026112301;
         if(!explicitRoomId||!chatTransferHasFiles(event.dataTransfer))return;
         event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='copy';setImageDragging(true);
       };
-      const view = minimized?h('aside',{ref:surface,className:'dsh-persona-chat-dock','data-dock-order':0,'aria-label':'已最小化的聊天室'},
+      const themeStyle = {'--chat-brand':theme.color};
+      const view = minimized?h('aside',{ref:surface,className:'dsh-persona-chat-dock',style:themeStyle,'data-dock-order':0,'aria-label':'已最小化的聊天室'},
         h('style',null,ROOM_CHAT_CSS),
         h('button',{type:'button',ref:dockButton,'aria-label':'还原聊天室'+(unread?'，'+unread+' 条新回复':''),title:'还原 · '+(data?.room?.name??'聊天室'),onClick:()=>chatRuntime.setMinimized(false)},
           h('span',{'aria-hidden':true},h(RoomAvatar,{memberIds:data?.room?.memberIds,contacts:data?.contacts})),h('span',null,'聊天室'),
           unread?h('span',{key:unread,className:'dsh-persona-chat-dock-count','aria-hidden':true},unread>99?'99+':String(unread)):null),
         h('button',{type:'button','aria-label':'关闭聊天室',title:pending?'关闭窗口，已发送的回复会继续保存；需要中止请先停止回复。':'关闭聊天室',onClick:onClose},'×'),
         h('span',{className:'dsh-persona-chat-dock-status',role:'status','aria-live':'polite','aria-atomic':true},unread?'聊天室收到 '+unread+' 条新回复':'')):
-        h('section', { ref:surface,className: 'dsh-persona-chat', 'data-wide': String(wide), 'data-compose-expanded':String(composeExpanded), role: 'dialog', 'aria-modal': false,
+        h('section', { ref:surface,className: 'dsh-persona-chat', style:themeStyle, 'data-wide': String(wide), 'data-compose-expanded':String(composeExpanded), role: 'dialog', 'aria-modal': false,
         onDragEnterCapture:event=>{if(explicitRoomId&&chatTransferHasFiles(event.dataTransfer)){imageDragDepth.current++;dragImages(event);}},
         onDragOverCapture:dragImages,onDragEndCapture:resetImageDrag,
         onDragLeaveCapture:()=>{if(imageDragDepth.current>0&&!--imageDragDepth.current)setImageDragging(false);},
@@ -3040,11 +3318,18 @@ const CLIENT_BUILD = 2026112301;
         appearance ? h('section', { className: 'dsh-persona-chat-appearance','aria-label':'聊天室设置' },
           h('div',{className:'dsh-persona-chat-settings-heading'},h('strong',null,'聊天室设置'),h('button',{type:'button',onClick:closeAppearance},'收起设置')),
           h('div',{className:'dsh-persona-chat-settings-body'},
+            h('fieldset',{className:'dsh-persona-chat-themes'},h('legend',null,'主题色'),
+              h('div',{className:'dsh-persona-chat-swatches'},...CHAT_THEMES.map(option=>
+                h('label',{key:option.id,style:{'--swatch':option.color}},
+                  h('input',{type:'radio',name:'dsh-persona-chat-theme',value:option.id,checked:option.id===theme.id,onChange:()=>chooseTheme(option)}),option.name))),
+              themeNotice?h('small',{role:'status'},themeNotice):null),
             h(ChatThinkingControls,{visible:!minimized,roomId:explicitRoomId,routeKey:context?.primarySessionId??fixedSessionId}),
             h('div',{className:'dsh-persona-chat-settings-appearance'},h(ChatUserSettings)))) : null,
         workOpen&&explicitRoomId?h(WorkDraftPanel,{key:explicitRoomId,roomId:explicitRoomId,scopeKey:quoteScope,generation:data?.room?.generation,
-          discussionRevision:data?.room?.discussion?.revision??0,onClose:closeWorkDraft,onMinimize:minimize}):null,
+          referenceRevision:data?.room?.referenceRevision??0,discussionRevision:data?.room?.discussion?.revision??0,onClose:closeWorkDraft,onMinimize:minimize}):null,
         roomPanel,
+        remember&&remember.scopeKey===quoteScope&&remember.generation===data.room.generation?h(RememberChatPart,{...remember,key:JSON.stringify([remember.head.messageId,remember.part.id]),room:data.room,contacts:data.contacts,
+          onClose:saved=>{setRemember(null);remember.button?.focus();if(saved)void load(undefined,true);}}):null,
         clearConfirm ? h('div', { className: 'dsh-persona-chat-info' }, explicitRoomId?'清空这个聊天室的记录？成员、参考来源和长期记忆仍保留。':'清空这个角色的聊天？已保存偏好仍保留。',
           h('button', { type: 'button', disabled: busy, onClick: () => act({ action: 'clear', revision: data.room?.revision ?? 0 }) }, '确认清空聊天'),
           h('button', { type: 'button', onClick: () => setClearConfirm(false) }, '取消清空')) : null,
@@ -3065,7 +3350,10 @@ const CLIENT_BUILD = 2026112301;
                 explicitRoomId&&(group.head.memberIdsAtSend?.length>1||group.head.recipients.length>1)?h('small',{className:'dsh-persona-chat-mentions'},group.head.recipients.map(p=>'@'+p.name).join(' ')):null,
                 partIndex===0&&group.head.quote?h(ChatQuotedMessage,{quote:group.head.quote,available:!!chatQuotedSource(data.room,group.head.quote.ref,quoteScope),onJump:()=>jumpQuote(group.head.quote.ref)}):null,part.text,
                 h(ChatImages,{images:part.images,roomId:data.room?.id,generation:data.room?.generation??0})),
-              explicitRoomId&&(group.head.scopeKey??group.head.contextKey??null)===quoteScope?h('button',{type:'button',className:'dsh-persona-chat-quote-action','aria-label':'引用我的消息',title:'引用这句',onClick:()=>chooseQuote(group.head,null,part.text,part.id)},'↩'):null))),
+              explicitRoomId&&(group.head.scopeKey??group.head.contextKey??null)===quoteScope?h(React.Fragment,null,
+                h(ChatMessageAction,{label:'引用我的消息',title:'引用这句',onClick:()=>chooseQuote(group.head,null,part.text,part.id)}),
+                part.text&&data.memoryEnabled?h(ChatMessageAction,{remember:true,label:'记住我的这句',title:'记住这句',
+                  onClick:e=>setRemember({part,head:group.head,scopeKey:quoteScope,generation:data.room.generation,button:e.currentTarget})}):null):null))),
             ...group.responses.map(turn=>h('div',{key:turn.id,'data-chat-turn':turn.id},
             h(ChatTurnReply,{key:turn.attemptId,turn,instance:data.instanceId,roomId:explicitRoomId,running:data.running,
               held:responseHeld(turn),latest:turn.messageId===latestMessage,onPresented:afterPresentation,onSilent:rememberSilence,
@@ -3075,6 +3363,7 @@ const CLIENT_BUILD = 2026112301;
               onQuote:explicitRoomId&&(turn.scopeKey??turn.contextKey??null)===quoteScope?chooseQuote:undefined,
               avatar:()=>avatar(turn.recipientId??persona,turn.speakerName),
               colorStyle:chatPalette.style(bubbleColors.get(turn.recipientId??persona))}),
+            turn.status==='ready' && data.personalCounts?.[turn.attemptId]?h(ReplyMemory,{key:turn.attemptId,roomId:explicitRoomId,turn,count:data.personalCounts[turn.attemptId],revision:data.memoryRevision}):null,
             !responseHeld(turn)&&turn.status !== 'ready' && !(turn.status === 'pending' && data.running)
               && !(turn.status==='interrupted'&&turn.messageId!==latestMessage&&['reaction','followup'].includes(turn.phase)) ? h('div', { className: 'dsh-persona-chat-turn-state', role: 'status', 'aria-live': 'polite' },
               explicitRoomId&&(data.room.memberIds.length>1||turn.recipients.length>1||turn.phase==='reaction')?h('strong',null,turn.speakerName+' · '):null,
@@ -3290,7 +3579,7 @@ const CLIENT_BUILD = 2026112301;
       .dsh-report-reading .rr-intro,.dsh-report-reading .rr-unavailable{max-width:740px;margin:0 auto 22px;color:var(--rr-muted);font-size:12px;line-height:1.8}.dsh-report-reading .rr-intro{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:0 0 17px;border-bottom:1px solid var(--rr-border)}.dsh-report-reading .rr-intro p{margin:0}.dsh-report-reading .rr-intro button{white-space:nowrap;font-size:11px}.dsh-report-reading .rr-unavailable{padding:28px 0}.dsh-report-reading .rr-unavailable h3{color:var(--rr-ink);font-size:17px;margin:0 0 10px}.dsh-report-reading .rr-unavailable button{margin-top:10px}.dsh-report-reading .rr-note{font-size:11px;color:var(--rr-muted);margin:12px auto 0;max-width:740px;line-height:1.75}
       .dsh-report-reading .rr-explanation{max-width:740px;margin:0 auto 18px;font-size:11px;color:var(--rr-muted);line-height:1.75}.dsh-report-reading .rr-explanation summary{cursor:pointer}.dsh-report-reading .rr-explanation p{margin:6px 0 0}.dsh-report-reading .rr-status{padding:7px 17px;background:var(--rr-soft);font-size:11px;flex:none;line-height:1.75}.dsh-report-reading .rr-status p{margin:0}.dsh-report-reading .rr-status details{margin-top:3px}.dsh-report-reading .rr-status summary{cursor:pointer}.dsh-report-reading .rr-footer{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 17px;border-top:1px solid var(--rr-border);font-size:10px;color:var(--rr-muted);flex:none}.dsh-report-reading .rr-footer>span{flex:1;min-width:120px;overflow-wrap:anywhere}.dsh-report-reading .rr-footer button{font-size:11px;min-height:27px}
       .dsh-report-reading-dock{position:fixed;z-index:1100;right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));display:flex;align-items:center;gap:2px;max-width:calc(100vw - 32px);padding:3px 4px 3px 3px;background:var(--rr-bg);border:1px solid var(--rr-border);border-radius:18px;box-shadow:0 3px 16px #0002;animation:rr-enter 150ms ease-out both;font:12px/1.35 system-ui,sans-serif}.dsh-report-reading-dock button{border:0;background:transparent;border-radius:12px;min-height:28px;padding:2px 6px}.dsh-report-reading-dock button:first-child{display:flex;gap:7px;align-items:center;min-height:36px;padding-left:4px}.dsh-report-reading-dock .rr-dock-icon{display:inline-flex;align-items:center;justify-content:center;width:24px;height:26px;font-size:18px;color:var(--rr-accent)}.dsh-report-reading-dock button:last-child{width:24px;height:28px;color:var(--rr-muted);font-size:16px}.dsh-report-reading-dock[data-busy=true] .rr-dock-icon{opacity:.6}
-      .dsh-report-reading .rr-document>div{color:var(--rr-ink)}.dsh-report-reading .rr-document h1{color:var(--rr-heading-1,var(--rr-accent))}.dsh-report-reading .rr-document h2{color:var(--rr-heading-2,var(--rr-accent))}.dsh-report-reading .rr-document :is(h3,h4,h5,h6){color:var(--rr-ink)}.dsh-report-reading .rr-document li::marker{color:var(--rr-muted)}.dsh-report-reading .rr-document a:not(:where(pre *,code *)){color:var(--rr-link,var(--rr-accent))}.dsh-report-reading .rr-document :not(pre)>code{color:var(--dsw-alias-label-primary,var(--rr-ink))}
+      .dsh-report-reading .rr-document>div{color:var(--rr-ink)}.dsh-report-reading .rr-document h1{color:var(--rr-heading-1,var(--rr-accent))}.dsh-report-reading .rr-document h2{color:var(--rr-heading-2,var(--rr-accent))}.dsh-report-reading .rr-document :is(h3,h4,h5,h6){color:var(--rr-ink)}.dsh-report-reading .rr-document li::marker{color:var(--rr-muted)}.dsh-report-reading .rr-document a:not(:where(pre *,code *)){color:var(--rr-link,var(--rr-accent))}.dsh-report-reading .rr-document :not(pre)>code{color:var(--rr-ink)}.dsh-report-reading:not([data-reading-theme=system]) .rr-document :not(pre)>code{background-color:var(--rr-soft)}
       .dsh-report-reading .rr-theme-fields{display:grid;gap:8px}.dsh-report-reading .rr-theme-field{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;color:var(--rr-ink)}.dsh-report-reading .rr-theme-field select{font:inherit;color:var(--rr-ink);background:var(--rr-bg);border:1px solid var(--rr-border);border-radius:6px;padding:4px 7px;min-height:29px;min-width:145px;max-width:190px}.dsh-report-reading .rr-theme-field select:disabled{opacity:.65}.dsh-report-reading .rr-theme-current,.dsh-report-reading .rr-theme-notice{margin:0;font-size:10px;color:var(--rr-muted);line-height:1.7;max-width:290px}.dsh-report-reading .rr-theme-notice{padding-top:3px}
       .dsh-report-reading .rr-appearance{margin-inline-start:auto}.dsh-report-reading .rr-readable-note{max-width:740px;margin:0 auto 24px;display:flex;align-items:flex-start;gap:12px;color:var(--rr-muted);font-size:11px}.dsh-report-reading .rr-readable-note p{flex:1;margin:0}.dsh-report-reading .rr-readable-note button{flex:none;font-size:10px}
       .dsh-report-reading .rr-readable-passage{position:relative;margin-bottom:1.15em;min-width:0}.dsh-report-reading .rr-readable-source{margin:0;color:var(--rr-muted)}
@@ -3657,6 +3946,7 @@ const CLIENT_BUILD = 2026112301;
       const [data, setData] = React.useState(conversation);
       const [draft, setDraft] = React.useState(() => conversationDrafts.get(sessionId) ?? null);
       const [target, setTarget] = React.useState('');
+      const [summary,setSummary]=React.useState(''), [choices,setChoices]=React.useState([]), [selected,setSelected]=React.useState([]);
       const [busy, setBusy] = React.useState(false);
       const busyRef = React.useRef(false);
       const [message, setMessage] = React.useState('');
@@ -3690,6 +3980,7 @@ const CLIENT_BUILD = 2026112301;
           const { ok, value } = await actionRequest('conversation', { sessionId, revision: data.revision, ...body });
           if (!ok) { if (value.conversation) accept(value.conversation, request); setMessage(actionError(value.error)); return; }
           if (!accept(value, request)) { setMessage('插件状态已更新，请核对当前会话后重试。输入已经保留。'); return; }
+          if (body.action==='relay') {setSummary('');setSelected([]);}
           if (body.action === 'select' && conversationDrafts.get(sessionId) === draft) {
             conversationDrafts.delete(sessionId); setDraft(null);
           }
@@ -3732,8 +4023,14 @@ const CLIENT_BUILD = 2026112301;
             h('label', null, '接手角色', h('select', { 'aria-label': '接手角色', disabled: disabled || relay?.status === 'pending',
               value: relay?.status === 'pending' ? relay.toPersonaId : target, onChange: (e) => setTarget(e.target.value) }, h('option', { value: '' }, '选择一位角色'),
               presets.filter((p) => p.id !== data.effectivePersonaId).map((p) => h('option', { key: p.id, value: p.id }, p.name)))),
-            h('button', { type: 'button', disabled: disabled || !target || relay?.status === 'pending' || !!draft,
-              onClick: () => write({ action: 'relay', toPersonaId: target }) }, '安排下一份汇报接力'),
+            relay?.status!=='pending'?h('details',{onToggle:async e=>{if(e.target!==e.currentTarget || !e.currentTarget.open)return;
+              try{const {ok,value}=await actionRequest('memory/handoffs?session='+encodeURIComponent(sessionId)+'&persona='+encodeURIComponent(data.effectivePersonaId));
+                if(!ok)throw Error();setChoices(value.choices??[]);if(!value.enabled)setMessage('使用交接卡需要先开启记忆。');}catch{setMessage('读取交接记忆失败。');}}},
+              h('summary',null,'附上交接卡'),h('label',null,'交接说明',h('textarea',{value:summary,maxLength:240,onChange:e=>setSummary(e.target.value)})),
+              ...choices.map(c=>h('label',{key:c.id},h('input',{type:'checkbox',checked:selected.includes(c.id),disabled:!selected.includes(c.id)&&selected.length>=10,
+                onChange:e=>setSelected(e.target.checked?[...selected,c.id]:selected.filter(id=>id!==c.id))}),c.content))):null,
+            h('button', { type: 'button', disabled: disabled || !target || relay?.status === 'pending' || !!draft || (selected.length>0 && !summary.trim()),
+              onClick: () => write({ action: 'relay', toPersonaId: target, ...(summary.trim()?{handoff:{summary:summary.trim(),memoryIds:selected}}:{}) }) }, '安排下一份汇报接力'),
             draft ? h('p', { className: 'dsh-persona-action-note' }, '请先保存或放弃上面的会话选择，再安排接力。') : null))
           : h('p', null, '正在读取…'),
         h('p', { role: 'status', 'aria-live': 'polite', className: 'dsh-persona-action-note' }, message || (!data?.ready ? '正在等待保存服务就绪…' : '修改后点击保存。')));
@@ -3799,7 +4096,7 @@ const CLIENT_BUILD = 2026112301;
         h('div', { className: 'dsh-persona-action-buttons' },
           h('button', { type: 'button', 'data-primary': '', disabled: busy || row.retrying || !draft.content.trim() || draft.content.length>240 || unavailable || stale || awaitingOwnUpdate,
             onClick: submit }, busy || row.retrying ? '处理中…' : '重新转述'),
-          h('button', { type: 'button', disabled: busy, onClick: () => { feedbackDrafts.delete(key); setDraft({ content: '', scope: 'once' }); setMessage('已清空输入。'); } }, '清空输入')),
+          h('button', { type: 'button', disabled: busy, onClick: () => { edit({ content: '' }); setMessage('已清空输入。'); } }, '清空输入')),
         h('p', { role: 'status', 'aria-live': 'polite', className: 'dsh-persona-action-note' }, message || '关闭后保留未提交的输入。'),
         showResult&&!stale&&row.status==='ready'&&row.text?h('section',{'aria-label':'表达结果'},
           h('h3',null,acceptedVersion===row.version?'本次调整结果':'当前表达'),renderMarkdown(row.text),
@@ -4118,9 +4415,9 @@ const CLIENT_BUILD = 2026112301;
     function displayNode(node, text) {
       if (typeof text !== 'string' || node?.data?.status !== 'settled') return node;
       const blocks = node.data.blocks;
-      if (!Array.isArray(blocks) || blocks.filter((block) => block?.kind === 'text').length !== 1) return node;
-      if (blocks.some((block) => block?.kind === 'text' && block.text === text)) return node;
-      return { ...node, data: { ...node.data, blocks: blocks.map((block) => block?.kind === 'text' ? { ...block, text } : block) } };
+      const content=Array.isArray(blocks)?blocks.filter(block=>block?.kind==='text' && typeof block.text==='string' && block.text.trim()):[];
+      if (content.length!==1 || content[0].text===text) return node;
+      return { ...node, data: { ...node.data, blocks: blocks.map(block => block===content[0] ? { ...block, text } : block) } };
     }
 
     const childRendererCache = new WeakMap();
@@ -4423,7 +4720,12 @@ const CLIENT_BUILD = 2026112301;
       return `v1:${text.length}:${(a >>> 0).toString(16)}:${(b >>> 0).toString(16)}`;
     }
 
-    const REVIEW_REASONS = ['negation-change', 'condition-change', 'uncertainty-change', 'quantity-change', 'literal-order'];
+    const REVIEW_REASON_LABELS = {
+      'negation-change':'否定表达变化', 'condition-change':'条件表达变化',
+      'uncertainty-change':'不确定性表达变化', 'quantity-change':'数字表达变化',
+      'literal-order':'字面量顺序变化', 'self-reference':'转述者可能使用了自称',
+    };
+    const REVIEW_REASONS = Object.keys(REVIEW_REASON_LABELS);
 
     function reviewNeeded(row, original, settings) {
       const review = row?.review;
@@ -4438,7 +4740,7 @@ const CLIENT_BUILD = 2026112301;
         && settings.reviewThreshold >= 0 && settings.reviewThreshold <= 1 ? settings.reviewThreshold : 0.55;
       // A small edit can change a count or a local assertion. These signals
       // invite a comparison independently of the overall wording threshold.
-      const factual = review.reasons.includes('quantity-change') || review.reasons.includes('literal-order') || review.criticalReasons?.length > 0;
+      const factual = review.reasons.includes('quantity-change') || review.reasons.includes('literal-order') || review.reasons.includes('self-reference') || review.criticalReasons?.length > 0;
       if (!factual && !(review.editScore > 0 && review.editScore >= threshold)) return false;
       return review.sourceHash === reviewFingerprint(original) && review.targetHash === reviewFingerprint(row.text);
     }
@@ -4619,11 +4921,7 @@ const CLIENT_BUILD = 2026112301;
         t?.('shell.reviewNotice') ?? '本地表达对照提示，不代表事实错误；低分也不保证语义一致。',
         ` (${Math.round(review.editScore * 100)}/100)`,
         review.reasons.length > 0
-          ? h('div', null, review.reasons.map((reason) => t?.(`shell.reviewReasons.${reason}`) ?? ({
-            'negation-change': '否定表达变化', 'condition-change': '条件表达变化',
-            'uncertainty-change': '不确定性表达变化', 'quantity-change': '数字表达变化',
-            'literal-order': '字面量顺序变化',
-          })[reason]).join(' · '))
+          ? h('div', null, review.reasons.map((reason) => t?.(`shell.reviewReasons.${reason}`) ?? REVIEW_REASON_LABELS[reason]).join(' · '))
           : null),
       renderOriginal?.() ?? renderMarkdown(original),
       ) : null;
@@ -4751,7 +5049,7 @@ const CLIENT_BUILD = 2026112301;
     function reportFallbackReason(row) {
       if (!row || !['failed', 'skipped'].includes(row.status)) return '';
       const reason = row.reason;
-      if (['source-quantity-change', 'source-worker-change', 'source-permission-change', 'source-scope-change', 'source-status-change'].includes(reason)) {
+      if (['source-quantity-change', 'source-quantity-attribution', 'source-worker-change', 'source-permission-change', 'source-scope-change', 'source-status-change'].includes(reason)) {
         return '这次转述的数值表达、工作归属或执行条件未通过现有检查，未采用改写。原始汇报仍可阅读；这些检查不构成完整语义核验。';
       }
       if (['dropped-marker', 'unknown-marker', 'duplicate-marker', 'invented-fence'].includes(reason)) {
@@ -4773,13 +5071,14 @@ const CLIENT_BUILD = 2026112301;
       const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
       const seq = data?.finalNode?.seq;
       const original = textOf(data);
+      const textBlocks = blocks.filter(block=>block?.kind==='text' && typeof block.text==='string' && block.text.trim());
       const t = shellTranslate(props.t);
       const eligible = data?.status === 'settled' && groupPart !== 'reasoning'
         && (groupPart === undefined || groupPart === 'response') && typeof seq === 'number'
         && usableSessionId(sessionId) && original !== ''
-        && blocks.filter((block) => block?.kind === 'text').length === 1;
+        && textBlocks.length === 1;
       const readingEligible=data?.status==='settled'&&groupPart!=='reasoning'&&(groupPart===undefined||groupPart==='response')
-        &&Number.isSafeInteger(seq)&&usableSessionId(sessionId)&&blocks.some(block=>block?.kind==='text'&&typeof block.text==='string'&&block.text.trim());
+        &&Number.isSafeInteger(seq)&&usableSessionId(sessionId)&&textBlocks.length>0;
       const key = rowKey(sessionId, seq);
       const liveKey = rowKey(sessionId, node?.key);
       if (typeof node?.key === 'string' && data?.status === 'running') liveSeen.add(liveKey);
@@ -4848,7 +5147,7 @@ const CLIENT_BUILD = 2026112301;
           h('span', { style: badgeStyle }, ready?(row.speaker?.name??'历史人格'):'原始汇报', ready&&row.speaker?.mode === 'relay' ? ' · 转述' : ''),
           showHeader&&ready?h('button', {
             type: 'button', style: toggleStyle, 'aria-expanded': comparisonOpen, 'aria-haspopup': 'dialog',
-            onClick: () => setComparison({ key, original: blocks.find((block) => block?.kind === 'text').text, persona: row.text }),
+            onClick: () => setComparison({ key, original:textBlocks[0].text, persona: row.text }),
           }, t('shell.showOriginal') ?? 'origin'):null,
           showHeader?h('button', { type: 'button', style: toggleStyle, 'aria-haspopup': 'dialog',
             onClick: () => setFeedbackOpen({key,row}) }, row.retrying ? '正在调整…' : '调整表达'):null,
@@ -5251,10 +5550,10 @@ const CLIENT_BUILD = 2026112301;
       { label: '工作转述', keys: ['rewrite', 'progress'], tone: 'rewrite' },
       { label: '报告阅读', keys: ['report-visualization'], tone: 'visualization' },
       { label: '聊天室', keys: ['chat', 'chat-context-selection', 'chat-participation', 'chat-support-research', 'chat-support-reason', 'chat-support-summarize', 'reply-suggestions', 'chat-draft'], tone: 'chat' },
-      { label: '其他功能', keys: ['preset', 'memory'], tone: 'other' },
+      { label: '其他功能', keys: ['preset', 'persona-preview', 'memory'], tone: 'other' },
     ];
     const USAGE_NAMES = { rewrite: '汇报改写', progress: '静默播报', 'report-visualization':'报告阅读', chat: '角色发言',
-      'chat-support-research':'调查资料', 'chat-support-reason':'深入推演', 'chat-support-summarize':'整理工作参考', 'chat-context-selection':'轮次规划', 'chat-participation': '调度判断', 'reply-suggestions': '快捷回复', 'chat-draft':'指令整理', preset: '预设生成', memory: '记忆提取' };
+      'chat-support-research':'调查资料', 'chat-support-reason':'深入推演', 'chat-support-summarize':'整理工作参考', 'chat-context-selection':'轮次规划', 'chat-participation': '调度判断', 'reply-suggestions': '快捷回复', 'chat-draft':'指令整理', preset: '预设生成','persona-preview':'人格试说', memory: '记忆提取' };
     const usageNumber = (n) => Number.isSafeInteger(n) && n >= 0 ? n.toLocaleString('zh-CN') : '—';
     const usageTokens = (m) => m.calls > 0 && !m.usageCalls ? '未上报' : usageNumber(m.totalTokens);
     const usageDay = (iso) => String(iso ?? '').slice(5).replace('-', '/');
@@ -5396,6 +5695,11 @@ const CLIENT_BUILD = 2026112301;
             h('button', { type: 'button', className: 'mu-refresh', disabled: state === 'loading', onClick: () => refresh((n) => n + 1) }, '刷新'))),
         data && ['failed', 'memory-only'].includes(data.persistence) ? h('p', { role: 'status', style: { marginBottom: '10px' } },
           data.persistence === 'failed' ? '最近一次保存失败，这部分用量可能无法在重启后保留。' : '本地存储不可用，当前记录仅在这次运行中保留。') : null,
+        data?.chatTiming&&Object.values(data.chatTiming.paths).some(r=>r.count>0)?h('section',{style:{overflowX:'auto'}},h('h4',null,'聊天室响应（最近 200 轮）'),
+          h('table',null,h('thead',null,h('tr',null,...['路径','轮数','首字 P50','首字 P90','完成 P50','平均调用'].map(n=>h('th',{key:n},n)))),
+            h('tbody',null,...Object.entries(data.chatTiming.paths).map(([path,r])=>h('tr',{key:path},...[{direct:'单人直答',directed:'定向首答',director:'经判断',context:'筛选工作参考',support:'带辅助任务'}[path],r.count,
+              ...[r.firstText.p50,r.firstText.p90,r.done.p50].map(n=>n==null?'—':(n/1000).toFixed(1)+' s'),r.avgCalls?.toFixed(1)??'—'].map((v,i)=>h('td',{key:i},v)))))),
+          h('p',{style:hintStyle},'有效样本不足 5 轮时隐藏分位数。失败与取消 '+data.chatTiming.failed+' 轮计入轮数，延迟与平均调用仅统计成功轮次。')):null,
         data?.totals.calls ? summary() : h('div', { className: 'mu-notice', role: 'status' },
           h('strong', null, state === 'error' ? '暂时读不到用量' : data ? '这段时间还没有调用记录' : '正在读取用量…'),
           h('p', null, state === 'error' ? '可以点击刷新重试。' : data ? '从启用统计后的第一次模型调用开始记录，也可以切换时段查看。' : '')));
@@ -5499,6 +5803,17 @@ const CLIENT_BUILD = 2026112301;
         }catch(error){if(token===own.token&&!abort.signal.aborted)setInfo(error.status===409?'参考设置已变化，请刷新后再试。':'暂时无法确认修改结果，请刷新核对后重试。');}
         finally{if(own.writing===token)own.writing=0;if(token===own.token)setSaving(false);}
       };
+      const retract=async ref=>{
+        if(current.current.writing)return;
+        const own=current.current,token=++own.token; own.writing=token;setSaving(true);
+        const write=async body=>{const response=await fetch(ROUTE+'/memory',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+          if(!response.ok)throw Error();return (await response.json()).result;};
+        try{const op=await write({action:'propose',operation:'retract',id:ref.id,version:ref.version,statement:'在本轮参考中撤销这条记忆'});
+          await write({action:'confirm',id:op.id,version:op.version});}
+        catch{if(token===own.token)setInfo('未能确认撤销，请刷新后核对。');return;}
+        finally{if(own.writing===token){own.writing=0;setSaving(false);}}
+        if(token===own.token)await load();
+      };
       const changeDiscussion=async(body)=>{
         if(busy||saving||current.current.writing||!data?.room)return false;const own=current.current,token=++own.token,abort=new AbortController();own.abort?.abort();own.abort=abort;own.writing=token;
         setSaving(true);setInfo('');
@@ -5600,7 +5915,11 @@ const CLIENT_BUILD = 2026112301;
                 record.quote?h('div',null,h('strong',null,'用户本次明确引用'),excerpt(record.quote)):null),
               h('section',{className:'dsh-persona-room-reference-card','aria-label':'本次人格偏好'},h('h4',null,'人格偏好 · '+record.personaName),
                 h('p',null,'只用于这位人格的这次回应；其他成员不会因此取得她的私有偏好。'),
-                ...record.memory.map(ref=>h('p',{key:ref.id},ref.available?ref.content:'该版本已更改、撤销或不再适用，不显示旧内容。')),
+                ...[false,true].map(personal=>{const refs=record.memory.filter(ref=>!!ref.personal===personal);return refs.length?h('div',{key:String(personal)},
+                  h('strong',null,personal?'本人经历与房间约定':'表达偏好与约定'),...refs.map(ref=>h('div',{key:ref.id},ref.available?h(React.Fragment,null,
+                    h('p',null,ref.content+' · '+({persona:record.personaName,session:data.room.name,shared:'所有人格'}[ref.scope]??'')),
+                    ...(ref.evidence??[]).map((quote,i)=>h('blockquote',{key:i},quote)),h('button',{type:'button',disabled:saving,onClick:()=>void retract(ref)},'撤销')):
+                    (ref.status??'该版本已更改、撤销或不再适用，不显示旧内容。')))):null;}),
                 !record.memory.length?h('p',null,record.memoryEnabled?'这次没有选入表达偏好。':'发起这次请求时，记忆功能未开启。'):null))) :null,
           data.excluded?.length?h('details',null,h('summary',null,'已暂停的旧话题 · '+data.excluded.length),
             h('p',{style:hintStyle},'仅停止自动选入旧话题，不删除聊天，也不阻止你主动引用。修改会停止本房间尚未完成的旧请求。'),
@@ -5632,11 +5951,12 @@ const CLIENT_BUILD = 2026112301;
         silent:'未发言',failed: '生成未完成', cancelled: '请求已取消', interrupted: '重启前结束状态未知' };
       const reasons = { candidate: '等待确认', superseded: '已被替代', rejected: '已忽略', retracted: '已撤销',
         expired: '已过期', 'not-expression': '共同经历或会话情况，不用于表达转述', overridden: '已有优先级更高的同类偏好',
-        budget: '超出本次内容预算', limit: '超出本次条数上限' };
+        budget: '超出本次内容预算', limit: '超出本次条数上限', irrelevant:'与当前话题无关' };
       const name = (id) => presets.find((p) => p.id === id)?.name ?? '已移除的人格';
       const allRecords = scopePending || data?.usage?.version !== 1 ? [] : (data.usage.records ?? []);
       const records = allRecords.filter((record) =>
-        (filter === 'all' || record.personaId === data.activePersonaId) && (channel === 'all' || channel === record.channel)).slice().reverse();
+        (filter!=='current'&&filter!=='all' ? record.sessionId===filter : filter === 'all' || record.personaId === data.activePersonaId)
+        && (channel === 'all' || channel === record.channel)).slice().reverse();
       const sent = (record) => Number.isFinite(record.sentAt);
       const resolve = (ref, record, selected) => {
         const entry = (data.entries ?? []).find((e) => e.id === ref.id && e.version === ref.version);
@@ -5650,7 +5970,7 @@ const CLIENT_BUILD = 2026112301;
         const selectionLabel = (provided ? '已提供 ' : '准备选入 ') + record.selected.length + ' 条';
         const refList = (refs, selected) => refs.length ? h('ul', null, ...refs.map((ref) => h('li', { key: ref.id },
           resolve(ref, record, selected) ?? '原版本已更改、删除或不再适用，无法展示当时内容。',
-          !selected ? h('span', { className: 'dsh-persona-usage-reason' }, reasons[ref.reason] ?? '本次未选中') : null)))
+          h('span', { className: 'dsh-persona-usage-reason' }, selected ? ({tag:'标签命中', relevant:'话题相关', expression:'表达偏好或约定', pinned:'话题相关 · 已置顶', recent:'最近'}[ref.basis] ?? '') : reasons[ref.reason] ?? '本次未选中'))))
           : h('p', { style: hintStyle }, selected ? '本次没有选入表达偏好。' : '没有其他同范围记忆被排除。');
         return h('details', { key: record.id, className: 'dsh-persona-usage-record', 'data-memory-usage': record.id },
           h('summary', null, h('span', null, channels[record.channel]), h('span', { style: hintStyle }, name(record.personaId)),
@@ -5703,7 +6023,19 @@ const CLIENT_BUILD = 2026112301;
 
     const memoryAddDrafts = new Map();
     const memoryEditDrafts = new Map();
-    function MemoryPanel({ settings, save, presets }) {
+    function CapacityTools({data,write,busy}) {
+      if(!data?.capacity)return null;
+      const capacity=data.capacity;
+      return h('div',null,h('p',null,'表达偏好与约定 '+data.entries.filter(e=>e.status!=='candidate'&&['preference','agreement'].includes(e.kind)).length+
+        '　会话情况 '+data.entries.filter(e=>e.status!=='candidate'&&e.kind==='context').length+'　经历 '+data.entries.filter(e=>e.status!=='candidate'&&e.kind==='episode').length+
+        '　待核对 '+data.entries.filter(e=>e.status==='candidate').length),
+        h('button',{type:'button',disabled:busy||!capacity.cleanable,onClick:()=>write({action:'cleanup',revision:data.revision})},'清理到期或过期历史 '+capacity.cleanable+' 条'),
+        ...capacity.similar.map(group=>{const records=group.map(ref=>data.entries.find(e=>e.id===ref.id));return h('form',{key:JSON.stringify(group),onSubmit:event=>{
+          event.preventDefault();const fields=event.currentTarget.elements;void write({action:'merge',refs:group,keep:fields.keep.value,content:fields.content.value.trim()||records.find(e=>e.id===fields.keep.value).content});}},
+          h('label',null,'相近条目 · 选择保留项',h('select',{name:'keep'},...records.map(e=>h('option',{key:e.id,value:e.id},e.content)))),h('input',{name:'content',maxLength:240,placeholder:'可选：合并后的内容'}),h('button',{disabled:busy},'确认合并'));}),
+        capacity.used>=capacity.limit?h('p',null,'合并后的旧条目保留为历史。需要立即腾出空间时，可在记忆设置的历史列表中删除已核对的条目。'):null);
+    }
+    function MemoryPanel({ settings, save, presets, importRevision }) {
       const [data, setData] = React.useState(undefined);
       const [notice, setNotice] = React.useState('');
       const [busy, setBusy] = React.useState(false);
@@ -5722,6 +6054,20 @@ const CLIENT_BUILD = 2026112301;
         ? data.activePresetName !== settings.presetName : expectedPersona && expectedPersona !== data.activePersonaId);
       const [filter, setFilter] = React.useState('current');
       const [view, setView] = React.useState('active');
+      const [query,setQuery]=React.useState(''),[kindFilter,setKindFilter]=React.useState('');
+      const [rooms,setRooms]=React.useState([]);
+      const roomRead=React.useRef(null);
+      const loadRooms=async()=>{
+        if(roomRead.current)return;
+        const abort=new AbortController();roomRead.current=abort;
+        try{const response=await fetch(ROUTE+'/chat',{signal:abort.signal});if(response.ok){const value=await response.json();if(!abort.signal.aborted&&Array.isArray(value.rooms))setRooms(value.rooms);}}
+        catch{/* Focusing the room selector can retry a failed read. */}
+        finally{if(roomRead.current===abort)roomRead.current=null;}
+      };
+      React.useEffect(()=>{
+        if(manual.scope==='room')void loadRooms();
+        return()=>{roomRead.current?.abort();roomRead.current=null;};
+      },[draftKey,manual.scope]);
       const memoryList = React.useRef(null);
       const focusOperation = React.useRef(undefined);
       const [editing, setEditing] = React.useState(undefined);
@@ -5740,20 +6086,22 @@ const CLIENT_BUILD = 2026112301;
       }, [data, view]);
       const labels = { preference: '表达偏好', agreement: '互动约定', context: '会话情况', episode: '共同经历',
         active: '使用中', candidate: '待核对', superseded: '已替代', rejected: '已忽略', retracted: '已撤销',
-        manual: '手动记录', explicit: '用户明确表达', model: '后台整理', legacy: '旧版迁移', correction: '已确认更正' };
+        chat:'聊天室原话',manual: '手动记录', explicit: '用户明确表达', model: '后台整理', legacy: '旧版迁移', correction: '已确认更正' };
       const personaName = (id) => presets.find((p) => p.id === id)?.name ?? '已移除的人格';
       const scopeLabel = (entry) => entry.scope === 'shared' ? '所有人格共享'
         : entry.scope === 'persona' ? '仅 ' + personaName(entry.personaId)
-        : (entry.sessionId === data?.sessionId ? '当前会话' : '会话 ' + String(entry.sessionId).slice(0, 16))
+        : (entry.sessionId?.startsWith('room:')||/^chat:[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/iu.test(entry.sessionId)?'房间 · '+(rooms.find(r=>r.id===entry.sessionId)?.name??data?.roomNames?.[entry.sessionId]??'已移除房间')
+          : '会话 · '+(data?.sessionTitles?.[entry.sessionId]??(entry.sessionId===data?.sessionId?'当前会话':String(entry.sessionId).slice(0, 32))))
           + (entry.personaId ? ' · 仅 ' + personaName(entry.personaId) : ' · 角色共享');
       const errorText = (code) => ({
         'memory-conflict': '记录已变化，尚未应用这次操作。请刷新后重新核对；草稿会保留。',
         'storage-not-ready': '存储尚未就绪，请稍后重试。',
         'memory-save-failed': '保存失败，内容仍保留，请稍后重试。',
-        'memory-capacity': '记忆已满，请删除不再需要的历史记录。',
+        'memory-capacity': '记忆已满（200 条）。展开「记忆占用」可清理过期记录或核对相近条目。',
         'memory-operation-capacity': '待确认项目已满，请先处理不再需要的项目。',
         'memory-target-inactive': '这条记录已失效，请刷新后核对当前记录。',
         'memory-statement-required': '请留下你这次更正或撤销的原话。',
+        'invalid-memory-tags': '最多 6 个标签，每个最多 32 字。',
         'invalid-memory-replacement': '请填写与旧记录不同的新内容。',
         'private-memory-needs-scope': '互动约定和共同经历请保留在对应人格或会话中。',
         'memory-extraction-disabled': '请先开启记忆与后台整理。',
@@ -5779,6 +6127,8 @@ const CLIENT_BUILD = 2026112301;
       React.useEffect(() => {
         setManual(memoryAddDrafts.get(draftKey) ?? { content: '', kind: 'preference', scope: 'persona' });
         setEditing(undefined); setClearConfirm(false); setNotice('');
+      }, [draftKey]);
+      React.useEffect(() => {
         // A persona change retires the old response, even if it is still saving.
         revision.current += 1;
         void (async () => {
@@ -5791,7 +6141,7 @@ const CLIENT_BUILD = 2026112301;
           } catch { if (revision.current === token) setNotice('暂时无法读取记忆，请稍后刷新。'); }
         })();
         return () => { revision.current += 1; };
-      }, [settings.memory, settings.memoryExtraction, settings.presetName]);
+      }, [settings.memory, settings.memoryExtraction, settings.presetName, importRevision]);
       const write = async (body) => {
         if (busyRef.current || scopePending || currentPreset.current !== settings.presetName) return false;
         busyRef.current = true; setBusy(true);
@@ -5814,13 +6164,14 @@ const CLIENT_BUILD = 2026112301;
           return false;
         } finally { busyRef.current = false; setBusy(false); }
       };
-      const scoped = (entry) => filter === 'all' || entry.scope === 'shared'
+      const scoped = (entry) => filter!=='current'&&filter!=='all' ? entry.sessionId===filter : filter === 'all' || entry.scope === 'shared'
         || (entry.scope === 'persona' && entry.personaId === data?.activePersonaId)
         || (entry.scope === 'session' && entry.sessionId === data?.sessionId
           && (!entry.personaId || entry.personaId === data?.activePersonaId));
       const live = (entry) => entry.status === 'active' && (entry.expiresAt === null || entry.expiresAt > Date.now());
-      const all = scopePending ? [] : (data?.entries ?? []).filter(scoped);
-      const pending = scopePending ? [] : (data?.operations ?? []).filter((op) => op.status === 'pending' && scoped(op.target));
+      const matches=e=>(!kindFilter||kindFilter===e.kind)&&(!query||[e.content,...(e.tags??[])].join(' ').toLowerCase().includes(query.trim().toLowerCase()));
+      const all = scopePending ? [] : (data?.entries ?? []).filter(e=>scoped(e)&&matches(e));
+      const pending = scopePending ? [] : (data?.operations ?? []).filter((op) => op.status === 'pending' && scoped(op.target) && matches(op.target));
       const adoptionIds = new Set(pending.filter((op) => op.kind === 'accept').map((op) => op.targetId));
       const candidates = all.filter((entry) => entry.status === 'candidate' && !adoptionIds.has(entry.id));
       const entries = all.filter((entry) => view === 'history' ? !live(entry) && entry.status !== 'candidate'
@@ -5846,7 +6197,7 @@ const CLIENT_BUILD = 2026112301;
         const target = data.entries.find((e) => e.id === op.targetId);
         const currentConflicts = target && op.kind === 'accept' ? data.entries.filter((e) => e.id !== target.id && live(e)
           && e.kind === target.kind && e.key === target.key && e.scope === target.scope
-          && e.personaId === target.personaId && e.sessionId === target.sessionId).map((e) => ({ id: e.id, version: e.version })) : [];
+          && e.personaId === target.personaId && e.sessionId === target.sessionId && (e.origin==='chat')===(target.origin==='chat')).map((e) => ({ id: e.id, version: e.version })) : [];
         const stale = !target || target.version !== op.targetVersion
           || (target.expiresAt !== null && target.expiresAt <= Date.now())
           || (op.kind === 'accept' && JSON.stringify(currentConflicts) !== JSON.stringify(op.conflicts));
@@ -5882,9 +6233,14 @@ const CLIENT_BUILD = 2026112301;
         + (entry.expiresAt !== null && entry.expiresAt <= Date.now() ? '已过期' : labels[entry.status] ?? entry.status)),
       h('div', { className: 'dsh-persona-memory-content' }, entry.content),
       h('div', { style: hintStyle }, scopeLabel(entry) + (entry.pinned ? ' · 已置顶' : '')),
+      entry.origin==='chat'&&!entry.evidence.some(e=>e.complete && e.source==='message')?h('small',null,'仅留档核对（不注入聊天）'):null,
+      entry.key==='address'&&data.hasUserAddress?h('small',null,'聊天室已保存的用户称呼优先'):null,
+      h('details',null,h('summary',null,'标签'+(entry.tags?.length?' · '+entry.tags.join('，'):'')),h('form',{key:entry.version,onSubmit:e=>{e.preventDefault();void write({action:'tags',id:entry.id,version:entry.version,tags:memoryTagList(e.currentTarget.elements.tags.value)});}},
+        h('input',{name:'tags','aria-label':'编辑记忆标签',defaultValue:entry.tags?.join('，')}),h('button',{disabled:busy},'保存标签'))),
       h('details', null, h('summary', { style: hintStyle }, '查看来源'),
         h('p', { style: hintStyle }, labels[entry.origin] ?? '未知来源'), evidenceView(entry.evidence,
           entry.origin === 'legacy' ? '来自旧版迁移，没有逐条原始依据。' : '旧记录没有保存原话依据。'),
+        entry.contextRef?h('p',null,entry.contextNote?'当时的公开回复 · '+entry.contextNote.author+'「'+entry.contextNote.text+'」':'当时的公开回复已不可用'):null,
         ...(data.operations ?? []).filter((op) => op.status === 'applied' && op.targetId === entry.id).map((op) =>
           h('div', { key: op.id }, h('p', { style: hintStyle }, { revise: '更正时的说明', retract: '撤销时的说明', accept: '采用时的依据' }[op.kind]),
             op.kind === 'revise' ? h('p', { className: 'dsh-persona-memory-content' }, '更正为：' + op.content) : null,
@@ -5926,9 +6282,10 @@ const CLIENT_BUILD = 2026112301;
         h('p', { style: hintStyle }, '删除这条记录、相关核对单和待整理来源。只想停用时可选择撤销。'),
         h('button', { type: 'button', style: toggleStyle, disabled: busy,
           onClick: () => write({ action: 'delete', id: entry.id, version: entry.version }) }, '确认删除这条记录'))));
-      const scopeFields = (value) => ({ scope: value, personaId: value === 'persona' ? data?.activePersonaId : null,
-        sessionId: value === 'session' ? data?.sessionId : null });
+      const scopeFields = (value) => ({ scope: value==='room'?'session':value, personaId: value === 'persona' ? data?.activePersonaId : null,
+        sessionId: value === 'room'?manual.roomId:value === 'session' ? data?.sessionId : null });
       const manualEditor = h('div', null,
+        h(MemoryMetadataFields,{value:manual,change:editManual}),
         h('textarea', { style: inputStyle, value: manual.content, maxLength: 240, disabled: busy,
           'aria-label': '新增记忆内容', placeholder: '例如：称呼我为阿晴；汇报先说结果，再补充条件。',
           onChange: (e) => editManual({ content: e.target.value }) }),
@@ -5939,16 +6296,19 @@ const CLIENT_BUILD = 2026112301;
           h('select', { style: inputStyle, value: manual.scope, disabled: busy || scopePending, 'aria-label': '记忆适用范围',
             onChange: (e) => editManual({ scope: e.target.value }) },
           h('option', { value: 'persona' }, '当前人格'), h('option', { value: 'shared', disabled: ['agreement', 'episode'].includes(manual.kind) }, '所有人格'),
-          h('option', { value: 'session', disabled: !data?.sessionId }, '当前会话（角色共享）')),
+          h('option', { value: 'session', disabled: !data?.sessionId }, '工作会话（角色共享）'),h('option',{value:'room'},'聊天室房间')),
+          manual.scope==='room'?h('select',{value:manual.roomId??'','aria-label':'选择聊天室房间',onFocus:loadRooms,onChange:e=>editManual({roomId:e.target.value})},
+            h('option',{value:''},'选择房间'),...rooms.map(r=>h('option',{key:r.id,value:r.id},r.name))):null,
           h('button', { type: 'button', style: primaryButtonStyle, disabled: busy || scopePending || !manual.content.trim()
-            || (manual.scope === 'session' && !data?.sessionId) || (manual.scope === 'shared' && ['agreement', 'episode'].includes(manual.kind)),
+            || (manual.scope === 'room' && !rooms.some(r=>r.id===manual.roomId)) || (manual.scope === 'session' && !data?.sessionId) || (manual.scope === 'shared' && ['agreement', 'episode'].includes(manual.kind)),
             onClick: async () => {
-              if (await write({ action: 'propose-add', entry: { kind: manual.kind, content: manual.content, ...scopeFields(manual.scope) } })) {
-                const next = { ...manual, content: '' }; setManual(next); keepDraft(memoryAddDrafts, draftKey, next); setView('pending');
+              if (await write({ action: 'propose-add', entry: { kind: manual.kind, content: manual.content, ...scopeFields(manual.scope), ...memoryMetadata(manual) } })) {
+                const next = { ...manual, content: '' }; setManual(next); keepDraft(memoryAddDrafts, draftKey, next);
+                if(manual.scope==='room')setFilter('all');setView('pending');
               }
             } }, '预览新记忆')),
         h('p', { style: hintStyle }, manual.scope === 'shared' ? '这条内容会供所有人格使用，请只记录确实通用的偏好。'
-          : manual.scope === 'session' ? '供当前会话中的角色共享，默认一天后失效。' : '只交给当前人格，新建或另存人格不会继承。'));
+          : manual.scope === 'room'?'供所选房间所有成员使用，默认长期有效。':manual.scope === 'session' ? '供当前会话中的角色共享，默认一天后失效。' : '只交给当前人格，新建或另存人格不会继承。'));
       const clearControl = h('div', null, h('p', { style: hintStyle }, '清空所有人格的记忆、原话依据、待确认项目和交接记录。'),
         clearConfirm ? h('div', { className: 'dsh-persona-memory-actions' },
           h('button', { type: 'button', style: toggleStyle, disabled: busy, onClick: async () => {
@@ -5984,9 +6344,12 @@ const CLIENT_BUILD = 2026112301;
             onClick: () => write({ action: 'consolidate' }) }, '整理一次'))), { badge: settings.memoryExtraction ? '已开启' : '已关闭' }),
         h('div', { className: 'dsh-persona-memory-toolbar' }, h('span', { style: labelStyle }, '记忆管理'),
           h('select', { style: inputStyle, value: filter, 'aria-label': '筛选记忆', onChange: (e) => { setFilter(e.target.value); setEditing(undefined); } },
-          h('option', { value: 'current' }, '当前人格与共享'), h('option', { value: 'all' }, '全部人格')),
+          h('option', { value: 'current' }, '当前人格与共享'), ...Object.entries(data?.roomNames??{}).map(([id,name])=>h('option',{key:id,value:id},'房间 · '+name)),h('option', { value: 'all' }, '全部人格')),
+          h('select',{'aria-label':'筛选类型',value:kindFilter,onChange:e=>setKindFilter(e.target.value)},h('option',{value:''},'全部类型'),...['preference','agreement','context','episode'].map(id=>h('option',{key:id,value:id},labels[id]))),
+          h('input',{type:'search','aria-label':'搜索记忆',placeholder:'搜索内容或标签',value:query,onChange:e=>setQuery(e.target.value)}),
           h('button', { type: 'button', style: toggleStyle, disabled: busy, onClick: refresh }, '刷新记忆')),
         h(MemoryUsagePanel, { data, presets, settings, filter, refresh, busy, scopePending }),
+        data?.capacity?h('details',null,h('summary',null,'记忆占用 '+data.capacity.used+' / '+data.capacity.limit),h(CapacityTools,{data,write,busy})):null,
         h('div', { className: 'dsh-persona-memory-tabs', role: 'group', 'aria-label': '记忆状态' },
           ...[['active', '使用中', all.filter(live).length], ['pending', '待确认', pending.length + candidates.length],
             ['history', '历史', all.filter((e) => !live(e) && e.status !== 'candidate').length]].map(([id, name, count]) =>
@@ -5999,6 +6362,28 @@ const CLIENT_BUILD = 2026112301;
             : '还没有正在使用的记忆，可以手动记一条。') : null,
         settingsFold('memory-add', '手动记一条', '选择内容与适用范围', manualEditor, { badge: manual.content.trim() ? '有草稿' : undefined }),
         settingsFold('memory-clear', '清理记忆', '清空所有人格的记忆与待确认内容', clearControl));
+    }
+
+    function PersonaTrial({personaId,readDraft}) {
+      const [mode,setMode]=React.useState('report'),[result,setResult]=React.useState(null),[busy,setBusy]=React.useState(false),[error,setError]=React.useState('');
+      const pending=React.useRef(null);
+      React.useEffect(()=>()=>pending.current?.abort(),[]);
+      const run=async()=>{
+        if(pending.current)return;const abort=new AbortController();pending.current=abort;setBusy(true);setResult(null);setError('');
+        try{const draft=await readDraft();if(!draft.pack)throw Error();
+          const res=await fetch(ROUTE+'/presets',{method:'POST',signal:abort.signal,headers:{'content-type':'application/json'},
+            body:JSON.stringify({action:'preview',personaId,mode,pack:draft.pack})});if(!res.ok)throw Error();
+          const value=await res.json();if(!abort.signal.aborted)setResult(value);
+        }catch{if(!abort.signal.aborted)setError('试说未完成，请核对草稿和模型后重试。');}
+        finally{pending.current=null;if(!abort.signal.aborted)setBusy(false);}
+      };
+      return h('fieldset',{disabled:busy},h('legend',null,'试说一句'),h('label',null,'样板',h('select',{value:mode,onChange:e=>{setMode(e.target.value);setResult(null);setError('');}},
+        h('option',{value:'report'},'工作汇报'),h('option',{value:'strict'},'严格转述'),h('option',{value:'chat'},'日常闲聊'))),
+        h('button',{type:'button',onMouseDown:e=>e.preventDefault(),onClick:run},busy?'正在试说…':'试说一句'),
+        result?h('div',{'aria-live':'polite'},h('blockquote',null,result.original),h('p',null,result.text),
+          result.fallback?h('p',null,reportFallbackReason({status:'skipped',reason:result.fallback})):null,
+          result.reasons?.length?h('p',null,'建议核对措辞 · '+result.reasons.map(reason=>REVIEW_REASON_LABELS[reason]??'表达有变化').join('、')):null):null,
+        error?h('p',{role:'status'},error):null);
     }
 
     function PersonaAvatarEditor({ preset, busy, onSave, onClose, user = false }) {
@@ -6064,6 +6449,39 @@ const CLIENT_BUILD = 2026112301;
         h('p', { style: hintStyle, role: 'status', 'aria-live': 'polite' }, reading ? '正在读取图片…' : notice));
     }
 
+
+    function AssetBackup({presets,onImported}) {
+      const [type,setType]=React.useState('both'), [history,setHistory]=React.useState(false),[file,setFile]=React.useState(null);
+      const [fallback,setFallback]=React.useState(''),[preview,setPreview]=React.useState(null),[busy,setBusy]=React.useState(false),[status,setStatus]=React.useState('');
+      async function download(){
+        setBusy(true);setStatus('');try{
+          const query=type.startsWith('card:')?'persona='+encodeURIComponent(type.slice(5)):'type='+type+'&history='+Number(history);
+          const res=await fetch(ROUTE+'/backup?'+query);if(!res.ok)throw Error();
+          const blob=new Blob([JSON.stringify(await res.json(),null,2)],{type:'application/json'});
+          const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=type.startsWith('card:')?'persona-card.json':'persona-shell-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+        }catch{setStatus('导出失败。');}finally{setBusy(false);}
+      }
+      async function load(confirm){setBusy(true);setStatus('');try{
+        if(file.size>24*1024*1024)throw Error();const value=JSON.parse(await file.text());
+        const res=await fetch(ROUTE+'/backup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:confirm?'import':'preview',file:value,token:preview?.token,fallbackPersona:fallback||null})});
+        if(!res.ok){setPreview(null);throw Error(res.status===409?'现有数据已变化，请重新预览。':'备份格式或存储不可用。');}
+        const result=await res.json();setPreview(confirm?null:result);
+        if(confirm){setFile(null);setStatus('已导入 '+result.summary.personas.length+' 张人格卡、'+result.summary.entries+' 条记忆。');await onImported(result.summary);}
+      }catch(e){setStatus(e.message?.startsWith('现有')?e.message:'无法读取或保存这份备份，请核对文件。');}finally{setBusy(false);}}
+      return h('fieldset',{disabled:busy},h('legend',null,'本地备份'),h('label',null,'导出范围',h('select',{value:type,onChange:e=>setType(e.target.value)},
+        h('option',{value:'both'},'自定义人格卡与记忆'),h('option',{value:'personas'},'自定义人格卡'),h('option',{value:'memory'},'记忆'),...presets.map(p=>h('option',{key:p.id,value:'card:'+p.id},'单卡 · '+p.name)))),
+        ['both','memory'].includes(type)?h('div',null,h('label',null,h('input',{type:'checkbox',checked:history,onChange:e=>setHistory(e.target.checked)}),'包含候选和历史条目'),h('p',null,'文件包含你的依据原话，请妥善保管。')):null,
+        type!=='memory'?h('p',null,'卡片包含你填入的聊天表达材料。'):null,
+        h('button',{type:'button',onClick:download},'导出 JSON'),h('label',null,'导入文件',h('input',{type:'file',accept:'.json,application/json',onChange:e=>{
+          const selected=e.currentTarget.files[0];e.currentTarget.value='';setFile(selected);setPreview(null);setStatus('');
+        }})),
+        file?h('div',null,h('label',null,'缺失房间的记忆',h('select',{value:fallback,onChange:e=>{setFallback(e.target.value);setPreview(null);}},h('option',{value:''},'跳过'),...presets.map(p=>h('option',{key:p.id,value:p.id},'转为私有 · '+p.name)))),
+          h('span',null,file.name),h('button',{type:'button',onClick:()=>load(false)},'预览导入')):null,
+        preview?h('div',null,h('p',null,'将新增人格卡 '+preview.summary.personas.length+' 张（'+(preview.summary.personas.join('、')||'无')+'），记忆 '+preview.summary.entries+' 条。导入的活跃记忆需要重新采纳。'),
+          h('p',null,'跳过重复 '+preview.summary.duplicates+'，缺少人格 '+preview.summary.missingPersona+'，缺少房间 '+preview.summary.missingRoom+'，容量不足 '+preview.summary.capacity+'。'+preview.summary.rooms.join('、')),
+          h('button',{type:'button',onClick:()=>load(true)},'确认导入'),h('button',{type:'button',onClick:()=>setPreview(null)},'取消')):null,
+        h('p',{role:'status'},status));
+    }
     function ChatUserSettings({ onClose, visible = true }) {
       const [value, setValue] = React.useState(undefined), [editing, setEditing] = React.useState(undefined);
       const [busy, setBusy] = React.useState(false), [notice, setNotice] = React.useState('');
@@ -6126,6 +6544,12 @@ const CLIENT_BUILD = 2026112301;
         if (live.current) setNotice(result.ok ? '性别设置已保存，只影响之后的聊天回复。' : result.reason === 'avatar-conflict'
           ? '个人资料已在别处更新，请核对当前性别选择后重试。' : '未能确认性别设置已保存，请核对后重试。');
       };
+      const [pendingReportAddress,setPendingReportAddress]=React.useState(null);
+      const changeReportAddress=async reportAddress=>{
+        setPendingReportAddress(reportAddress);
+        const result=await persist({reportAddress},state.current.revision);
+        if(live.current){setPendingReportAddress(null);setNotice(result.ok?'汇报称呼设置已保存。':result.reason==='avatar-conflict'?'个人资料已在别处更新，请核对汇报称呼选项后重试。':'设置未保存，请核对当前选择后重试。');}
+      };
       const confirmedAddress=typeof value?.userAddress==='string'?value.userAddress:'',address=addressDraft?.text??confirmedAddress,
         addressError=userAddressProblem(address),addressDirty=address!==confirmedAddress;
       const editAddress=text=>{
@@ -6157,7 +6581,9 @@ const CLIENT_BUILD = 2026112301;
         h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',marginTop:'8px'}},
           h('span',{style:hintStyle},Array.from(address.trim()).length+'/40'),h('button',{type:'button',style:toggleStyle,'aria-label':'保存称呼',
             disabled:!value||busy||addressSaving||!!editing||!!addressError||!addressDirty,onClick:()=>void saveAddress()},addressSaving?'保存中…':'保存称呼')),
-        h('p',{style:hintStyle},'所有聊天室共用；只用于角色聊天中的称呼，不改工作汇报，也不会存入长期记忆。留空即可按人设自然称呼。'),
+        h('label',{style:{display:'flex',alignItems:'center',gap:'8px',margin:'0 0 14px',fontSize:'13px',cursor:'pointer'}},h('input',{type:'checkbox',style:{margin:0,accentColor:'var(--chat-brand,var(--dsw-alias-brand-primary))'},checked:pendingReportAddress??(value?.reportAddress===true),disabled:!value||busy||addressSaving||!!editing,
+          onChange:event=>void changeReportAddress(event.target.checked)}),'工作汇报也使用这个称呼'),
+        (pendingReportAddress??value?.reportAddress)&&(addressDirty||!confirmedAddress)?h('p',{style:hintStyle},'保存称呼后，新的工作汇报会使用它。'):null,
         h('p',{style:hintStyle,role:'status','aria-live':'polite'},addressError||addressNotice),
         h('label',{style:{...fieldStyle,marginTop:'14px'}},h('span',{style:labelStyle},'你的性别（聊天室）'),
           h('select',{style:inputStyle,'aria-label':'你的性别（聊天室）',value:value?.userGender??'unset',disabled:!value||busy||addressSaving||!!editing,
@@ -6217,6 +6643,7 @@ const CLIENT_BUILD = 2026112301;
       const tabsId = React.useRef(null);
       if (tabsId.current === null) tabsId.current = 'dsh-persona-settings-' + (++nextSettingsId);
       const [settings, setSettings] = React.useState(undefined);
+      const [memoryImportRevision,setMemoryImportRevision]=React.useState(0);
       const settingsRef = React.useRef(undefined);
       const [packDrafts, setPackDrafts] = React.useState({});
       const draftsRef = React.useRef({ values: {}, versions: {}, revision: 0 });
@@ -6479,7 +6906,7 @@ const CLIENT_BUILD = 2026112301;
       const save = (patch) => queueWrite(() => writeSettings(patch));
       const draftChanges = () => Object.entries(draftsRef.current.values)
         .map(([field, value]) => ({ field, value, version: draftsRef.current.versions[field] }));
-      const persistPackChanges = async (changes) => {
+      const persistPackChanges = async (changes,previewOnly=false) => {
         const ordered = [...changes].sort((a, b) => a.version - b.version);
         for (const change of ordered) if (change.field === 'chatVoice') {
           const lines = change.value.split('\n').filter(line => line.trim() !== '');
@@ -6492,6 +6919,12 @@ const CLIENT_BUILD = 2026112301;
         for (const { field, value } of ordered) {
           if (field === 'subagent') nextPack.address = { ...nextPack.address, subagent: value };
           else if (field === 'narrationMode') nextPack.narration = { ...nextPack.narration, mode: value };
+          else if (field === 'selfReference') nextPack.narration = { ...nextPack.narration, selfReference: value };
+          else if (field === 'selfAliases') {
+            const aliases=[...new Set(value.split(/[,，、]/u).map(s=>s.trim()).filter(Boolean))];
+            if (aliases.length>3 || aliases.some(s=>[...s].length>8)) {showStatus('其他自称最多 3 个，每个最多 8 字。');return {error:'invalid-self-aliases'};}
+            nextPack.narration={...nextPack.narration,selfAliases:aliases};
+          }
           else if (field === 'narrationAssistant') nextPack.narration = { ...nextPack.narration, assistant: value };
           else if (field === 'chatVoice') nextPack.chat = { ...(nextPack.chat ?? { samples: [] }), voice: value.split('\n').filter(line => line.trim() !== '') };
           else if (field === 'chatGender') nextPack.chat = { ...(nextPack.chat ?? {}), gender: value };
@@ -6499,7 +6932,7 @@ const CLIENT_BUILD = 2026112301;
             const effectiveVoice = nextPack.chat.voice ?? (nextPack.voice ?? []).filter(line => line.trim());
             if (value === 'use' && !chatSourceCanBind(nextPack.identity, effectiveVoice)) {
               const draft = draftsRef.current;
-              if (draft.versions.chatSource === changes.find(change => change.field === 'chatSource')?.version) {
+              if (!previewOnly && draft.versions.chatSource === changes.find(change => change.field === 'chatSource')?.version) {
                 const values = { ...draft.values }, versions = { ...draft.versions };
                 delete values.chatSource; delete versions.chatSource;
                 draftsRef.current = { ...draft, values, versions }; setPackDrafts(values);
@@ -6517,6 +6950,7 @@ const CLIENT_BUILD = 2026112301;
           }
           else nextPack[field] = field === 'identity' ? value : value.split('\n').filter((line) => line.trim() !== '');
         }
+        if (previewOnly) return {pack:nextPack};
         const result = await writeSettings({ pack: nextPack });
         if (result?.settings !== undefined) {
           const draft = draftsRef.current;
@@ -6585,7 +7019,7 @@ const CLIENT_BUILD = 2026112301;
             h('span', { style: labelStyle }, '允许过程转述参考运行信息'),
           ),
           h('span', { style: hintStyle },
-            '参考这段工作的轻量统计，单独补充一句。可选，会增加一次模型续接。'),
+            '将本段工作的分类统计随转述请求一并提供，可补充一句运行情况。'),
         );
       const quietControls = h('div', { className: 'dsh-persona-setting-field', style: fieldStyle },
           h('label', { style: toggleRowStyle },
@@ -7012,6 +7446,10 @@ const CLIENT_BUILD = 2026112301;
           h('span', { style: hintStyle }, '小肥鱼（实验性）使用转达模式；切换角色不会改变实际工作的助手。')),
         (draftValue('narrationMode', pack?.narration?.mode ?? 'voice') === 'relay')
           ? h('div', { className: 'dsh-persona-editor-field', style: fieldStyle },
+            h('label',null,h('input',{type:'checkbox',disabled:presetBusy,checked:draftValue('selfReference',pack?.narration?.selfReference)==='none',
+              onChange:e=>savePackField('selfReference',e.target.checked?'none':'natural')}),'严格转述：引语外避免“我”“我们”“咱们”等自称'),
+            draftValue('selfReference',pack?.narration?.selfReference)==='none'?h('label',null,'其他自称（逗号分隔）',h('input',{style:inputStyle,disabled:presetBusy,
+              value:draftValue('selfAliases',(pack?.narration?.selfAliases??[]).join('，')),onChange:e=>setDraft('selfAliases',e.target.value),onBlur:e=>savePackField('selfAliases',e.target.value)})):null,
             h('span', { style: labelStyle }, '称呼原助手为'),
             h('input', { style: inputStyle, disabled: presetBusy, maxLength: 20, 'aria-label': '原助手称呼',
               value: draftValue('narrationAssistant', pack?.narration?.assistant ?? '原助手'),
@@ -7102,7 +7540,8 @@ const CLIENT_BUILD = 2026112301;
             settingsFold('edit-persona', '调整当前人格', Object.keys(packDrafts).length
               ? '有尚未保存的输入' : '身份、语气、示例与称呼',
               h('div', null, h('p', { className: 'dsh-persona-section-note' },
-                '编辑后自动保存；调整内置人格会另存一份，原版始终保留。'), editorControls))))),
+                '编辑后自动保存；调整内置人格会另存一份，原版始终保留。'), editorControls,
+              h(PersonaTrial,{key:activePresetId,personaId:activePresetId,readDraft:()=>persistPackChanges(draftChanges(),true)})))))),
         panel('rewrite', h('section', { className: 'dsh-persona-section', 'aria-label': '日常转述' },
           settingsHeading('', '日常转述', '决定哪些汇报换一种口吻。'),
           h('label', { style: fieldStyle }, h('span', { style: labelStyle }, '默认转述范围'),
@@ -7115,7 +7554,7 @@ const CLIENT_BUILD = 2026112301;
           settingsFold('rewrite-help', '这些选项如何工作', '调用用量与原文边界',
             h('div', { className: 'dsh-persona-help-copy' },
               h('p', null, '阶段性输出关闭后跳过带工具调用的步骤。要严格只改最终汇报，请将转述范围设为仅最终汇报。'),
-              h('p', null, '过程运行信息仅提供分类统计与轻量会话节奏；可选补充最多40字、每轮最多3条，不进入最终汇报。查询会增加一次模型续接。'),
+              h('p', null, '过程转述请求会一并收到分类统计与会话节奏，每条可补充最多 40 字，每轮最多 3 条。'),
               h('p', null, '静默播报仅为前台正在查看的主会话生成，标记为 ◈；每轮最多3次，无新事实不重复调用，也不代表任务完成。'),
               h('p', null, '※ 提示措辞、数字或局部状态变化，不保证语义一致。重要事实、条件和风险仍应对照原文。')), { compact: true }))),
         panel('chat',h(React.Fragment,null,h('section',{className:'dsh-persona-section','aria-label':'聊天室模型设置'},
@@ -7136,7 +7575,7 @@ const CLIENT_BUILD = 2026112301;
             h(ChatThinkingControls,{visible:activeTab==='chat',settings,save}))),h('section',{className:'dsh-persona-section','aria-label':'聊天室辅助能力'},
           settingsHeading('','辅助能力','开启后由判断线程按需使用，每条请求最多一个任务；调查只访问公开网页，推演不联网。'),
           h('label',{style:{...fieldStyle,display:'flex',gap:8}},h('input',{type:'checkbox',checked:settings.chatResearchEnabled===true,onChange:e=>save({chatResearchEnabled:e.target.checked})}),'允许调查资料'),
-          h('p',{style:hintStyle},'使用 DSH 已配置的搜索服务。最多 4 次模型请求、3 次搜索、5 次网页读取，60 秒内结束；不读取文件或执行命令。'),
+          h('p',{style:hintStyle},'使用 DSH 已配置的搜索服务。最多 4 个模型步骤、3 次搜索、4 次网页读取，60 秒内结束；不读取文件或执行命令。'),
           h('label',{style:{...fieldStyle,display:'flex',gap:8}},h('input',{type:'checkbox',checked:settings.chatDeepReasoningEnabled===true,onChange:e=>save({chatDeepReasoningEnabled:e.target.checked})}),'允许深入推演'),
           h('label',{style:{...fieldStyle,display:'flex',gap:8}},h('input',{type:'checkbox',checked:settings.chatSummarizeEnabled===true,onChange:e=>save({chatSummarizeEnabled:e.target.checked})}),'允许按需整理工作参考'),
           h('p',{style:hintStyle},'一次独立模型请求，默认启用思考，最多 60 秒。未另选模型时沿用聊天室模型；无法启用思考时会提示，不会静默关闭思考。'),
@@ -7144,13 +7583,17 @@ const CLIENT_BUILD = 2026112301;
             settings.chatDeepReasoningProvider?h('label',{style:fieldStyle},h('span',{style:labelStyle},'模型名称'),h('select',{style:inputStyle,'aria-label':'深入推演模型名称',value:settings.chatDeepReasoningModel??'',onChange:e=>save({chatDeepReasoningModel:e.target.value})},h('option',{value:''},'提供方默认'),...supportModels.map(m=>h('option',{key:m.id,value:m.id},m.name??m.id)))):null,
             supportModelsFailed?h('p',{style:hintStyle},'模型列表暂不可用，已保存的选择仍保留。'):null):null),h(RoomReferencesPanel,{visible:activeTab==='chat'}))),
         panel('memory', h('section', { className: 'dsh-persona-section', 'aria-label': '记忆与约定' },
-          settingsHeading('', '记忆与约定', '查看原话依据，确认哪些偏好继续使用。'), h(MemoryPanel, { settings, save, presets }))),
+          settingsHeading('', '记忆与约定', '查看原话依据，确认哪些偏好继续使用。'), h(MemoryPanel, { settings, save, presets, importRevision:memoryImportRevision }))),
         panel('appearance', h('section', { className: 'dsh-persona-section', 'aria-label': '聊天室外观' },
           settingsHeading('', '聊天室外观', '用户头像只用于展示，不会发送给模型。'),
           (activeTab==='appearance'||appearanceVisited)?h(ChatUserSettings,{visible:activeTab==='appearance'}):null)),
         panel('usage', h(ModelUsagePanel, { visible: activeTab === 'usage' })),
         panel('advanced', h('section', { className: 'dsh-persona-section', 'aria-label': '高级设置' },
           settingsHeading('', '高级设置', '模型与较少使用的选项。'),
+          settingsFold('asset-backup','备份与恢复','人格卡与记忆',h(AssetBackup,{presets,onImported:summary=>{
+            if(summary.entries)setMemoryImportRevision(n=>n+1);
+            if(summary.personas.length)return refreshPresets();
+          }})),
           h('div', { className: 'dsh-persona-advanced-grid' },
             h('div', null, h('h3', { className: 'dsh-persona-subheading' }, '转述模型'), modelControls),
             h('div', null, subagentControls),
@@ -7227,6 +7670,7 @@ const CLIENT_BUILD = 2026112301;
         useChatBubbleColors,
         PersonaAvatar,
         CHAT_CSS,
+        ROOM_CHAT_CSS,
         PersonaChatLauncher,
         MemoryPanel,
         SettingsSection,
@@ -7521,7 +7965,7 @@ const CLIENT_BUILD = 2026112301;
         if (typeof ctx.inject === 'function') ctx.inject(['remote', 'remote.account'], (owner) => {
           const remote = owner.get('remote');
           if (typeof remote?.account?.getProfile !== 'function' || typeof remote?.account?.getState !== 'function') return;
-          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.4',
+          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.5',
             locale: typeof navigator !== 'undefined' ? navigator.language : 'zh-CN', timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 }));
           owner.effect(() => release);
           if (typeof owner.on === 'function') owner.on('connection/reset', () => { void accountAvatarSource.refresh(); });

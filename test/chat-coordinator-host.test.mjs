@@ -38,7 +38,7 @@ function host(t, options = {}) {
   })() : undefined);
   const f = fixture(t, { ...rest, directorScript, extraServices: [
     ['sessions', { get: id => ({ header: { id, title: id + ' 的工作会话', cwd: 'D:/fixture/' + id } }) }],
-    ['sessionQuery', { observeSession: async id => { reads.push(id); return { events: events.get(id) ?? [] }; } }],
+    ['sessionQuery', { observeSession: async id => { reads.push(id); options.onRead?.(id); return { events: events.get(id) ?? [] }; } }],
     ...(options.extraServices ?? []),
   ] });
   const stale = id => {
@@ -64,7 +64,7 @@ test('one native metadata-only director combines source selection and next-speak
   const room = await twoSources(f), before = await roomState(f, room);
   assert.equal((await f.request('chat-rooms', { ...room, action: 'update', targetPersonaIds: [dragon, whale], configRevision: before.room.configRevision, epoch: before.epoch })).status, 200);
   const baseline = reads.length; await roomSend(f, room, dragon, '你们都说说工作下一步', 'coordinated'); await settledRoom(f, room);
-  assert.equal(f.directors.length, 2); assert.equal(f.selections.length, 0); const call = f.directors[0], body = input(call);
+  assert.equal(f.directors.length, 3); assert.equal(f.selections.length, 0); const call = f.directors[0], body = input(call);
   assert.equal(body.task, 'chat-room-director'); assert.equal(body.message, '你们都说说工作下一步');
   assert.deepEqual(body.recipients.map(person => person.id), [dragon, whale]);
   assert.equal(call.reasoningEffort, 'off'); assert.equal(call.tools, undefined);
@@ -77,20 +77,27 @@ test('one native metadata-only director combines source selection and next-speak
   }
   assert.deepEqual(reads.slice(baseline), []);
   const usage = (await f.request('model-usage')).value.purposes.find(row => row.purpose === 'chat-participation');
-  assert.equal(usage.calls, 2); assert.equal(f.plans.length + f.continuations.length, 0);
+  assert.equal(usage.calls, f.directors.length); assert.equal(f.plans.length + f.continuations.length, 0);
   const ledger = (await f.request('chat-references?room=' + encodeURIComponent(room.roomId))).value.records;
   assert.ok(ledger.length >= 2); assert.ok(ledger.every(row => row.coordination.selectedSourceIds.join() === 'other'));
   assert.doesNotMatch(JSON.stringify(ledger.map(row => row.coordination)), /PRIVATE_WORK_|PRIVATE_MEMORY_|你们都说说工作下一步/);
 });
 
 test('required work context refreshes only selected attached sources, without reading the other stale source', async t => {
-  const { f, reads, stale } = host(t, { contextScript: options => selection(selected(input(options), { sourceIds: ['other'] })) });
+  t.mock.timers.enable({apis:['Date'],now:1000});
+  const { f, reads, stale } = host(t, { onRead:()=>t.mock.timers.tick(50), contextScript: options => selection(selected(input(options), { sourceIds: ['other'] })) });
   await f.ready(); const room = await twoSources(f); stale('work'); stale('other'); const baseline = reads.length;
   await roomSend(f, room, whale, '说一下后台工作', 'required-source'); await settledRoom(f, room);
   assert.deepEqual(reads.slice(baseline), ['other']); const answer = input(actualReplies(f).at(-1));
   assert.deepEqual(answer.workContext.sources.map(source => source.sessionId), ['other']);
   assert.match(JSON.stringify(answer.workContext), /other_NEW_WORK_GOAL|other_NEW_WORK_REPORT/);
   assert.doesNotMatch(JSON.stringify(answer.workContext), /work_PRIVATE_WORK_GOAL|work_NEW_WORK_GOAL/);
+  await f.dispose();
+  const [sample]=f.storage.tables.get('profile').get('modelUsage').chatTiming;
+  assert.equal(sample.path,'context');
+  assert.equal(sample.contextDone - sample.directorDone,50);
+  assert.ok(sample.firstText>=sample.contextDone);
+  assert.deepEqual(sample.calls,{director:f.directors.length,context:0,actor:actualReplies(f).length,support:0});
 });
 
 test('not-needed, unclear, malformed and truncated decisions provide an empty but scoped work envelope', async t => {
@@ -120,6 +127,8 @@ test('a timed-out director keeps the user anchor retryable without reading work 
   assert.equal(actualReplies(f).length, 0); assert.equal(done.room.turns[0].phase, 'anchor');
   assert.equal(done.directorFailure.code, 'timeout'); wait.open(); await flush();
   assert.equal(actualReplies(f).length, 0, 'late director text cannot create a reply after its deadline');
+  const timing=(await f.request('model-usage')).value.chatTiming;
+  assert.equal(timing.paths.context.count,1);assert.equal(timing.paths.context.avgCalls,null);assert.equal(timing.failed,1);
 });
 
 test('source changes, room clearing and explicit cancellation prevent a late selection from dispatching a reply', async t => {
@@ -200,6 +209,38 @@ test('a room with no attached source skips work selection while preserving its o
   assert.equal(f.selections.length, 0); const answer = input(actualReplies(f).at(-1));
   assert.equal(answer.history[0].user, '上次提到的草图先保留，暂不执行。');
   assert.deepEqual(answer.workContext.sources, []); assert.equal(answer.workContext.key, room.contextKey);
+});
+
+test('directed follow-ups stay compact across user rounds and after enabling a helper', async t => {
+  const f = fixture(t, { directorScript(options) {
+    const body = input(options);
+    if (body.phase === 'followup') return selection('WAIT');
+    const choice = body.choices.find(c => c.id === whale && c.to === 'user');
+    return selection(choice.choiceId);
+  } });
+  await f.ready();
+  const room = await newRoom(f);
+  const detached = await f.request('chat-context', { action: 'detach', ...room, sessionId: 'work', revision: Number(room.contextKey.split(':').at(-1)) });
+  assert.equal(detached.status, 200);
+  room.contextKey = detached.value.id + ':' + detached.value.revision;
+
+  const messages = ['想聊聊散步。', '昨天路过了花市。', '今天也去花市看看。'];
+  for (const [index, message] of messages.entries()) {
+    if (index === 2) assert.equal((await f.request('settings', { chatDeepReasoningEnabled: true })).status, 200);
+    const start = f.directors.length;
+    assert.equal((await roomSend(f, room, whale, message, `walk-${index}`)).status, 200);
+    const done = await settledRoom(f, room);
+    const ballots = f.directors.slice(start).map(input);
+    assert.deepEqual(ballots.map(b => b.phase), index === 2 ? ['opening', 'followup'] : ['followup']);
+    if (index === 2) assert.ok(ballots[0].supportChoices.some(c => c.template === 'reason'));
+    assert.equal(ballots.at(-1).sourceKeys, undefined);
+    assert.equal(ballots.at(-1).supportChoices, undefined);
+    if (index > 0) assert.equal(ballots.at(-1).sceneCatalog, undefined);
+    const anchor = done.room.turns.find(turn => turn.user === message && turn.phase === 'anchor');
+    assert.ok(anchor);
+    assert.ok(!anchor.scene);
+    assert.equal(f.calls.length, index + 1);
+  }
 });
 
 test('releasing the last room viewer during selection keeps the sent round alive without reading hidden work sources', async t => {

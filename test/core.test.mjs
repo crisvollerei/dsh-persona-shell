@@ -58,6 +58,14 @@ test('unmask restores the exact original bytes', () => {
   assert.deepEqual(unmask(masked, literals), input);
 });
 
+test('raw marker-shaped text and a repeated protected path round-trip independently', () => {
+  const input = '先查看 /tmp/example.txt，记录 [[0]]，再打开 /tmp/example.txt。';
+  const { masked, literals } = mask(input);
+  assert.deepEqual(literals, ['/tmp/example.txt', '[[0]]']);
+  assert.deepEqual(masked.match(/\[\[\d+\]\]/g), ['[[0]]', '[[1]]', '[[0]]']);
+  assert.equal(unmask(masked, literals), input);
+});
+
 test('markersIntact accepts exactly the handed-out set', () => {
   assert.equal(markersIntact('a [[0]] b [[1]]', 2), true);
   assert.equal(markersIntact('a [[0]] b', 2), false);
@@ -73,6 +81,8 @@ test('normalizePack fills gaps and drops junk', () => {
   assert.ok(pack.report.length > 0, 'report rules fall back to the default card');
   assert.ok(pack.avoid.length > 0);
   assert.ok(pack.samples.length > 0);
+  assert.doesNotMatch(JSON.stringify(pack), /鲸鲸/);
+  assert.notEqual(normalizePack(null).address, normalizePack(null).address);
   assert.equal(normalizePack(null).identity.length > 0, true);
   assert.equal(normalizePack('nonsense').identity.length > 0, true);
 });
@@ -180,7 +190,7 @@ test('prompt carries the marker count and forbids invention', () => {
   const { system, user } = buildRewritePrompt({
     pack, masked: '改好了 [[0]] 。', literalCount: 1, history: ['上次这样说。'],
   });
-  assert.ok(system.includes('1 个'));
+  assert.ok(system.includes('1 种标记'));
   assert.ok(system.includes('不得新增原文没有的事实'));
   // Both halves of the card reach the prompt.
   assert.ok(system.includes('你是谁'));

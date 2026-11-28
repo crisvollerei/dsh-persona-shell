@@ -34,6 +34,16 @@ test('selective freshness checks never spend an unrelated source budget or clear
   f.context.detach('b');assert.throws(()=>f.context.selection(key),/chat-context-changed/);f.context.dispose();
 });
 
+test('a deleted source clears its pending cursor and previous report',async()=>{
+  const f=fixture(); await f.open(); const key=f.context.key(),before=f.context.capture(key).sources[0];
+  f.context.event({id:'a'},{type:'turn/end',seq:9}); f.adapter.source=async()=>null;
+  await f.context.prepareCapture(key,{sourceIds:['a']});
+  assert.equal(f.context.selection(key).sources[0].state,'unavailable');
+  assert.equal(f.context.capture(key).omitted[0].reason,'unavailable');
+  assert.equal(f.context.capture(key).sources.length,0); assert.ok(!f.context.resolveReference(before));
+  f.context.dispose();
+});
+
 test('a long primary report leaves room for a short result from another selected source',async()=>{
   const f=fixture();
   f.adapter.source=async id=>({name:id,cursor:3,turn:1,goalSeq:1,reportSeq:3,reportStatus:'final',

@@ -61,6 +61,10 @@ test('only a further ordinary opinion on the same clear one-person question hand
     members:members.map(person=>person.id==='friend'?{...person,name:'小克'}:person)};
   const action={id:'guest',kind:'normal',to:'user',evidence:{eventId:question.id,index:0},contribution:{move:'opine'}};
   assert.equal(directedOpinionHandback(opts,action),true);
+  const short=buildDirectorRequest({...opts,requestLocal:true,phase:'followup'});
+  const guest=short.choices.find(choice=>choice.id==='guest'&&choice.to==='user');
+  assert.equal(directedOpinionHandback(opts,short.parse(guest.choiceId).next),true,'omitting the move still hands back an already answered opinion');
+  assert.equal(directedOpinionHandback(opts,{...action,id:'friend',contribution:undefined}),false,'the person discussed may still respond');
   for(const change of [{id:'friend'},{kind:'peer',to:'friend'},{contribution:{move:'branch'}},
     {evidence:{eventId:original.id,index:0}},{support:{template:'reason'}},{contribution:{move:'react'}}]){
     assert.equal(directedOpinionHandback(opts,{...action,...change}),false);

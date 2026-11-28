@@ -58,6 +58,7 @@ test('IDLE preserves a personally invited member until her real cooldown, with u
     [whale,0,3,1],[dragon,1,2,1],[claude,2,1,1],['鲸鲸（实验性）',2,1,1],['Gemini',2,1,1],
   ]);
   assert.equal(initial.states.find(value=>value.id===dragon).normalReady,false);
+  assert.equal(initial.states.find(value=>value.id===dragon).availability,'cooling');
   assert.equal(eligible.states.find(value=>value.id===dragon).normalReady,true);
   assert.ok(snapshots[1].at-snapshots[0].at>=5000,'IDLE does not bypass the five-second eligibility/director interval');
   const actor=readChatInput(f.calls[0]);
@@ -70,6 +71,25 @@ test('IDLE preserves a personally invited member until her real cooldown, with u
   ]);
   assert.deepEqual(done.room.turns.filter(value=>value.phase!=='anchor').map(value=>value.recipientId),[dragon],
     'unused eligibility does not mechanically dispatch the other four members');
+});
+
+test('a follow-up sees the member named in user prose before handing back to the user',async t=>{
+  const small='鲸鲸（实验性）', ballots=[];
+  const f=fixture(t,{runtime:{chatIntervalMs:120},directorScript:options=>{
+    const body=readChatInput(options);ballots.push(body);
+    return speech(body).length?wire('WAIT'):choose(body,whale);
+  },script:()=>reply(['袖子长了一截。'])});
+  await f.ready();const room=await newRoom(f,[whale,claude,small]);
+  await targets(f,room,[whale,claude]);
+  await roomSend(f,room,whale,'（交换）衣服好像有点大呢，可能我的体型和小肥鱼更接近。','named-cooling');
+  const done=await settledRoom(f,room);
+  assert.equal(done.directorFailure,null);
+  assert.equal(ballots.length,2);
+  const [opening,followup]=ballots;
+  assert.equal(opening.states.find(s=>s.id===small).availability,'cooling');
+  assert.equal(followup.states.find(s=>s.id===small).availability,'ready');
+  assert.ok(followup.choices.some(c=>c.id===small&&c.kind==='normal'&&c.to==='user'));
+  assert.deepEqual(done.room.turns.filter(t=>t.status==='ready'&&t.phase!=='anchor').map(t=>t.recipientId),[whale]);
 });
 
 test('a committed first invitation reply and its invented user satisfaction remain assistant evidence until real user feedback arrives',async t=>{

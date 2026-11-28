@@ -235,6 +235,11 @@ test('handoff routes require a receiver/session and reject private memory export
   const result = await f.request('memory/handoffs?session=s&persona=' + presets[1].id);
   assert.equal(result.value.handoffs.length, 1);
   assert.deepEqual(result.value.handoffs[0].memories, []);
+  const accept={action:'accept',id:created.value.result.id,sessionId:'s',personaId:presets[1].id,version:999};
+  const missing=await f.request('memory/handoffs',{...accept,id:'missing'});
+  assert.equal(missing.status,404);assert.equal(missing.value.error,'handoff-not-found');
+  const stale=await f.request('memory/handoffs',accept);
+  assert.equal(stale.status,409);assert.equal(stale.value.error,'handoff-conflict');
 });
 
 test('unloading during memory route discovery drains locally and never dispatches a late model call', async (t) => {

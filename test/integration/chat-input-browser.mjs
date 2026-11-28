@@ -168,6 +168,11 @@ try {
   const silentSeat=dialog.locator('[data-chat-turn="silent-seat"]');await silentSeat.waitFor({state:'attached'});
   await page.evaluate(()=>{const host=window.inputHost;host.silentFrame={...host.silentFrame,revision:2,messages:[{text:'尚未提交的片段',complete:false}]};host.pushLive({instanceId:host.state.instanceId,roomId:'room',status:'streaming',frames:[host.silentFrame]});});
   await silentSeat.getByText('尚未提交的片段',{exact:true}).waitFor();
+  const streamingReads = await page.evaluate(() => window.inputHost.reads);
+  await page.waitForFunction(old => window.inputHost.reads > old,streamingReads);
+  const backedOffReads = await page.evaluate(() => window.inputHost.reads);
+  await new Promise(resolve => setTimeout(resolve,2200));
+  assert.equal(await page.evaluate(() => window.inputHost.reads),backedOffReads,'a healthy actor stream backs off full room reads');
   await page.evaluate(()=>{const host=window.inputHost,frame={...host.silentFrame,revision:3,status:'silent',messages:[{text:'非法空回应替代',complete:true}]};host.pushLive({instanceId:host.state.instanceId,roomId:'room',status:'streaming',frames:[frame]});});
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   assert.equal(await silentSeat.getByText('尚未提交的片段',{exact:true}).isVisible(),true,'a malformed silent frame cannot discard the real pending reply');

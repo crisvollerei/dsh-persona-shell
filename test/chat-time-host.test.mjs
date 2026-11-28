@@ -46,7 +46,7 @@ test('one accepted room round shares its captured time across both primaries and
   const done = await settledRoom(f, room);
   assert.deepEqual(f.calls.map(call => bodyOf(call).speaker.id), [whale, dragon, claude]);
   assert.ok(f.calls.every(call => JSON.stringify(bodyOf(call).localTime) === JSON.stringify(captured)), 'queued speakers use the accepted round time even after midnight');
-  assert.equal(f.directors.length, 3, 'one native decision per reply; no extra time thread or stop call after all legal entries are consumed');
+  assert.equal(f.directors.length, 4, 'three replies and the final choice to leave the floor to the user share the same round');
   assert.equal(f.plans.length + f.continuations.length, 0);
   assert.ok(f.directors.every(call => !/"(?:localTime|clientTime|timeContext)"/.test(JSON.stringify(bodyOf(call)))), 'only the speaking channel receives local time');
   assert.doesNotMatch(JSON.stringify(done), /"(?:localTime|clientTime|timeContext)"/);

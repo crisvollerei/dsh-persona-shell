@@ -1,8 +1,73 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkReportFidelity } from '../lib/report-fidelity.js';
+import { checkReportFidelity, strictSelfReference } from '../lib/report-fidelity.js';
+import { normalizePack } from '../lib/pack.js';
+import { buildRewritePrompt } from '../lib/prompt.js';
+import { mask } from '../lib/mask.js';
+
+test('worker and status checks follow prose when the same predicate occurs in code', () => {
+  const original = '我未能提交。\n```js\n// 是否已提交\n```';
+  const candidate = original.replace('我未能提交', '小鲸鲸已经顺利提交');
+  const verdict = checkReportFidelity({original, candidate, maskedOriginal: mask(original).masked,
+    maskedCandidate: mask(candidate).masked, voice: true, subagentLabel: '小鲸鲸'});
+  assert.deepEqual(verdict.reasons, ['status-change', 'worker-change']);
+  const pack = {identity: '自称「我」'};
+  assert.equal(strictSelfReference("users' 文档标记为『我来核对』，已完成自我检查。", '', pack), false);
+  assert.equal(strictSelfReference('我国完成了部署。', '', pack), false);
+  assert.equal(strictSelfReference('我完成了部署。', '', pack), true);
+});
+
+test('strict relay uses its actual worker label and reviews only narrator prose',()=>{
+  const make=(mode,selfReference)=>normalizePack({narration:{mode,selfReference,assistant:'姐姐'}});
+  for(const pack of [make('relay','invalid'),make('voice','none')]){
+    assert.equal(pack.narration.selfReference,'natural');assert.doesNotMatch(buildRewritePrompt({pack,masked:'正文',history:[],literalCount:0}).system,/本次为严格转述/);
+  }
+  const pack=make('relay','none');assert.equal(pack.narration.selfReference,'none');
+  assert.match(buildRewritePrompt({pack,masked:'正文',history:[],literalCount:0,sourceLabel:'协作者甲'}).system,/原报告中指工作者的“我”/);
+  for(const s of ['用户说"我只要 Linux 的结果"，所以姐姐只跑了 Linux。','她说「用户说“我来”」。','文件 `我的配置.yml` 已保存。'])assert.equal(strictSelfReference(mask(s).masked),false,s);
+  for(const s of ['姐姐把超时改成 30 秒了，我看了下测试。','随后我又检查了一遍。','咱再看一眼','“我没有闭合引号'])assert.equal(strictSelfReference(s),true,s);
+  assert.equal(strictSelfReference("姐姐说'我先跑'。"), false);
+  assert.equal(strictSelfReference("It's ready，我们再看看 what's next。"), true);
+  assert.equal(strictSelfReference("'咱们还在检查"), true);
+  assert.equal(strictSelfReference('本小肥鱼检查了测试。', '小肥鱼（实验性）'), true);
+  assert.equal(strictSelfReference('本小蓝核对了结果。', '小蓝'), true);
+  assert.equal(strictSelfReference('姐姐说「本小蓝核对了结果」。', '小蓝'), false);
+  const aliasPack={identity:'自称『本海星』，也自称「咕咕」',narration:{selfAliases:['阿圆']}};
+  for(const alias of ['本鲸鲸','本海星','咕咕','阿圆']) {
+    assert.equal(strictSelfReference(alias+'觉得没问题','鲸鲸',aliasPack),true);
+    assert.equal(strictSelfReference('用户说「'+alias+'觉得没问题」','鲸鲸',aliasPack),false);
+  }
+});
+
+for (const [source,candidate,rejected] of [
+  ['Windows 完成 2 项，Linux 完成 7 项','Windows 这边完成 7 项，Linux 完成 2 项',true],
+  ['Windows 完成 2 项，Linux 完成 7 项','Linux 那边完成 7 项，Windows 完成 2 项',false],
+  ['前端修复 3 处，后端修复 5 处','前端修复 5 处，后端修复 3 处',true],
+  ['前端修复 3 处，后端修复 5 处','后端修了 5 处，前端修了 3 处',false],
+  ['共完成 2 项','一共完成了 2 项',false],
+  ['新增 4 个文件，删除 2 个文件','新增 2 个文件，删除 4 个文件',false],
+  ['A 完成 2 项，A 完成 3 项','A 完成 3 项，A 完成 2 项',false],
+  ['- `Windows` 完成 2 项\n- Linux 完成 7 项','其中 Windows 完成了七项，而 Linux 完成了两项',true],
+  ['Node 22 通过 12 项，Node 24 通过 8 项','Node 22 通过 8 项，Node 24 通过 12 项',true],
+  ['Windows 完成两项，Linux 完成七项','Windows 完成七项，Linux 完成两项',true],
+  ['Windows 完成两项，Linux 完成七项','Linux 完成七项，Windows 完成两项',false],
+  ['Windows 完成两项，Linux 完成七项','Linux 完成 2 项，Windows 完成 7 项',true],
+]) test(`attributed counts: ${candidate}`,()=>{
+  assert.deepEqual(checkReportFidelity({original:source,candidate,allowEquivalentQuantities:true}).reasons,rejected?['quantity-attribution']:[]);
+});
 import { makeReportSource } from '../lib/report-visualization.js';
 import { buildReportReadablePrompt, parseReportReadable } from '../lib/report-readable.js';
+
+test('readable keeps parallel subject counts bound through clause reordering', () => {
+  const original = 'Windows 完成 2 项检查，Linux 完成 7 项检查。';
+  const source = makeReportSource({sessionId:'s',seq:1,text:original});
+  const parse = text => parseReportReadable(JSON.stringify({schemaVersion:3,blocks:[{ref:'b1',text}]}),source);
+  const swapped = parse('Windows 完成 7 项检查，Linux 完成 2 项检查。');
+  assert.equal(swapped.value.blocks[0].text,original);
+  assert.ok(swapped.warnings.some(w=>w.code==='readable-block-original'));
+  const reordered = 'Linux 完成 7 项检查，Windows 完成 2 项检查。';
+  assert.equal(parse(reordered).value.blocks[0].text,reordered);
+});
 
 test('report quantities preserve occurrences while prose can reorder the same observations', () => {
   assert.equal(checkReportFidelity({ original: '12/12 通过，修改2处。', candidate: '修改2处，12/12 检查通过。' }).ok, true);
@@ -38,10 +103,9 @@ test('configured helper names remain legal in main/helper prose without granting
     candidate: '工作助手只读记录。小鲸鲸完成1项静态检查。', voice: true, subagentLabel: '小鲸鲸' }).ok, true);
   assert.equal(checkReportFidelity({ original: '工作助手只读记录。子代理丙完成1项静态检查。',
     candidate: '我只读记录。小鲸鲸完成1项静态检查。', voice: true, subagentLabel: '小鲸鲸' }).ok, true);
-  // Both helpers are present in the source. These narrow checks cannot tell
-  // that the candidate has reassigned their work; source-aware review must.
+  // Named helpers keep their individual counts even when the totals match.
   assert.equal(checkReportFidelity({ original: '工作助手只读记录。子代理甲通过2项检查，子代理乙通过1项。',
-    candidate: '只读了记录。子代理甲通过1项检查，子代理乙通过2项。', voice: true, subagentLabel: '小鲸鲸' }).ok, true);
+    candidate: '只读了记录。子代理甲通过1项检查，子代理乙通过2项。', voice: true, subagentLabel: '小鲸鲸' }).ok, false);
 });
 test('voice does not bypass relay attribution and real helper-source mapping remains explicit', () => {
   const original = '工作助手已调整配置。';
@@ -121,6 +185,8 @@ test('formal quantity normalization still rejects changed, new or lost numerical
   for (const candidate of ['13项通过，2项未测。', '12项通过，2项未测，新增1条记录。', '12项通过。']) {
     assert.deepEqual(checkReportFidelity({ ...input, candidate }).reasons, ['quantity-change']);
   }
+  assert.deepEqual(checkReportFidelity({...input,candidate:input.original+'另有五处配置。'}).reasons,['quantity-change']);
+  assert.equal(checkReportFidelity({original:'执行1次，前进2步。',candidate:'一次性执行一次，进一步向前走两步。',allowEquivalentQuantities:true}).ok,true);
 });
 test('even normalized quantity multisets do not certify subject, status or scope coverage', () => {
   assert.equal(checkReportFidelity({ original: '通过2项，失败1项。', candidate: '通过1项，失败2项。', allowEquivalentQuantities: true }).ok, true);

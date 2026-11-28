@@ -27,7 +27,7 @@ test('actor shared-response pointers include only visible completed peers in the
     message:anchor.user,history:[turn('old',{messageId:'older-user'})],exchange:[turn('good'),turn('own',{recipientId:'self'}),turn('failed',{status:'failed'}),
       turn('pending',{status:'pending'}),turn('foreign-room',{roomId:'other'}),turn('foreign-scope',{scopeKey:'other'})]});
   const body=readChatInput(p),refs=body.sharedResponse.priorReplyEvents;
-  assert.equal(refs.length,1);assert.equal(body.timeline.find(event=>event.eventId===refs[0]).turnId,'good');
+  assert.equal(refs.length,1);assert.deepEqual(body.__events.get(refs[0]).messages,['公开原话-good']);
   assert.equal(JSON.stringify(p.messages).split('公开原话-good').length-1,1,'pointers must not repeat dialogue bodies');
   assert.doesNotMatch(JSON.stringify(body.sharedResponse),/公开原话|resolved|complete/);
   assert.doesNotMatch(JSON.stringify(p.messages),/公开原话-(failed|pending|foreign-room|foreign-scope)/);

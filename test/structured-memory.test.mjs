@@ -29,6 +29,16 @@ test('historical references resolve exact versions without re-ranking against ne
   assert.deepEqual(m.references([{ id: edited.id, version: edited.version }], context), []);
 });
 
+test('observed English names retain their complete source, while markup stays ineligible as complete evidence',()=>{
+  const m=createStructuredMemory();
+  observe(m,'以后叫我 Alice');
+  const [first]=m.select(context);assert.equal(first.content,'以后叫我 Alice');
+  assert.equal(first.evidence[0].quote,'以后叫我 Alice');assert.equal(first.evidence[0].complete,true);
+  observe(m,'以后叫我 `Secret`',2);
+  assert.deepEqual(m.select(context).map(e=>e.id),[first.id]);
+  assert.doesNotMatch(JSON.stringify(m.batch().sources),/Secret/u);
+});
+
 test('historical reference access still obeys session boundaries and expiry', () => {
   let clock = 10;
   const m = createStructuredMemory({ now: () => clock });
@@ -327,6 +337,16 @@ test('private memories cannot be exported implicitly or leaked after a scope cha
   m.mutate({ action: 'update', id: shared.id, version: shared.version, content: shared.content,
     pinned: false, scope: 'persona', personaId: 'whale' });
   assert.equal(m.handoffContext(handoff.id, { personaId: 'dragon', sessionId: 'main' }).memories.length, 0);
+});
+
+test('work handoff choices and restored cards exclude same-session episodes',()=>{
+  const m=createStructuredMemory(),sessionId='main',personaId='dragon';
+  const episode=add(m,'上次一起看展',{kind:'episode',scope:'session',sessionId,personaId:null});
+  const action={action:'create',summary:'交接说明',sessionId,fromPersonaId:'whale',toPersonaId:personaId,memoryIds:[]};
+  assert.deepEqual(m.handoffChoices(sessionId),[]);
+  assert.throws(()=>m.handoff({...action,memoryIds:[episode.id]}),/private-handoff-memory/);
+  const card=m.handoff(action),snapshot=m.snapshot();snapshot.handoffs[0].memoryIds=[episode.id];m.restore(snapshot);
+  assert.deepEqual(m.handoffContext(card.id,{personaId,sessionId}).memories,[]);
 });
 
 test('handoff acceptance is idempotent and closing requires a current version', () => {

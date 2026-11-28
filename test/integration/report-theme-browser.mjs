@@ -104,13 +104,16 @@ async function theme(page, id, mode) {
 }
 const originalSnapshot = page => page.evaluate(() => {
   const take = selector => { const el = document.querySelector(selector), css = getComputedStyle(el); return { color: css.color, background: css.backgroundColor, width: css.width, height: css.height, padding: css.padding, border: css.border }; };
-  return { formal: take('#app'), formalTitle: take('#app h1'), inlineCode: take('.rr-document p>code'), code: take('.host-code'), codeText: take('.host-code pre'), token: take('[data-syntax-token]'), toolbar: take('.host-code button') };
+  return { formal: take('#app'), formalTitle: take('#app h1'), code: take('.host-code'), codeText: take('.host-code pre'), token: take('[data-syntax-token]'), toolbar: take('.host-code button') };
 });
 const contrastChecks = page => page.evaluate(() => {
   const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(Number), luminance = value => rgb(value).map(n => { n /= 255; return n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4; }).reduce((sum, n, i) => sum + n * [.2126, .7152, .0722][i], 0);
   const contrast = (a, b) => { const x = luminance(a), y = luminance(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05); };
   const surface = getComputedStyle(document.querySelector('.dsh-report-reading')).backgroundColor;
-  return ['.rr-document h1', '.rr-document h2', '.rr-document h3', '.rr-document p', '.rr-document li', '.rr-document a', '.rr-theme-current', '.rr-guide button[data-kind=risk]'].map(selector => ({ selector, ratio: contrast(getComputedStyle(document.querySelector(selector)).color, surface) }));
+  const checks=['.rr-document h1', '.rr-document h2', '.rr-document h3', '.rr-document p', '.rr-document li', '.rr-document a', '.rr-theme-current', '.rr-guide button[data-kind=risk]'].map(selector => ({ selector, ratio: contrast(getComputedStyle(document.querySelector(selector)).color, surface) }));
+  const inline=getComputedStyle(document.querySelector('.rr-document p>code'));
+  checks.push({selector:'inline code',ratio:contrast(inline.color,inline.backgroundColor)});
+  return checks;
 });
 const screenshot = async (page, name, width = 1200) => {
   await page.setViewportSize({ width, height: 900 });
@@ -151,6 +154,7 @@ try {
   assert.equal(await page.locator('body').getAttribute('data-ds-dark-theme'), '', 'native dark is a boolean attribute');
   const nativeDark = await originalSnapshot(page);
   await theme(page, 'catppuccin', 'light'); assert.deepEqual(await originalSnapshot(page), nativeDark, 'explicit light reader leaves native dark code and work UI alone');
+  assert.ok((await contrastChecks(page)).find(check=>check.selector==='inline code').ratio>=4.5);
   await theme(page, 'system'); assert.equal(await dialog(page).getAttribute('data-reading-appearance'), 'dark'); assert.equal(await dialog(page).getByLabel('阅读页外观', { exact: true }).inputValue(), 'auto');
   await theme(page, 'nord'); assert.equal(await dialog(page).getAttribute('data-reading-appearance'), 'light', 'returning to a fixed theme restores its previous explicit appearance');
   await theme(page, 'nord', 'auto'); await page.evaluate(() => window.setHostAppearance('light')); await page.waitForFunction(() => document.querySelector('.dsh-report-reading')?.dataset.readingAppearance === 'light');

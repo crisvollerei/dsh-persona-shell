@@ -64,7 +64,7 @@ test('the complete JSON template has the channel field types and survives parse 
   assert.equal(parsed.ok, true);
   assert.equal(parsed.preset.name, template.name);
   const { name, ...pack } = template;
-  assert.deepEqual(normalizePack(parsed.preset), pack);
+  assert.deepEqual(normalizePack(parsed.preset), {...pack,narration:{...pack.narration,selfReference:'natural'}});
 });
 
 test('a clean JSON answer parses into a pack', () => {

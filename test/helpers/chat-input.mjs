@@ -1,5 +1,20 @@
 // Test-only semantic view. Production sends the actual actor-relative messages.
 // Assertions that need transport identity should inspect options.messages itself.
+export function readChatPacket(message) {
+  if(message.role==='assistant')return {messages:message.content.map(block=>block.text)};
+  const first=message.content[0].text;
+  if(!first.startsWith('【'))return JSON.parse(first);
+  let author,eventId;
+  const messages=message.content.map(block=>{
+    const [,label,id,index,body]=/^【(.+) (e\d+)\.(\d+)】\n  ([\s\S]*)$/u.exec(block.text);
+    author=label==='用户'?{role:'user',name:'我'}:{role:'assistant',name:label.slice(3)};
+    eventId=id;
+    const text=body.replace(/(\r\n|[\r\n\u0085\u2028\u2029])  /gu,'$1');
+    return {index:Number(index),text};
+  });
+  return {eventId,author,messages};
+}
+
 export function readChatInput(options){
   if(!options?.messages&&typeof options?.user==='string')return JSON.parse(options.user);
   const messages=options?.messages??[];let control;
@@ -7,10 +22,33 @@ export function readChatInput(options){
     try{const value=JSON.parse(message.content.find(block=>block.type==='text').text);if(value.task==='chat-control'){control=value;break;}}catch{}
   }
   if(!control)return JSON.parse(messages[0]?.content?.find(block=>block.type==='text')?.text??'null');
-  const events=new Map();
-  for(const item of control.timeline){
-    const packet=JSON.parse(messages[item.messageIndex].content.find(block=>block.type==='text').text);
-    const bubbles=item.bubbles.map((bubble,index)=>({...bubble,text:typeof packet.messages[index]==='string'?packet.messages[index]:packet.messages.find(value=>value.index===bubble.index)?.text}));
+  const events=new Map(), selfHistory=(control.selfHistory??[]).values();
+  const packets=messages.slice(0,-1).map(message=>{
+    const packet=readChatPacket(message);
+    if(message.role!=='assistant')return packet;
+    const location=selfHistory.next().value,eventId=typeof location==='string'?location:location.eventId;
+    return {...packet,eventId,indices:location.indices??packet.messages.map((_,index)=>index),
+      author:{role:'assistant',...(control.authors?.[eventId]??control.speaker)}};
+  });
+  const authorOf=packet=>control.authors?.[packet.eventId]??(packet.author.id ? {id:packet.author.id,name:packet.author.name}
+    : control.participants?.find(p=>p.name===packet.author.name));
+  const byId=new Map(packets.map(packet=>[packet.eventId,packet]));
+  const groups=(control.history??[]).map(group=>({...group,responses:group.responses.map(value=>typeof value==='string'
+    ? {eventId:value,speaker:authorOf(byId.get(value)),status:'ready',omittedBubbles:0}:value)}));
+  const timeline=packets.map((packet,messageIndex)=>{
+    const historical=groups.find(group=>group.userEvents.includes(packet.eventId)||group.responses.some(s=>s.eventId===packet.eventId));
+    const response=historical?.responses.find(s=>s.eventId===packet.eventId),messageId=historical?.messageId??control.currentMessage.messageId;
+    const member=response?.speaker??authorOf(packet);
+    const author=packet.author.role==='assistant'?{...packet.author,...member}:packet.author;
+    return {eventId:packet.eventId,author,messageId,messageIndex,recipients:historical?(historical.recipients??[]):control.currentMessage.recipients,
+      bubbles:packet.messages.map((bubble,i)=>({index:packet.indices?.[i]??bubble.index})),
+      ...(response?.omittedBubbles?{omittedBubbles:response.omittedBubbles}:{})};
+  });
+  control={sharedResponse:{priorReplyEvents:[]},...control,timeline,history:groups,historyCount:groups.length,exchange:timeline.filter(e=>e.messageId===control.currentMessage.messageId&&e.author.role==='assistant').map(e=>e.eventId),
+    inbox:control.inbox??[],roomNotes:control.roomNotes??[],discussionState:control.discussionState??[]};
+  for(const item of timeline){
+    const packet=packets[item.messageIndex];
+    const bubbles=item.bubbles.map((bubble,index)=>({...bubble,text:typeof packet.messages[index]==='string'?packet.messages[index]:packet.messages[index].text}));
     events.set(item.eventId,{...item,bubbles,messages:bubbles.map(bubble=>bubble.text)});
   }
   const resolve=pointer=>{const event=events.get(pointer?.eventId),bubble=event?.bubbles.find(bubble=>bubble.index===pointer.index);

@@ -36,8 +36,8 @@ test('personal reactions may stand alone while requested explanations and source
   assert.match(prompt.system,/说完不用再解释自己为何这样说/);
   assert.match(prompt.system,/需要理由时自然讲清，不为缩短而省掉依据/);
   assert.match(prompt.system,/工作判断所需的重要条件、风险、未知与来源一起保留/);
-  assert.match(prompt.system,/用户已明确邀请抱抱时可以直接应邀/);
-  assert.match(prompt.system,/把用户的后续反应留给用户；不必逐动作索要确认/);
+  assert.doesNotMatch(prompt.system,/用户已明确邀请抱抱时可以直接应邀/);
+  assert.match(prompt.system,/涉及用户的选择、动作和感受，以用户原话为依据/);
   assert.match(prompt.system,/按原文保留重要条件、风险、不确定性与建议的性质/);
   assert.match(prompt.system,/报告中的检查和结论归原作者/);
   assert.deepEqual(prompt.control.workContext.sources,[source]);

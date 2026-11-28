@@ -24,6 +24,6 @@ test('malformed local geometry cannot create nonfinite or offscreen controls',()
  assert.deepEqual(layout.resize(rect,'unknown',0,0,view),rect);
 });
 test('browser geometry is the same dependency-free implementation',()=>{
- const source=readFileSync(new URL('../client.js',import.meta.url),'utf8');
- assert.ok(source.includes(createFloatingLayout.toString()));
+ const source=readFileSync(new URL('../client.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+ assert.ok(source.includes(createFloatingLayout.toString().replace(/\r\n/g,'\n')));
 });

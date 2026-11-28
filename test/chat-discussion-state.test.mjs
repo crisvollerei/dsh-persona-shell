@@ -24,6 +24,16 @@ const actualUserRef = (binding, state, messageId) => ({ roomId: binding.roomId, 
 const actualAssistantRef = (binding, state, value) => ({ roomId: binding.roomId, generation: state.room.generation,
   kind: 'assistant', turnId: value.id, attemptId: value.attemptId, index: 0 });
 
+test('discussion retains a 200-character reference scope across storage restoration',()=>{
+  for(const length of [200,201]){
+    const r=room(), scopeKey='s'.repeat(length);
+    r.turns[0].scopeKey=scopeKey;
+    if(length>200){assert.throws(()=>changeDiscussion(r,add(r),scopeKey,100),/invalid-chat-discussion/);continue;}
+    r.discussion=restoreDiscussion(changeDiscussion(r,add(r),scopeKey,100),r.id);
+    assert.equal(discussionView(r,scopeKey).entries[0].available,true);
+  }
+});
+
 test('discussion stores canonical pointers and owner labels; user evidence is required for a decision', () => {
   const r = room();
   apply(r, add(r, { source: { ...assistantRef(), text: '伪造原文', author: { name: dragon } } }));

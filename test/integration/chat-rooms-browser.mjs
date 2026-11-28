@@ -90,10 +90,12 @@ const services = new Map([
             &&option.eventId===next.evidence.eventId&&option.index===next.evidence.index)
           ??choices.find(option=>option.id===next.id&&option.kind===next.kind&&option.to===next.to&&option.eventId===next.evidence.eventId);
           assert.ok(selected,'the fake intent must resolve to an actual prepared choice');wire.choiceId=selected.choiceId;wire.goal=next.goal;}
-        assert.equal(user.protocol?.version,'D1','the actual Host director requests finite native control');
+        assert.ok(user.choices.every(c=>/^c[1-9]\d*$/u.test(c.choiceId)),'the actual Host offers request-local choices');
         const work=wire.context.work==='required'?wire.context.sourceIds.map(id=>user.sourceKeys.find(source=>source.id===id)?.key??'s99').join('+')
           :wire.context.work==='not-needed'?'N':'U';
-        yield{type:'text-delta',text:`D1 ${user.protocol.ticket} ${wire.choiceId??'WAIT'} ${work} ${wire.context.request} q0`};yield{type:'finish',reason:{kind:'stop'}};
+        const scene=user.sceneCatalog?.options[0]?.key;
+        const response=wire.choiceId?`${wire.choiceId} ${work}${scene?' '+scene:''}`:scene?`WAIT ${work} ${scene}`:'WAIT';
+        yield{type:'text-delta',text:response};yield{type:'finish',reason:{kind:'stop'}};
       })();
     }
     assert.ok(!['chat-context-selection','chat-turn-plan','chat-turn-continuation'].includes(user.task)&&!Array.isArray(user.candidates),'the real Host must use the one room director protocol');
@@ -503,6 +505,12 @@ try {
   assert.equal((await state()).rooms.length,1,'reopening during the initial save joins the first creation');
   assert.deepEqual(sourceReads,['work']);assert.equal(calls.length,0);assert.equal(contextSelections.length,0,'opening does not select a work context');assert.equal(judgements.length,0,'opening never judges whether listeners should join');
   const initial=await state(),roomA=initial.room.id;assert.deepEqual(initial.room.memberIds,['大肥鱼（默认）']);
+  const currentViewer=routeReads.findLast(r=>r.context?.action==='open'&&r.context.roomId===roomA).context.viewer;
+  const contextGet='**/persona-shell/chat-context?*';
+  await page.route(contextGet,route=>route.fulfill({status:409,json:{error:'context-not-open'}}),{times:1});
+  await dialog().getByText('参考服务需要重新连接，正在重试。').waitFor({timeout:25000});
+  await page.waitForRequest(r=>r.url().endsWith('/chat-context')&&r.method()==='POST'&&r.postDataJSON().action==='open'&&r.postDataJSON().viewer===currentViewer,{timeout:25000});
+  await waitSources(1);
   assert.ok((await page.locator('.dsh-persona-chat-top').boundingBox()).height<65);
   assert.ok((await page.locator('.dsh-persona-chat-compose').boundingBox()).height<145);
   assert.equal(await recipients.count(),0,'single-person rooms do not show a target picker');
@@ -566,6 +574,8 @@ try {
     el.appendChild(block);
   });
   const codeAction=page.getByRole('button',{name:'复制代码样本'});
+  // Measure the settled layout: a bubble's entrance spring scales it briefly.
+  await codeAction.evaluate(b=>Promise.all(b.closest('.dsh-persona-chat-bubble').getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished)));
   assert.ok(await codeAction.locator('svg').evaluate(svg=>svg.getBoundingClientRect().width>=14),'room buttons must not squeeze the host icon');
   await codeAction.scrollIntoViewIfNeeded();await members();
   const panel=page.getByRole('region',{name:'管理聊天室',exact:true});
@@ -646,7 +656,9 @@ try {
   const beforeReaction=calls.length,beforeJudgement=judgements.length;
   await send('旁听成员参与一下');await page.getByText('先保留原文依据，再决定怎么整理。',{exact:true}).waitFor();await settled();
   const reactionState=await state(),reactionGroup=reactionState.room.turns.slice(-3);
-  assert.equal(calls.length,beforeReaction+3);assert.equal(judgements.length,beforeJudgement+3,'each next speaker is directed once; an exhausted scene does not need an extra stop judgment');
+  assert.equal(calls.length,beforeReaction+3);assert.equal(judgements.length,beforeJudgement+4);
+  assert.ok(readChatInput(judgements.at(-1)).choices.some(c=>c.kind==='normal'&&c.to==='Claude小姐'),
+    'the last public reaction leaves a real peer option for the final handback decision');
   assert.deepEqual(reactionGroup.map(turn=>turn.phase),['reaction','reaction','reaction']);
   assert.deepEqual(reactionGroup.map(turn=>turn.recipientId),['大肥鱼（默认）','大肥龙','Claude小姐']);
   assert.equal(new Set(reactionGroup.map(turn=>turn.messageId)).size,1);
@@ -774,6 +786,19 @@ try {
   const beforeSettingsDraft=await input().inputValue();await input().fill('设置面板关闭后仍保留的草稿');
   await page.getByRole('button',{name:'聊天室设置',exact:true}).click();
   await dialog().getByRole('checkbox',{name:'开启聊天室思考',exact:true}).waitFor();
+  const themes=dialog().getByRole('group',{name:'主题色',exact:true});
+  assert.ok(await themes.getByRole('radio',{name:'海蓝'}).isChecked());
+  await page.evaluate(()=>document.documentElement.style.setProperty('--dsw-alias-brand-primary','#121212'));
+  const userBubble=dialog().locator('[data-user=true]>.dsh-persona-chat-bubble').first();
+  for(const [name,rgb] of [['海蓝','53, 102, 201'],['藤紫','121, 85, 157'],['玫瑰','165, 71, 101'],['青竹','35, 116, 99']]){
+    await themes.getByRole('radio',{name}).check();
+    for(const mode of ['light','dark']){
+      await page.evaluate(value=>document.documentElement.dataset.theme=value,mode);
+      assert.deepEqual(await userBubble.evaluate(node=>{const s=getComputedStyle(node);return [s.backgroundColor,s.backgroundImage,s.color];}),
+        ['rgb('+rgb+')','none','rgb(255, 255, 255)']);
+    }
+  }
+  await page.evaluate(()=>{document.documentElement.style.removeProperty('--dsw-alias-brand-primary');document.documentElement.dataset.theme='light';});
   await dialog().getByRole('textbox',{name:'角色怎么称呼你',exact:true}).fill('阿晴');
   await dialog().getByRole('button',{name:'保存称呼',exact:true}).click();
   await dialog().getByText('称呼已保存。',{exact:true}).waitFor();
@@ -786,6 +811,9 @@ try {
   await page.setViewportSize({width:1100,height:850});await page.evaluate(()=>document.documentElement.dataset.theme='light');
   await page.getByRole('button',{name:'收起设置',exact:true}).click();assert.equal(calls.length,beforeProfile);
   assert.equal(await input().inputValue(),'设置面板关闭后仍保留的草稿');await input().fill(beforeSettingsDraft);
+  await dialog().getByRole('button',{name:'关闭聊天室',exact:true}).click();
+  await page.getByRole('button',{name:'聊天室',exact:true}).first().click();await input().waitFor();
+  assert.equal(await userBubble.evaluate(node=>getComputedStyle(node).backgroundColor),'rgb(35, 116, 99)','the room restores the local theme after reopening');
 
   await send('模拟失败');await page.getByRole('button',{name:'重试回复',exact:true}).waitFor();
   await page.getByRole('button',{name:'重试回复',exact:true}).click();
@@ -960,6 +988,13 @@ try {
   assert.equal((await state()).room.turns.find(turn=>turn.user==='这是尚未发送的文字').quote.ref.index,1,'continuation grouping keeps the original persisted quote index');
   await page.getByRole('button',{name:'查看引用原消息',exact:true}).click();
   assert.equal(await page.locator('.dsh-persona-chat-quoted-highlight').count(),1);
+  // The jump ring must actually play, even on a reply that still carries its arrival marker.
+  const found=page.locator('.dsh-persona-chat-quoted-highlight');
+  assert.equal(await found.evaluate(e=>getComputedStyle(e).animationName),'dsh-chat-found','the quote target plays its locating ring');
+  await page.emulateMedia({reducedMotion:'reduce'});
+  assert.equal(await found.evaluate(e=>getComputedStyle(e).animationName),'none','reduced motion keeps only the static outline');
+  assert.equal(await found.locator('.dsh-persona-chat-bubble').evaluate(e=>getComputedStyle(e).transitionDuration.split(',').every(d=>parseFloat(d)===0)),true,'reduced motion removes bubble transitions');
+  await page.emulateMedia({reducedMotion:'no-preference'});
   const longOriginal='这里要保留引用的完整原话。'.repeat(80)+'\n最后一行也应该能查看。';
   await send(longOriginal);await settled();
   const longUser=page.locator('[data-user=true]').filter({hasText:longOriginal});await longUser.hover();
@@ -975,6 +1010,46 @@ try {
   assert.match(await page.locator('.dsh-persona-chat-quoted-highlight').innerText(),/最后一行也应该能查看/);
   await page.keyboard.press('Escape');assert.equal(await dialog().count(),1);
   assert.equal(await input().inputValue(),'继续编辑引用草稿');assert.equal(await longQuote.count(),0);assert.equal(calls.length,beforeQuoteCalls);
+  const rememberButton=longUser.getByRole('button',{name:'记住我的这句'});
+  await page.setViewportSize({width:320,height:640});
+  const actions=await longUser.locator('.dsh-persona-chat-quote-action').evaluateAll(nodes=>nodes.map(n=>({text:n.textContent,icon:n.querySelector('svg')?.getBoundingClientRect().width,target:n.getBoundingClientRect().width})));
+  assert.equal(actions.length,2);assert.ok(actions.every(a=>!a.text&&a.icon===16&&a.target>=24));
+  await page.setViewportSize({width:390,height:620});
+  await rememberButton.focus();await page.keyboard.press('Enter');
+  const rememberForm=page.getByRole('dialog',{name:'记住这句',exact:true});
+  await rememberForm.waitFor();await page.keyboard.press('Escape');assert.equal(await rememberForm.count(),0);
+  const previousText='这是尚未发送的文字';
+  const previousUser=page.locator('[data-user=true]').filter({hasText:previousText}).last();
+  await previousUser.getByRole('button',{name:'记住我的这句'}).press('Enter');
+  await rememberForm.getByLabel('内容').fill('第一条的草稿');
+  await rememberForm.getByLabel('范围').selectOption('');
+  await rememberForm.getByLabel('类型').selectOption('episode');
+  const quoteField=rememberForm.getByLabel('原话');
+  assert.equal(await quoteField.inputValue(),previousText);
+  await quoteField.click();
+  await quoteField.evaluate(field=>field.setSelectionRange(0,2));
+  await quoteField.press('Shift+ArrowRight');
+  assert.ok(await quoteField.evaluate(field=>field.selectionEnd>field.selectionStart && field.selectionEnd-field.selectionStart<field.value.length));
+  await rememberForm.getByRole('button',{name:'以所选片段为依据'}).click();
+  assert.match(await rememberForm.innerText(),/不会自动带入聊天/);
+  await rememberButton.press('Enter');
+  assert.equal(await rememberForm.getByLabel('内容').inputValue(),longOriginal.slice(0,240));
+  assert.equal(await rememberForm.getByLabel('类型').inputValue(),'agreement');
+  assert.notEqual(await rememberForm.getByLabel('范围').inputValue(),'');
+  assert.equal(await rememberForm.locator('blockquote').count(),0);
+  await rememberForm.getByLabel('内容').fill('窄屏确认的约定');
+  const formBounds=await rememberForm.boundingBox();assert.ok(formBounds.width<=390&&formBounds.height<=620*.55);
+  await page.route('**/persona-shell/chat/memory',route=>route.fulfill({status:409,json:{error:'memory-capacity',capacity:{cleanable:0,groups:0}}}),{times:1});
+  await rememberForm.getByRole('button',{name:'记住',exact:true}).click();await rememberForm.getByRole('button',{name:'去整理'}).click();
+  await page.getByRole('dialog',{name:'整理记忆',exact:true}).waitFor();await page.keyboard.press('Escape');
+  assert.equal(await rememberForm.getByLabel('内容').inputValue(),'窄屏确认的约定');
+  await rememberForm.getByRole('button',{name:'记住',exact:true}).click();await rememberForm.waitFor({state:'hidden'});
+  assert.ok((await owner('memory')).entries.some(e=>e.content==='窄屏确认的约定'&&e.evidence[0].quote===longOriginal));
+  await send('再说说上次的约定。');await settled();
+  const usedMemory=page.locator('details').filter({has:page.locator('summary').filter({hasText:/^参考了 \d+ 条记忆$/})}).last();
+  await usedMemory.locator(':scope > summary').press('Enter');await usedMemory.getByText(/窄屏确认的约定/).waitFor();
+  assert.ok((await usedMemory.boundingBox()).width<=390);await usedMemory.getByRole('button',{name:'不再用于聊天'}).click();
+  await usedMemory.getByRole('button',{name:'确认撤销'}).click();await usedMemory.getByText('已撤销',{exact:true}).waitFor();
   await input().fill('');await page.setViewportSize({width:1100,height:850});
   // Draft preparation is explicit, room-scoped, editable and never sends a task itself.
   // This section deliberately exercises the opt-in dialog after the default-on chat checks above.
@@ -1258,7 +1333,7 @@ try {
   await waitSources(2);await page.getByRole('button',{name:'收起来源',exact:true}).click();
   const fixedSelection=structuredClone((await state()).room),beforeIdleSelections=contextSelections.length,beforeIdleCalls=calls.length;
   await send('今天就聊点轻松的吧。');await settled();
-  assert.equal(contextSelections.length,beforeIdleSelections+2,'the same director selects two actual speakers and exhausted candidates stop locally');
+  assert.equal(contextSelections.length,beforeIdleSelections+3,'two replies and a decision about the last public peer message');
   const casualCalls=calls.slice(beforeIdleCalls).map(call=>readChatInput(call));
   assert.equal(casualCalls.length,2);assert.ok(casualCalls.every(payload=>!payload.workContext?.sources?.length&&!/work_REPORT|other_REPORT|work_GOAL|other_GOAL/.test(JSON.stringify(payload.workContext))),
     'casual talk receives no work-source bodies while keeping its reference scope metadata');
@@ -1272,7 +1347,7 @@ try {
   assert.equal(selectorPayload.task,'chat-room-director');assert.deepEqual(selectorPayload.sources.map(source=>source.id).sort(),['other','work']);
   assert.doesNotMatch(JSON.stringify(selectorPayload),/work_REPORT|other_REPORT|WHALE_PRIVATE_REFERENCE|DRAGON_PRIVATE_REFERENCE|WORK_ONLY_DO_NOT_READ/);
   releaseContextSelection();await settled();
-  assert.equal(contextSelections.length,beforeWorkSelection+2);
+  assert.equal(contextSelections.length,beforeWorkSelection+3);
   const selectedCalls=calls.slice(beforeSelectedCalls).map(call=>readChatInput(call));
   assert.equal(selectedCalls.length,2);assert.ok(selectedCalls.every(payload=>payload.workContext?.sources?.length===1&&payload.workContext.sources[0].sessionId==='work'));
   assert.ok(selectedCalls.every(payload=>JSON.stringify(payload.workContext).includes('work_REPORT')&&!JSON.stringify(payload.workContext).includes('other_REPORT')));
@@ -1294,7 +1369,7 @@ try {
   const withoutWork=calls.slice(beforeLeaveWork).map(call=>readChatInput(call));
   assert.ok(withoutWork.every(payload=>!payload.workContext?.sources?.length&&payload.roomNotes.length===0&&payload.discussionState.length===0),
     'an explicit change to casual talk does not reintroduce extra old notes or discussion state');
-  assert.equal(contextSelections.length,beforeExplicitSelection+2,'the director handles each actual speaker and explicit casual-only intent withholds work sources');
+  assert.equal(contextSelections.length,beforeExplicitSelection+3,'two directed speakers and a final handback with the explicit casual-only selection');
   const beforeInvalidSelection=calls.length;await send('筛选失败也别把所有工作都带进来。');await settled();
   assert.equal(calls.length,beforeInvalidSelection,'an invalid finite source key is rejected before any persona body call');
   assert.equal((await state()).directorFailure.reason,'control');

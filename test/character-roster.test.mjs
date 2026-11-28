@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { roomCharacterContext, characterContextSection } from '../lib/character-roster.js';
+import {BUILTIN_PRESETS} from '../lib/pack.js';
 
 const fish = { id: '大肥鱼（默认）', name: '大肥鱼（默认）', builtin: true };
 const dragon = { id: '大肥龙', name: '大肥龙', builtin: true };
@@ -51,6 +52,16 @@ test('normal chat exposes only the speaker-to-present-builtin edges, with no off
   assert.deepEqual(context.relationships.map(({ from, to, address }) => ({ from, to, address })),
     [{ from: fish.id, to: dragon.id, address: 'GPT' }]);
   assert.doesNotMatch(JSON.stringify(context), /Claude小姐|鲸鲸（实验性）|Gemini|猫猫/);
+});
+
+test('editing the shipped card removes its former self-reference and ties from both actor and director rosters',()=>{
+  const original=BUILTIN_PRESETS.find(p=>p.id===dragon.id);
+  const edited={...dragon,pack:{...original.pack,identity:'用户自己的设定'}};
+  for(const speaker of [edited,fish,null]) {
+    const cast=roomCharacterContext(speaker,[edited,fish],{allRelationships:true});
+    assert.deepEqual(cast.members.map(p=>p.id),[fish.id]); assert.deepEqual(cast.relationships,[]);
+    assert.equal(cast.self?.id??null,speaker===fish?fish.id:null);
+  }
 });
 
 test('the unified decision can see all directed public edges among present builtins without creating custom relationships', () => {
@@ -108,8 +119,10 @@ test('only the people present contribute special address and relationship remind
 });
 
 test('context and section whitelist public fields and never expose packs, user fields or memories', () => {
-  const context = roomCharacterContext({ ...fish, pack: { identity: 'PRIVATE_PACK' }, memory: ['PRIVATE_MEMORY'] },
+  const pack = BUILTIN_PRESETS.find(p=>p.id===fish.id).pack;
+  const context = roomCharacterContext({ ...fish, pack, memory: ['PRIVATE_MEMORY'] },
     [{ ...dragon, source: 'PRIVATE_SOURCE', memory: ['DRAGON_PRIVATE'], name: 'INJECTED_NAME' }]);
+  assert.ok(!JSON.stringify(context).includes(pack.identity));
   assert.doesNotMatch(JSON.stringify(context), /PRIVATE|INJECTED_NAME/);
   context.memory = 'CONTEXT_PRIVATE'; context.members[0].private = 'MEMBER_PRIVATE';
   context.relationships[0].dynamic = 'RELATION_PRIVATE'; context.self.identity = 'SELF_PRIVATE';

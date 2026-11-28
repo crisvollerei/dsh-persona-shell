@@ -18,7 +18,7 @@ const frame=(trigger,focus,patch={})=>({version:1,trigger:userRef(trigger.messag
 const prompt=(current,extra={})=>buildChatPrompt({pack,speaker:me,participants:[me,peer],roomId,generation,scopeKey,
   currentTurn:current,message:current.user,history:[],...extra});
 const timeline=(current,extra={})=>buildActorTimeline({speaker:me,roomId,generation,scopeKey,currentTurn:current,message:current.user,...extra});
-const packet=message=>JSON.parse(message.content[0].text);
+import {readChatPacket as packet} from './helpers/chat-input.mjs';
 const eventFor=(p,pointer)=>p.control.timeline.find(event=>event.eventId===pointer?.eventId);
 
 test('a continued user topic carries its own historical summary as prior public work without copying the text into controls',()=>{

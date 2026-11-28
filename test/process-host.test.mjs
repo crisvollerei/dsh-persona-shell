@@ -6,9 +6,7 @@ import { resolveConfig } from '../lib/config.js';
 
 const tick = async () => { for (let i = 0; i < 12; i++) await new Promise(setImmediate); };
 const textChunks = (text) => [{ type: 'text-delta', index: 0, text }, { type: 'finish', reason: { kind: 'stop' } }];
-const queryChunks = () => [{ type: 'block-end', index: 0, block: {
-  type: 'tool-call', id: 'usage', name: 'get_tool_usage', arguments: '{}',
-} }, { type: 'finish', reason: { kind: 'tool-calls' } }];
+const observation = options => options.messages[0].content.length>1 ? JSON.parse(options.messages[0].content.at(-1).text).processUsage : null;
 function storage(saved = {}, gate = Promise.resolve()) {
   const tables = new Map([['profile', new Map([['settings', saved]])]]);
   return { tables, async open() {
@@ -26,9 +24,9 @@ function fixture(t, { config = {}, domain, script } = {}) {
   const calls = []; const observations = [];
   const llm = { stream(options) {
     calls.push(options);
-    const chunks = script?.(options, calls.length) ?? (options.tools ? queryChunks() : options.messages.at(-1).role === 'tool'
+    const chunks = script?.(options, calls.length) ?? (observation(options)
       ? (() => {
-        const facts = JSON.parse(options.messages.at(-1).content[0].text);
+        const facts = observation(options);
         observations.push(facts);
         const total = Object.values(facts.categories).reduce((sum, c) => sum + c.calls, 0);
         return textChunks(JSON.stringify({ rewrite: '接着看 [[0]]。', process_note: `哼，这段调用了${total}次工具。` }));
@@ -105,13 +103,12 @@ test('host supplies independent per-report counts and excludes all tool-informed
 test('unqueried and failed rewrites still advance the next counting window', async (t) => {
   let processCalls = 0; const got = [];
   const f = fixture(t, { script(options) {
-    if (options.tools) {
+    if (observation(options)) {
       processCalls++;
       if (processCalls === 1) return textChunks(JSON.stringify({ rewrite: '接着看 [[0]]。', process_note: '' }));
       if (processCalls === 2) return [{ type: 'finish', reason: { kind: 'error' } }];
-      return queryChunks();
     }
-    got.push(JSON.parse(options.messages.at(-1).content[0].text));
+    got.push(observation(options));
     return textChunks(JSON.stringify({ rewrite: '接着看 [[0]]。', process_note: '' }));
   } });
   f.start(); f.call('one', 'grep'); f.report(); await tick();
@@ -225,7 +222,7 @@ test('attachment-only steering invalidates the previous report without collectin
 test('a repeated source event cannot replace or reissue the in-flight row', async (t) => {
   const f = fixture(t); f.start(); f.call('a'); const report = f.report();
   f.emit(report.type, report.data, { seq: report.seq }); await tick();
-  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls.length, 1);
   assert.equal((await f.state()).rows.filter((r) => r.seq === report.seq).length, 1);
 });
 
@@ -235,8 +232,7 @@ test('turn note cap, body score and length validation remain independent', async
   const rows = (await f.state()).rows;
   assert.equal(rows.filter((r) => r.processNote).length, 3);
   assert.ok(rows.every((r) => r.text === '接着看 `secret.js`。' && r.review.editScore === 0));
-  const long = fixture(t, { script: (o) => o.tools ? queryChunks()
-    : textChunks(JSON.stringify({ rewrite: '字'.repeat(250), process_note: '忙起来啦。' })) });
+  const long = fixture(t, { script: () => textChunks(JSON.stringify({ rewrite: '字'.repeat(250), process_note: '忙起来啦。' })) });
   long.start(); long.call('one'); const event = long.report(); await tick();
   const failed = (await long.state()).rows.find((r) => r.seq === event.seq);
   assert.equal(failed.status, 'skipped'); assert.equal(failed.processNote, undefined);

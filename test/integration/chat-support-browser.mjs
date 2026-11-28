@@ -59,7 +59,9 @@ try{
  await dialog.getByRole('button',{name:'发送',exact:true}).click();
  const status=dialog.getByLabel('聊天室辅助任务',{exact:true});await status.getByText(/正在阅读网页/).waitFor();
  assert.equal(await status.getByRole('button',{name:'停止调查资料',exact:true}).isVisible(),true);assert.equal(await dialog.locator('.dsh-persona-chat-message').filter({hasText:'正在调查'}).count(),0);
- await status.locator('summary').click();await status.getByText('模型请求 2 / 4 · 搜索 1 / 3 · 阅读 1 / 5',{exact:true}).waitFor();checks.push('real Host progress shows actor, stage and exact counts before any persona reply');
+ const limits=(await roomState(f,room)).supportTasks.at(-1).limits;
+ assert.equal(limits.reads,4);
+ await status.locator('summary').click();await status.getByText(`模型步骤 2 / ${limits.calls} · 搜索 1 / ${limits.searches} · 阅读 1 / ${limits.reads}`,{exact:true}).waitFor();checks.push('real Host progress shows actor, stage and exact counts before any persona reply');
  const elapsed=await status.innerText();await page.waitForTimeout(1100);assert.notEqual(await status.innerText(),elapsed);checks.push('elapsed time advances while waiting without another model call');
  await input.fill('还没发送的补充');for(const width of [1100,390,280]){await page.setViewportSize({width,height:850});assert.equal(await status.evaluate(e=>e.scrollWidth<=e.clientWidth+1),true);
   assert.equal(await status.getByRole('button',{name:'停止调查资料',exact:true}).isVisible(),true);assert.equal(await input.inputValue(),'还没发送的补充');}

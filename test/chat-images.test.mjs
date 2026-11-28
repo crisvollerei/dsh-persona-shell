@@ -38,6 +38,25 @@ test('selection binds images to a real nearby user message and source; text-only
  room.turns.push({id:'bad',messageId:'one',scopeKey:'s',failure:'vision'});
  delete room.turns[1].quote;assert.deepEqual(selectChatImages(room,'two','s'),[],'failed image attempts do not silently attach themselves to later text');
 });
+test('paused images stay out of history and explicit quotes until restored',()=>{
+ const room={id:'room',generation:3,turns:[{messageId:'old',scopeKey:'s',userParts:[
+   {id:'first',images:[ref()]},{id:'second',images:[ref()]}]}, {messageId:'new',scopeKey:'s',userParts:[{id:'new',text:'现在'}]}]};
+ const refFor=messageId=>({kind:'user',roomId:room.id,generation:3,messageId});
+ room.excludedReferences=[refFor('second'),{...refFor('first'),generation:2}];
+ assert.deepEqual(selectChatImages(room,'new','s').map(i=>i.messageId),['first']);
+ room.excludedReferences.push(refFor('first'));
+ assert.deepEqual(selectChatImages(room,'new','s'),[]);
+ room.turns[1].quote={ref:refFor('second')};
+ assert.deepEqual(selectChatImages(room,'new','s'),[]);
+ room.excludedReferences=[refFor('second')];
+ assert.deepEqual(selectChatImages(room,'new','s'),[],'a paused quoted photo does not select an unrelated earlier photo');
+ room.turns[1].userParts[0].images=[ref('fresh')];
+ assert.deepEqual(selectChatImages(room,'new','s').map(i=>i.messageId),['new']);
+ delete room.turns[1].userParts[0].images;
+ room.excludedReferences=[refFor('first')];
+ assert.deepEqual(selectChatImages(room,'new','s').map(i=>i.messageId),['second']);
+});
+
 test('the exact prepared adapter rejects new images on a text-only route; historical images get an explicit unavailable placeholder',async()=>{
  const calls=[],llm={async prepareCall(config,signal,configure){const final=configure(config,{inputModalities:['text']});return {config:final,stream:async function*(options){calls.push(options);yield{type:'finish',reason:{kind:'stop'}};}}}};
  const options={provider:'p',model:'m',messages:[{role:'user',content:[{type:'image',attachment:ref()}]}]};

@@ -95,3 +95,26 @@ test('Host shutdown drains a write already committed to storage and does not mis
   const [saved] = await Promise.all([generating, closing]); assert.equal(saved.status, 200);
   const reopened = fixture(t, { storage }); await reopened.ready(); assert.equal(await body(reopened, a), fresh);
 });
+
+test('publishing a new report during a cache write preserves both sources and only caches the original, including after restart', async t => {
+  const {f,a,storage,generating,release}=await stage(t);
+  const nextText='下一份汇报记录了新的工作。';
+  const readNext=host=>host.request('report-visualization?session=saving&seq=20&presentation=readable');
+  try {
+    const session={id:a.sessionId,header:{}};
+    for(const [type,seq,data] of [['turn/start',19,{turn:2}],
+      ['assistant/message',20,{turn:2,message:{content:[{type:'text',text:nextText}]}}],
+      ['turn/end',21,{turn:2,reason:{kind:'completed'}}]]) f.bus.emit('session/event',session,{type,seq,data});
+    assert.equal((await readNext(f)).value.source.text,nextText);
+  } finally {release();}
+  assert.equal((await generating).status,200);
+  async function check(host) {
+    const first=(await read(host,a.sessionId)).value;
+    assert.equal(first.source.hash,a.hash);assert.equal(first.result.blocks[0].text,fresh);
+    const second=(await readNext(host)).value;
+    assert.equal(second.source.text,nextText);assert.equal(second.cached,false);
+  }
+  await check(f);await f.dispose();
+  const reopened=fixture(t,{storage});await reopened.ready();await check(reopened);
+  assert.equal(reopened.calls.length,0);
+});

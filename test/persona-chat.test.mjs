@@ -1,8 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPersonaChat, parseChatReply, parseChatResponse, CHAT_LIMITS } from '../lib/persona-chat.js';
+import { chatFailure, createPersonaChat, parseChatReply, parseChatResponse, CHAT_LIMITS } from '../lib/persona-chat.js';
 import { buildChatPrompt } from '../lib/chat-prompt.js';
 import { readChatInput } from './helpers/chat-input.mjs';
+
+test('a cancelled commit has no model failure and explicit abort reasons retain their category', () => {
+  const cancelled = Error('chat-cancelled');
+  assert.equal(chatFailure(cancelled, new AbortController().signal), null);
+  assert.equal(chatFailure(cancelled, AbortSignal.abort(Error('memory-changed'))), 'memory-changed');
+  assert.equal(chatFailure(Error('provider error')), 'model');
+});
 const send = (chat, id = 'one', personaId = 'whale', revision = chat.read(personaId)?.revision ?? 0) =>
   chat.send({ personaId, name: personaId, requestId: id, content: '用户原话 ' + id, revision, epoch: chat.epoch() });
 const finish = (chat, start, extra = {}) => chat.finish({ personaId: start.room.personaId, roomId: start.room.id,

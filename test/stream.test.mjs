@@ -1,18 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createStateStream } from '../lib/state-stream.js';
+import { createStateStream, ROW_REV, versionReportRow } from '../lib/state-stream.js';
 import { createRemoteContract } from '../lib/remote-contract.js';
 import { createClientTransport } from '../lib/client-transport.js';
 
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+
+test('all field mutations invalidate a versioned report row; identical assignments do not',()=>{
+  const row=versionReportRow({seq:1});let rev=row.rev;
+  for(const [key,value] of Object.entries({partial:'正文',partialLiterals:['x'],status:'ready',review:{reasons:[]},final:true})){
+    row[key]=value;assert.ok(row.rev>rev);rev=row.rev;row[key]=value;assert.equal(row.rev,rev);
+  }
+  delete row.partial;assert.ok(row.rev>rev);
+});
 const snapshot = (rev = 0, rows = [], instanceId = 'host-a') => ({
   type: 'snapshot', instanceId, rev, rows, settings: { enabled: true }, switchesReady: true,
 });
 
-test('the browser embeds the exact shared contract and transport implementation', () => {
-  const client = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
-  for (const fn of [createRemoteContract, createClientTransport]) assert.ok(client.includes(fn.toString()));
+test('the browser embeds the shared contract and transport verbatim apart from line endings', () => {
+  const client = readFileSync(new URL('../client.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  for (const fn of [createRemoteContract, createClientTransport]) assert.ok(client.includes(fn.toString().replace(/\r\n/g, '\n')));
 });
 
 test('Remote input codecs reject oversized keys and malformed leases', () => {
@@ -62,6 +70,20 @@ test('Host attaches its listener before reading, and unload releases idle reader
   assert.equal((await stream.next()).value.rev, 2);
   const pending = stream.next(); hub.close();
   assert.equal((await pending).done, true); assert.equal(hub.stats().active, 0);
+});
+
+test('invalidating all 240 row projections emits only visible changes and keeps cache revisions private', async () => {
+  let rev = 0;
+  const read = () => snapshot(rev, Array.from({length:240}, (_,seq) => ({
+    seq, text:rev === 2 && seq === 239 ? 'changed' : 'same', [ROW_REV]:rev * 240 + seq,
+  })));
+  const hub = createStateStream({read}), stream = hub.observe('s', new AbortController().signal);
+  const first = (await stream.next()).value;
+  assert.equal(first.rows.length,240);
+  assert.deepEqual(first.rows[0],{seq:0,text:'same'});
+  rev++; hub.changed('s'); assert.deepEqual((await stream.next()).value.upsert,[]);
+  rev++; hub.changed('s'); assert.deepEqual((await stream.next()).value.upsert,[{seq:239,text:'changed'}]);
+  await stream.return();
 });
 
 /** Transport doubles only; an optional integration runs the real rc.3 Gateway and supervisors. */

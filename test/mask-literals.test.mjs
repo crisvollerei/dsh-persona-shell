@@ -2,6 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mask, markers, markersIntact, unmask } from '../lib/mask.js';
 import { validateRewrite } from '../lib/prompt.js';
+import { makeReportSource } from '../lib/report-visualization.js';
+import { selectWorkExcerpt } from '../lib/chat-excerpt.js';
+
+test('inline runs and indented fences preserve the following report caveat', () => {
+  const prose = '```npm test``` 已通过\n\n尚未部署。';
+  assert.deepEqual(mask(prose).literals, ['```npm test```']);
+  const report = makeReportSource({ sessionId: 'work', seq: 1, text: prose });
+  assert.deepEqual(report.caveatRefs, [report.blocks.at(-1).id]);
+  assert.ok(selectWorkExcerpt(prose).text.includes('尚未部署'));
+  const code = '  ```js\n  a()\n  ````';
+  assert.deepEqual(mask(code + '\n尚未部署。').literals, [code]);
+  assert.deepEqual(mask('[文档](https://example.org/a(b))，看 D:\\项目\\a.js，尚未部署。中文/English').literals,
+    ['https://example.org/a(b)', 'D:\\项目\\a.js']);
+});
 
 test('ordinary English uses of command names remain editable prose', () => {
   for (const prose of [
@@ -57,13 +71,15 @@ test('explicit code, nested fences, paths and versions stay protected regardless
   assert.equal(unmask(result.masked, result.literals), input);
 });
 
-test('equal literal bytes retain independent occurrence markers and conditions', () => {
+test('equal literal bytes share an ID and retain the exact occurrence count', () => {
   const input = '检查通过后运行 `npm test`；权限未验时不要运行 `npm test`。';
   const result = mask(input);
-  assert.deepEqual(result.literals, ['`npm test`', '`npm test`']);
-  assert.deepEqual(markers(result.masked), [0, 1]);
+  assert.deepEqual(result.literals, ['`npm test`']);
+  assert.deepEqual(markers(result.masked), [0, 0]);
   assert.equal(markersIntact('检查通过后运行 [[0]]；权限未验时不要运行 [[1]]。', 2), true);
   assert.equal(markersIntact('检查通过后运行 [[0]]；权限未验时不要运行 [[0]]。', 2), false);
-  assert.equal(validateRewrite({ original: result.masked, candidate: '检查通过后运行 [[0]]。', literalCount: 2, maxRatio: 1.35 }).ok, false);
+  const check=candidate=>validateRewrite({original:result.masked,candidate,literalCount:1,maxRatio:1.35});
+  assert.equal(check(result.masked).ok,true);assert.equal(check('检查通过后运行 [[0]]。').reason,'dropped-marker');
+  assert.equal(check(result.masked+'[[0]]').reason,'duplicate-marker');
   assert.equal(unmask(result.masked, result.literals), input);
 });

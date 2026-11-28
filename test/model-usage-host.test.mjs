@@ -2,6 +2,8 @@ import {readChatInput} from './helpers/chat-input.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, domain, newRoom, roomSend, settledRoom, whale, dragon } from './helpers/persona-chat-host.mjs';
+import { createHostStorage } from '../lib/host-storage.js';
+import { createChatTiming } from '../lib/chat-timing.js';
 
 function withReceipt(text, tokens) {
   return (async function* () {
@@ -46,16 +48,16 @@ test('a failed analytics write does not fail chat and is retried on unload witho
   const storage = domain(Promise.resolve(), { fail: id => id === 'modelUsage' && fail });
   const f = fixture(t, { storage, script: () => withReceipt('{"messages":["收到。"]}', 17) });
   await f.ready(); await f.send('仅用于测试'); await f.ready();
-  assert.equal(f.calls.length,1);assert.equal(f.directors.length,1,'a solo reply consumes its user event without another empty director call');
+  assert.equal(f.calls.length,1);assert.equal(f.directors.length,0,'a solo opening needs only the actor');
   assert.equal((await f.request('model-usage')).value.totals.totalTokens, 19);
   t.mock.timers.tick(1500); await f.ready();
   assert.equal((await f.request('model-usage')).value.persistence, 'failed');
   fail = false; await f.dispose();
   const reopened = fixture(t, { storage }); await reopened.ready();
   const r = (await reopened.request('model-usage')).value;
-  assert.equal(r.persistence, 'local'); assert.equal(r.totals.calls, 2); assert.equal(r.totals.totalTokens, 19);
+  assert.equal(r.persistence, 'local'); assert.equal(r.totals.calls, 1); assert.equal(r.totals.totalTokens, 19);
   assert.equal(r.purposes.find(row=>row.purpose==='chat').calls,1);
-  assert.equal(r.purposes.find(row=>row.purpose==='chat-participation').calls,1);
+  assert.equal(r.purposes.find(row=>row.purpose==='chat-participation'),undefined);
 });
 
 test('a delayed disk write cannot overwrite a newer snapshot when the plugin unloads', async t => {
@@ -71,9 +73,26 @@ test('a delayed disk write cannot overwrite a newer snapshot when the plugin unl
   await f.ready(); await f.send('第一条'); await f.ready();
   t.mock.timers.tick(1500); await f.ready(); assert.equal(writing, 1);
   await f.send('第二条', whale, 'second-call'); await f.ready();
-  assert.equal(f.calls.length,2);assert.equal(f.directors.length,2);assert.equal(f.requests.length,4);
+  assert.equal(f.calls.length,2);assert.equal(f.directors.length,0);assert.equal(f.requests.length,2);
   const disposed = f.dispose(); release(); await disposed;
-  assert.deepEqual(persisted, [2, 4]);
+  assert.deepEqual(persisted, [1, 2]);
   const saved=storage.tables.get('profile').get('modelUsage');
-  assert.equal(saved.rows.reduce((sum,row)=>sum+row.calls,0),4,'the newer snapshot must remain authoritative after the blocked older write drains');
+  assert.equal(saved.rows.reduce((sum,row)=>sum+row.calls,0),2,'the newer snapshot must remain authoritative after the blocked older write drains');
+});
+
+test('unloading during storage open flushes historical and local chat timing together', async () => {
+  const chatTiming = createChatTiming();
+  const sample = {at:1,path:'direct',contextDone:null,directorDone:null,firstText:10,done:20,
+    calls:{director:0,context:0,actor:1,support:0}};
+  const {promise,resolve} = Promise.withResolvers();
+  const storage = domain(promise);
+  storage.tables.set('profile',new Map([['modelUsage',{rows:[],chatTiming:[sample]}]]));
+  const noop = () => {};
+  let closing = false;
+  const host = createHostStorage({ctx:{get:()=>storage},revisions:new Map(),getStoreClosing:()=>closing,
+    setEnabledRestored:noop,setSettingsRestored:noop,setStoreState:noop,getModelUsageRevision:()=>1,
+    chatTiming,modelUsage:{restore:noop},saveModelUsage:opened=>opened.putModelUsage({chatTiming:chatTiming.snapshot()}),warn:assert.fail});
+  host.openWhenAvailable();chatTiming.record({...sample,at:2});closing=true;resolve();
+  await Promise.all(host.openingTasks);
+  assert.deepEqual(storage.tables.get('profile').get('modelUsage').chatTiming.map(s=>s.at),[1,2]);
 });

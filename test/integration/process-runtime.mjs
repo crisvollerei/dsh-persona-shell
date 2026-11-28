@@ -1,58 +1,50 @@
-// Offline contract probe against a supplied published SDK; no real provider or working-agent tools.
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
-import path from 'node:path';
-import { parseArgs } from 'node:util';
-import { runProcessRewrite } from '../../lib/process-rewrite.js';
+import {createRequire} from 'node:module';
+import {resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {parseArgs} from 'node:util';
+import {runProcessRewrite} from '../../lib/process-rewrite.js';
+import {execFileSync} from 'node:child_process';
+import {setTimeout as delay} from 'node:timers/promises';
 
-const { values } = parseArgs({ options: { deps: { type: 'string' } } });
-assert.ok(values.deps, 'Pass --deps <SDK dependency directory/package.json>');
-const require = createRequire(path.resolve(values.deps));
-const sdk = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-llm')));
-const version = require('@deepseek-ai/dsh-llm/package.json').version;
-assert.match(version, /^0\.2\.(?:1|2)-rc\.\d+$/);
-const usage = { available: true, scope: 'since_previous_process_report', categories: {
-  read: { calls: 1, returned: 1, errors: 0, earlier_returns: 0 },
-}, work_nature: { is_read_only: true, files_touched: 0, ran_destructive_cmd: false },
-session_pacing: { session_turn_count: 25, local_hour: 2, idle_minutes: 45, is_first_report: true } };
-for (const completedBlocks of [false, true]) {
-  const replayState = { response: { provider: 'fixture', marker: 'opaque' }, blocks: [{ n: 'reasoning' }, { n: 'tool' }] };
-  const chunks = [
-    { type: 'block-start', index: 4, blockType: 'reasoning' },
-    { type: 'reasoning-delta', index: 4, text: 'Provider replay only.' },
-    ...(completedBlocks ? [{ type: 'block-end', index: 4, block: { type: 'reasoning', text: 'Provider replay only.', signature: 'signed' } }] : []),
-    { type: 'tool-call-delta', index: 1, id: 'usage', name: 'get_tool_usage', argumentsDelta: '{' },
-    { type: 'tool-call-delta', index: 1, id: 'usage', argumentsDelta: '}' },
-    ...(completedBlocks ? [{ type: 'block-end', index: 1, block: { type: 'tool-call', id: 'usage', name: 'get_tool_usage', arguments: '{}' } }] : []),
-    { type: 'finish', reason: { kind: 'tool-calls' }, replayState },
-  ];
-  const assembler = new sdk.BlockAssembler();
-  for (const chunk of chunks) assembler.push(chunk);
-  let requests = 0;
-  const result = await runProcessRewrite({
-    options: { provider: 'fixture', model: 'fixture', signal: new AbortController().signal, messages: [] },
-    usage, allowed: () => true, maxChars: 2048, onPartial() {},
-    llm: { stream(options) {
-      requests++;
-      return (async function* () {
-        if (requests === 1) { yield* chunks; return; }
-        assert.equal(options.tools, undefined);
-        const [assistant, tool] = options.messages;
-        const expectedAssistant = sdk.createAssistantMessage({ source: { provider: 'fixture', model: 'fixture',
-          replayState: assembler.replayState }, content: assembler.blocks() });
-        assert.deepEqual({ ...assistant, id: '' }, { ...expectedAssistant, id: '' });
-        const expectedTool = sdk.createToolResultMessage({ callId: 'usage', content: [{ type: 'text', text: JSON.stringify(usage) }], isError: false });
-        assert.deepEqual({ ...tool, id: '' }, { ...expectedTool, id: '' });
-        yield { type: 'text-delta', index: 0, text: '{"rewrite":"继续看下一部分。","process_note":"刚读了1次，接着来。"}' };
-        yield { type: 'finish', reason: { kind: 'stop' } };
-      })();
-    } },
-  });
-  assert.equal(requests, 2);
-  assert.equal(result.text, '继续看下一部分。');
-  assert.equal(result.note, '刚读了1次，接着来。');
+const {values}=parseArgs({options:{deps:{type:'string'},baseline:{type:'string'}}});
+const require=createRequire(resolve(values.deps));
+const sdk=await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-llm')));
+const usage={available:true,scope:'since_previous_process_report',categories:{read:{calls:1,returned:1,errors:0,earlier_returns:0}}};
+const wire=JSON.stringify({rewrite:'继续看下一部分。',process_note:'刚读了1次。'});
+for(const completed of [false,true]){
+  let calls=0;
+  const result=await runProcessRewrite({options:{provider:'fixture',model:'fixture',signal:new AbortController().signal,messages:[]},usage,
+    allowed:()=>true,maxChars:2048,onPartial(){},llm:{async *stream(opts){
+      calls++;assert.equal(opts.tools,undefined);assert.deepEqual(JSON.parse(opts.messages.at(-1).content.at(-1).text),{processUsage:usage});
+      const assembler=new sdk.BlockAssembler();
+      for(const chunk of [{type:'block-start',index:0,blockType:'text'},{type:'text-delta',index:0,text:wire}]){
+        assembler.push(chunk);yield chunk;
+      }
+      if(completed)yield {type:'block-end',index:0,block:assembler.blocks()[0]};
+      yield {type:'finish',reason:{kind:'stop'}};
+    }}});
+  assert.deepEqual(result,{text:'继续看下一部分。',note:'刚读了1次。'});assert.equal(calls,1);
 }
-console.log(JSON.stringify({ result: 'passed', sdk: version,
-  checks: ['delta-only and completed blocks', 'first-seen block order', 'opaque replay state', 'native assistant/tool message shape', 'single bounded continuation'],
-  limitations: 'No live provider or Desktop render; SDK assembly and message contracts only.' }, null, 2));
+console.log(JSON.stringify({sdk:require('@deepseek-ai/dsh-llm/package.json').version,deltaOnlyCalls:1,completedBlockCalls:1}));
+
+if(values.baseline){
+  assert.match(values.baseline,/^[0-9a-f]{7,40}$/u);
+  function baselineModule(name) {
+    const source=execFileSync('git',['show',`${values.baseline}:lib/${name}`],{encoding:'utf8'});
+    const resolved=source.replace(/from '(\.\/[\w-]+\.js)'/g,(_,path)=>'from '+JSON.stringify(baselineModule(path.slice(2))));
+    return 'data:text/javascript;base64,'+Buffer.from(resolved).toString('base64');
+  }
+  const old=await import(baselineModule('process-rewrite.js'));
+  for(const [label,run] of [['baseline',old.runProcessRewrite],['current',runProcessRewrite]]){
+    const samples=[];let calls=0;
+    for(let i=0;i<5;i++){
+      const start=performance.now();let first;
+      await run({options:{provider:'fixture',model:'fixture',messages:[{role:'user',content:[{type:'text',text:'测试'}]}],signal:new AbortController().signal},usage,
+        allowed:()=>true,maxChars:2000,onPartial:text=>{if(text && first===undefined)first=performance.now()-start;},llm:{async *stream(options){
+          calls++;await delay(100);if(options.tools){yield {type:'block-end',index:0,block:{type:'tool-call',id:'usage',name:'get_tool_usage',arguments:'{}'}};yield {type:'finish',reason:{kind:'tool-calls'}};return;}
+          yield {type:'text-delta',index:0,text:wire};yield {type:'finish',reason:{kind:'stop'}};
+        }}});samples.push(first);
+    }samples.sort((a,b)=>a-b);console.log(`${label} n=5 firstTextP50=${Math.round(samples[2])}ms calls=${calls/5}`);
+  }
+}

@@ -1,0 +1,356 @@
+    return {
+      inject: ['slots'],
+      /**
+       * Rendering decisions, exposed for the offline suite.
+       *
+       * Pure timing/compatibility decisions plus components for the stateful
+       * offline harness. renderMarkdown is only an isolated-preview fallback;
+       * the main transcript always delegates to the official assistant.
+       */
+      __testing: {
+        chatLocalUi:{bind:useChatUiNamespace,read:readChatUiStorage,saveDraft:saveChatDraft,restore:restoreChatUi,update:updateChatUi,clear:clearChatUi,storageEvent:chatUiStorageEvent,
+          inspect:()=>({namespace:chatUiNamespace,records:[...chatUi],drafts:[...chatDrafts],workDrafts:[...chatWorkDrafts]})},
+        createAccountAvatarSource,
+        accountAvatarSource,
+        ConversationPanel,
+        ReportFeedback,
+        ReportVisualizationWindow,
+        reportFileMediaUrl,
+        reportMarkdownMedia,
+        reportReadingRuntime,
+        SessionPersonaSwitch,
+        WorkInputBridge,
+        PersonaChatWindow,
+        RoomChatWorkspace,
+        ChatSupportStatus,
+        RoomAvatar,
+        RoomRecipient,
+        ChatReplyBubbles,
+        ChatThinkingControls,
+        ChatUserSettings,
+        userAddressProblem,
+        chatMessageTime,
+        chatDateBoundary,
+        chatClientTime,
+        chatDirectorIssueReason,
+        chatPalette,
+        sampleAvatarColor,
+        useChatBubbleColors,
+        PersonaAvatar,
+        CHAT_CSS,
+        ROOM_CHAT_CSS,
+        PersonaChatLauncher,
+        MemoryPanel,
+        SettingsSection,
+        useModelCatalogue,
+        roomReferenceHint,
+        PersonaAvatarEditor,
+        reportFallbackReason,
+        rowBranch,
+        renderMarkdown,
+        resolveChatDelegate,
+        displayNode,
+        renderOfficial,
+        PersonaStep,
+        refreshState: refresh,
+        watchState: watch,
+        getHostState: (sessionId) => states.get(sessionId),
+        applyControls,
+        getChatRendererState: () => chatRendererState,
+        unmaskPartial,
+        reportToolsEnabled,
+        HOLD_PLACEHOLDER_MS,
+        STATE_WAIT_MS,
+        reviewFingerprint,
+        reviewNeeded,
+        reviewPlacement,
+        ReviewHint,
+        ComparisonDialog,
+        NativeComparisonModal,
+        ActionDialog,
+        COMPARISON_NARROW_WIDTH,
+        ProgressNotice,
+        setProgressEnabled,
+        PROGRESS_PREFIX,
+      },
+      apply(ctx) {
+        clientStopped = false;
+        // Owned by the plugin lifetime; both are cleared on unload below.
+        let heartbeatTimer;
+        // Announce this build as soon as the plugin is applied, then keep saying
+        // so. The desktop client has no hard reload, so the only way to tell a
+        // stale bundle from a broken one is a heartbeat that names the build:
+        // without it, "my fix did nothing" and "my fix never loaded" look the
+        // same, and that ambiguity cost this plugin several rounds.
+        reportDiagnostics({ applied: true, at: Date.now() });
+        //
+        // Wrapped in try/catch on purpose: diagnostics are a convenience, and a
+        // missing timer global must never take the whole plugin down with it.
+        try {
+          heartbeatTimer = setInterval(() => {
+            reportDiagnostics({ heartbeat: Date.now() });
+          }, 30000);
+          if (typeof heartbeatTimer?.unref === 'function') heartbeatTimer.unref();
+        } catch {
+          // No timers here; the apply-time report is still enough to prove a load.
+        }
+
+
+        // Keep the official entry (and its child declarations) live. Our entry
+        // borrows its inject/locale contract, not its exclusive child ownership.
+        let releaseChat = undefined;
+        let chatComponent;
+        let chatDelegate;
+        let rendererFailed = false;
+        const rendererSubscriptions = [];
+        const releaseChatSlot = () => {
+          const release = releaseChat;
+          releaseChat = undefined;
+          chatDelegate = undefined;
+          if (release !== undefined) release();
+        };
+        refreshChatTakeover = (recover = false) => {
+          if (stopped) return;
+          if(recover)rendererFailed=false;
+          if (!reportToolsEnabled(controlsReady)) {
+            releaseChatSlot();
+            rendererFailed = false;
+            setChatRendererState('disabled');
+            return;
+          }
+          if (rendererFailed) {
+            releaseChatSlot();
+            setChatRendererState('error', 'delegate-render-failed');
+            return;
+          }
+          try {
+            const delegate = resolveChatDelegate(ctx.slots, chatComponent);
+            if (!delegate.ok) {
+              releaseChatSlot();
+              setChatRendererState('incompatible', delegate.reason);
+              return;
+            }
+            if (chatDelegate?.entry === delegate.entry
+              && chatDelegate.children.every((entry, index) => entry === delegate.children[index])) return;
+            releaseChatSlot();
+            chatComponent = function PersonaDelegate(props) { return h(PersonaStep, { ...props, delegate }); };
+            releaseChat = ctx.slots.register({
+              name: CHAT_SLOT, key: 'assistant-step', priority: -1,
+              locale: delegate.entry.locale, inject: delegate.entry.inject,
+            }, chatComponent);
+            chatDelegate = delegate;
+            setChatRendererState('delegated');
+          } catch {
+            releaseChatSlot();
+            rendererFailed = true;
+            setChatRendererState('error', 'delegate-setup-failed');
+          }
+        };
+
+        // Track the switch. The host is the source of truth.
+        //
+        // Three rules, each from a real failure:
+        //
+        // 1. Start NOT taken over. Taking over unconditionally meant that if the
+        //    settings request kept failing (403, offline), the plugin stayed
+        //    shadowing the shipped renderer forever without ever confirming the
+        //    server wanted it. The shipped renderer is the safe default.
+        // 2. Only an explicit boolean counts. `enabled !== false` reads a missing
+        //    field or a malformed payload as "on".
+        // 3. One request at a time. `setInterval` allowed overlap, so a stale
+        //    `enabled:true` response could land after a newer `enabled:false` and
+        //    re-install the takeover — the switch would flip itself back.
+        let stopped = false;
+        let syncTimer;
+        let inFlightController;
+
+        if (typeof ctx.slots.subscribe === 'function') {
+          for (const key of [CHAT_SLOT, ...Object.keys(CHILD_FACTORIES)]) {
+            rendererSubscriptions.push(ctx.slots.subscribe(key, () => refreshTakeover()));
+          }
+        }
+        if (typeof ctx.slots.onEntryError === 'function') {
+          rendererSubscriptions.push(ctx.slots.onEntryError((key, entry) => {
+            const ownCrash = key === CHAT_SLOT && entry.component === chatComponent;
+            const factoryCrash = releaseChat !== undefined && Object.values(CHILD_FACTORIES)
+              .some((name) => key === `factory:${name}`);
+            if (!ownCrash && !factoryCrash) return;
+            rendererFailed = true;
+            // Leave the failing render/commit before releasing its entry. Do
+            // not repeatedly reinstall a component the host just abdicated.
+            void Promise.resolve().then(() => refreshTakeover());
+          }));
+        }
+
+        const scheduleSync = (delay) => {
+          if (stopped) return;
+          clearTimeout(syncTimer);
+          syncTimer = setTimeout(() => { void syncEnabled(); }, delay);
+        };
+
+        const syncEnabled = async () => {
+          if (stopped) return;
+          if (['ready', 'blocked'].includes(stateTransport?.status(''))) {
+            refreshTakeover(); stateTransport.restart(); scheduleSync(5000); return;
+          }
+          const request = ++requestSequence;
+          // `AbortController` is a host global, not part of the module sandbox.
+          // The guard is not paranoia: when it is missing the whole apply() throws
+          // and the plugin never registers anything, which looks exactly like "the
+          // plugin is off".
+          const controller = typeof AbortController === 'function' ? new AbortController() : undefined;
+          inFlightController = controller;
+          // A hung request must not stop the sync loop for good.
+          const timeout = setTimeout(() => controller?.abort(), 10000);
+          try {
+            const response = await fetch(`${ROUTE}/settings`, controller === undefined ? undefined : { signal: controller.signal });
+            if (stopped) return;
+            if (response.ok) {
+              const value = await response.json();
+              if (stopped) return;
+              applyControls(value, request);
+            }
+          } catch {
+            // Keep the last confirmed state; a transient failure is not evidence
+            // of a switch change.
+          } finally {
+            clearTimeout(timeout);
+            if (inFlightController === controller) inFlightController = undefined;
+          }
+          // Factory definitions have no public subscription on SlotRegistry;
+          // child-slot changes wake us immediately, this also checks quiet churn.
+          refreshTakeover();
+          stateTransport?.restart();
+          scheduleSync(5000);
+        };
+
+        // Everything this controller owns is torn down with the plugin. Native
+        // timers are not part of Cordis's scope, so without this every reload left
+        // one more poller and one more heartbeat behind.
+        const removeTimers = () => {
+          stopped = true;
+          chatRuntime.dispose();
+          reportReadingRuntime.dispose();
+          clientStopped = true;
+          if (progressViewerSession !== undefined) announceProgressView(undefined);
+          progressEnabled = false;
+          clearTimeout(syncTimer);
+          if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
+          if (inFlightController !== undefined) inFlightController.abort();
+          for (const entry of stateSubscriptions) { entry.poll?.(); entry.remote?.(); }
+          stateSubscriptions.clear();
+          const closingTransport = stateTransport;
+          stateTransport = undefined;
+          // The pollers are not part of the chat slot; a disabled plugin would
+          // otherwise keep one 15s request per session alive after its UI was
+          // unmounted.
+          for (const poller of pollers.values()) poller.stop();
+          pollers.clear();
+          states.clear();
+          hostInstance = undefined;
+          retiredInstances.clear();
+          instanceRequestFloor = 0;
+          controlRevision = -1;
+          sessionOff.clear();
+          sessionSwitchRev = -1;
+          switchReady = false;
+          globalEnabled = false;
+          controlsReady = false;
+          activeSessionId = undefined;
+          for (const unsubscribe of rendererSubscriptions.splice(0)) unsubscribe();
+          releaseChatSlot();
+          refreshChatTakeover = () => {};
+          branchHistory.clear();
+          freshDecided.clear();
+          liveSeen.clear();
+          diagnosticsTrail.clear();
+          setChatRendererState('disabled');
+          return closingTransport?.dispose();
+        };
+        try {
+          ctx.effect(() => removeTimers, 'persona-shell.client-timers');
+        } catch {
+          // No effect scope here; the timers still stop on the next stop().
+        }
+
+        // Start the loop; the first response decides whether to take over.
+        void syncEnabled();
+
+        // Optional compatibility path: older compositions continue using the
+        // authenticated long-poll routes. Official Remote owns transport/auth.
+        if (typeof ctx.inject === 'function') ctx.inject(['remote'], (owner) => {
+          let gateway;
+          try { gateway = require('@deepseek-ai/dsh-api-gateway'); } catch { return; }
+          const remote = owner.get('remote');
+          if (stopped || stateTransport || typeof remote?.$stream !== 'function'
+            || typeof gateway.RemoteSnapshotStream !== 'function') return;
+          stateTransport = createClientTransport({ remote, SnapshotStream: gateway.RemoteSnapshotStream,
+            CarrierError: gateway.RemoteStreamCarrierError, contribution: createRemoteContract(),
+            bindRemote(bind) {
+              return owner.inject(['remote', 'remote.personaShell'], (consumer) => {
+                bind(consumer.get('remote'));
+                consumer.effect(() => () => bind(undefined));
+              });
+            },
+            viewer: progressViewerId, nextRequest: () => ++requestSequence,
+            onState(sessionId, value, request) {
+              if (stopped || !acceptInstance(value, request)) return false;
+              if (sessionId === '') {
+                applyControls(value, request);
+              } else applyState(sessionId, value);
+              return true;
+            },
+            onStatus(sessionId, status, error) {
+              for (const entry of stateSubscriptions) if (entry.sessionId === sessionId) syncSubscription(entry);
+              reportDiagnostics({ stateTransport: { status, error: error?.code ?? (error ? 'local-error' : undefined),
+                message: typeof error?.message === 'string' ? error.message.slice(0, 160) : undefined } });
+            },
+          });
+          stateTransport.subscribe('');
+          for (const entry of stateSubscriptions) entry.remote = stateTransport.subscribe(entry.sessionId);
+          if (progressViewerSession !== undefined) stateTransport.setView({ sessionId: progressViewerSession,
+            revision: progressViewRevision, visible: typeof document === 'undefined' || document.visibilityState !== 'hidden' });
+          void stateTransport.start();
+          const transport = stateTransport;
+          if (typeof owner.on === 'function') owner.on('connection/reset', () => transport.restart());
+          owner.effect(() => () => {
+            if (stateTransport === transport) {
+              stateTransport = undefined;
+              for (const entry of stateSubscriptions) { entry.remote = undefined; syncSubscription(entry); }
+            }
+            return transport.dispose();
+          });
+        });
+
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'persona-shell',
+          order: 30,
+          label: '人格套壳',
+        }, SettingsSection));
+
+        // Optional: hosts without the account API simply show user bubbles.
+        if (typeof ctx.inject === 'function') ctx.inject(['remote', 'remote.account'], (owner) => {
+          const remote = owner.get('remote');
+          if (typeof remote?.account?.getProfile !== 'function' || typeof remote?.account?.getState !== 'function') return;
+          const release = accountAvatarSource.bind(remote, () => ({ version: 'dsh-persona-shell/0.5.5',
+            locale: typeof navigator !== 'undefined' ? navigator.language : 'zh-CN', timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 }));
+          owner.effect(() => release);
+          if (typeof owner.on === 'function') owner.on('connection/reset', () => { void accountAvatarSource.refresh(); });
+        });
+
+        // One switch per Session, in the header's right-aligned utilities.
+        // It also tells the page-wide takeover which Session is on screen.
+        ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+          name: 'conversation.session.header.utilities',
+          id: 'persona-shell',
+          order: 10,
+        }, SessionPersonaSwitch));
+
+        ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+          name: 'conversation.input.dock', id: 'persona-shell-progress', order: 30, locale: 'dsh-persona-shell',
+        }, ProgressNotice));
+      },
+    };
+  },
+});

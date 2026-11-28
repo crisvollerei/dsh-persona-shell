@@ -17,7 +17,7 @@ const cast = system => JSON.parse(system.split('\n').find(line => line.startsWit
 test('initial plans reuse work-source policy while projecting chat identities, current words and frozen primary order', () => {
   const fish = { ...BUILTIN_PRESETS.find(person => person.id === '大肥鱼（默认）'), builtin: true };
   const little = { ...BUILTIN_PRESETS.find(person => person.id === '鲸鲸（实验性）'), builtin: true,
-    pack: { identity: 'FORMAL_REPORT_IDENTITY_NOT_FOR_PLANNING', voice: ['公开语气', '第二条', 'THIRD_VOICE_SECRET'], samples: ['PRIVATE_SAMPLE'] }, memory: ['PRIVATE_MEMORY'] };
+    memory: ['PRIVATE_MEMORY'] };
   const custom = { id: 'custom', name: '自定义小肥鱼', builtin: false, avatarParentId: little.id,
     pack: { identity: '自定义身份'.repeat(100), voice: ['公开自定义语气'.repeat(20), '第二条', 'PRIVATE_EXTRA_VOICE'], samples: ['PRIVATE_CUSTOM_SAMPLE'] }, memory: ['CUSTOM_PRIVATE'] };
   const prompt = buildTurnPlanPrompt({ message, members: [fish, little, custom], recipients: [little, fish],
@@ -36,7 +36,8 @@ test('initial plans reuse work-source policy while projecting chat identities, c
   assert.equal(value.members.find(person => person.id === 'custom').voice.length, 2);
   assert.equal(value.members.find(person => person.id === 'custom').preferredAddress, undefined);
   assert.ok(publicCast.members.every(person => person.id !== custom.id)); assert.ok(publicCast.relationships.every(edge => edge.from !== custom.id && edge.to !== custom.id));
-  assert.doesNotMatch(prompt.user + prompt.system, /FORMAL_REPORT_IDENTITY|PRIVATE|WORK_BODY_SECRET|INJECTED_CAST/);
+  assert.ok(!prompt.user.includes(little.pack.identity));
+  assert.doesNotMatch(prompt.user + prompt.system, /PRIVATE|WORK_BODY_SECRET|INJECTED_CAST/);
   assert.match(prompt.system, /evidence 必须是 message 中逐字存在/);
   assert.match(prompt.system, /不读取工作正文/);
   assert.equal(prompt.system.includes('仅输出严格 JSON 对象 {"work"'), false, 'the standalone selector envelope is replaced by the combined contract');

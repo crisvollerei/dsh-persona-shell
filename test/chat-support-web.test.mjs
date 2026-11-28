@@ -16,11 +16,30 @@ test('private/reserved IPv4 DNS answers are rejected before any connection',asyn
   await assert.rejects(createSupportPageReader({lookup:async()=>[{address,family:4}],request:()=>{connections++;}})('https://example.com'),/private-address/);assert.equal(connections,0);
  }
 });
+
+test('an unresolved DNS read shares the page deadline and rejected responses are destroyed immediately',async()=>{
+ const reader=createSupportPageReader({timeoutMs:10,lookup:()=>new Promise(()=>{}),request:()=>assert.fail('no connection')});
+ await assert.rejects(reader('https://example.com'),/support-page-timeout/);
+ for(const [statusCode,headers] of [[503,{}],[200,{'content-type':'application/octet-stream'}],[301,{location:'https://elsewhere.example/'}]]){
+   const body=new Readable({read(){assert.fail('rejected body must not be drained');}});Object.assign(body,{statusCode,headers});
+   const read=createSupportPageReader({lookup:async()=>[{address:'93.184.216.34',family:4}],request(_url,_options,deliver){
+     const req=new EventEmitter();req.end=()=>queueMicrotask(()=>deliver(body));return req;
+   }});
+   await assert.rejects(read('https://example.com'),/support-(?:page-|redirect)/);assert.equal(body.destroyed,true);
+ }
+});
 test('actual HTTPS connections use the validated DNS address, anonymous headers and bounded decoded text',async()=>{
  const seen=[],reader=createSupportPageReader({lookup:async()=>[{address:'93.184.216.34',family:4}],request:transport([{}],seen)});
  const result=await reader('https://example.com/page');assert.equal(result.url,'https://example.com/page');assert.equal(result.text,'Official 真实正文 & 条件。');
  seen[0].options.lookup('ignored.example',{},(error,address,family)=>{assert.equal(error,null);assert.equal(address,'93.184.216.34');assert.equal(family,4);});
  assert.equal(seen[0].options.headers.cookie,undefined);assert.equal(seen[0].options.headers.authorization,undefined);
+});
+test('page reader handles unknown charset labels and honors recognized non-UTF-8 encodings',async()=>{
+ const lookup=async()=>[{address:'93.184.216.34',family:4}];
+ for(const [charset,body,expected] of [['utf8mb4',Buffer.from('网页正文'),'网页正文'],['windows-1252',Buffer.from([0x63,0x61,0x66,0xe9]),'café']]) {
+   const reader=createSupportPageReader({lookup,request:transport([{headers:{'content-type':'text/plain;charset='+charset},body}],[])});
+   assert.equal((await reader('https://example.com')).text,expected);
+ }
 });
 test('cross-origin redirects are not followed, and a same-origin DNS rebind is blocked before the second connection',async()=>{
  let seen=[];const redirect={status:302,headers:{location:'https://elsewhere.com/secret'}};

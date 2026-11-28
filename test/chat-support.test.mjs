@@ -5,6 +5,33 @@ import {runChatSupport} from '../lib/chat-support-runner.js';
 import {actorSupport,publicSupportUrl,supportReasonContext} from '../lib/chat-support-templates.js';
 const scope={roomId:'room',generation:0,scopeKey:'source',referenceRevision:0,messageId:'message',actorId:'fish',actorName:'鲸鲸',template:'research',goal:'核对公开价格',question:'现在怎么收费？',context:''};
 const tick=()=>new Promise(setImmediate);
+test('peers receive attributed read pages or source passages only within the same round',()=>{
+ const peer={...scope,actorId:'dragon'}, source={id:'p1',read:true,url:'https://example.com/a',title:'文档',excerpt:'公开引句'};
+ const job={...scope,status:'completed',text:'private draft',sources:[source]};
+ const result=actorSupport(job,peer); assert.equal(result.actorId,'fish');assert.equal(result.sources[0].excerpt,'公开引句');assert.equal(result.text,undefined);
+ assert.equal(actorSupport({...job,template:'reason'},peer),undefined);
+ assert.equal(actorSupport(job,{...peer,scopeKey:'new'}),undefined);assert.equal(actorSupport(job,{...peer,messageId:'next'}),undefined);
+ const summary=actorSupport({...job,template:'summarize',text:JSON.stringify({notes:[{source:'工作',turn:1,quote:'选中的原话'}],questionsToVerify:'private question'})},peer);
+ assert.equal(summary.notes[0].quote,'选中的原话');assert.doesNotMatch(JSON.stringify(summary),/private/);
+});
+test('research retains only canonical read links for the owner, peers and restored receipts', async () => {
+ const source={id:'w1',read:true,url:'https://example.com/page#private-fragment',title:'公开资料',excerpt:'原话'};
+ const sources=[null,{...source,read:false,id:'unread'},source];
+ const result={status:'completed',text:'核对完成',sources};
+ let saved;
+ const manager=createChatSupport({execute:async()=>result,save:async value=>{saved=structuredClone(value);}});
+ const job=await manager.start(scope);
+ const restored=createChatSupport({execute:()=>assert.fail('completed receipt should not run again')});
+ restored.restore({...saved,jobs:[{...saved.jobs[0],sources}]});
+ const canonical='https://example.com/page';
+ for(const record of [job,saved.jobs[0],await restored.start(scope)]) {
+   assert.deepEqual(record.sources.map(s=>s.url),[canonical]);
+ }
+ for(const actorId of [scope.actorId,'peer']) {
+   assert.deepEqual(actorSupport({...scope,...result},{...scope,actorId}).sources,
+     [{id:'w1',url:canonical,title:'公开资料',excerpt:'原话'}]);
+ }
+});
 test('one source-bound admission is persisted before execution and shared by concurrent callers',async()=>{
  let saved,resolve,calls=0;const manager=createChatSupport({save:async v=>{saved=structuredClone(v);},execute:async({admit})=>{calls++;assert.equal(saved.jobs[0].status,'running');admit('calls');await new Promise(r=>resolve=r);return{status:'completed',text:'有依据的结果',sources:[]};}});
  const a=manager.start(scope),b=manager.start(scope);await tick();assert.equal(calls,1);resolve();assert.equal((await a).id,(await b).id);
@@ -25,7 +52,7 @@ test('global/room concurrency is reserved before asynchronous persistence yields
  manager.cancelRoom('room');manager.cancelRoom('other');release();
  assert.equal((await b).error,'capacity');assert.equal((await d).error,'capacity');assert.equal((await a).status,'cancelled');assert.equal((await c).status,'cancelled');await manager.dispose();
 });
-test('physical dispatch and individual tool limits cannot be replenished by retry or model output',async()=>{
+test('logical step and individual tool limits cannot be replenished by retry or model output',async()=>{
  for(const [template,field,max]of [['reason','calls',1],['research','calls',4],['research','searches',3],['research','reads',4]]){
   const manager=createChatSupport({execute:async({admit})=>{for(let i=0;i<=max;i++)admit(field);return{};}});
   const result=await manager.start({...scope,template});assert.equal(result.counts[field],max);assert.equal(result.error,'budget');
@@ -68,8 +95,41 @@ test('reasoning has one call and no tool path; missing pages produce partial rat
  const result=await manager.start({...scope,template:'reason'});assert.equal(result.status,'completed');assert.equal(result.counts.calls,1);assert.deepEqual(result.sources,[]);
  assert.match(actorSupport(result,scope).notice,/未联网/);
 });
+test('reasoning uses transient inputs and output while each durable receipt keeps only task metadata',async()=>{
+ const receipts=[];
+ const manager=createChatSupport({save:async record=>receipts.push(structuredClone(record)),execute:async({job})=>{
+   assert.equal(job.context,'PRIVATE_REPORT');
+   return {status:'completed',text:'PRIVATE_CONCLUSION',sources:[]};
+ }});
+ const result=await manager.start({...scope,template:'reason',goal:'PRIVATE_GOAL',question:'PRIVATE_QUESTION',context:'PRIVATE_REPORT'});
+ assert.equal(result.text,'PRIVATE_CONCLUSION');
+ assert.deepEqual(receipts.map(r=>r.jobs[0].status),['running','completed']);
+ for(const receipt of receipts) assert.doesNotMatch(JSON.stringify(receipt),/PRIVATE_/);
+});
+
+test('summary passages preserve English sentences, decimal numbers and the tail of a long unbroken source',async()=>{
+  const long='条'.repeat(599)+'🙂'+'件'.repeat(200),text='Version 1.2 passed. Still pending.\n'+long;
+  const result=await runChatSupport({job:{template:'summarize',context:JSON.stringify([{ref:'r1',name:'工作来源',text}])},
+    signal:new AbortController().signal,admit(){},update(){},call:async(request,admit)=>{
+      admit();const passages=JSON.parse(request.messages[0].content[0].text).references[0].passages;
+      assert.deepEqual(passages.slice(0,2).map(p=>p.text),['Version 1.2 passed.','Still pending.']);
+      assert.ok(passages.slice(2).every(p=>p.partial && p.text.length<=600 && p.text.isWellFormed()));
+      assert.equal(passages.slice(2).map(p=>p.text).join(''),long);
+      return JSON.stringify({points:[{ref:'r1',passage:passages.at(-1).id},{ref:'r1',passage:passages[0].id}],unknowns:''});
+    }});
+  const [note,complete]=JSON.parse(result.text).notes; assert.equal(note.partial,true); assert.ok(long.endsWith(note.quote));
+  assert.equal(complete.partial,false);
+});
+
 test('only public HTTPS names are admitted, and reasoning omits whole oversized evidence instead of clipping conditions',()=>{
- for(const url of ['http://example.com','file:///D:/key','https://127.0.0.1','https://10.0.0.1','https://example.local','https://user:pass@example.com','https://example.com:444'])assert.equal(publicSupportUrl(url),null);
- const context=JSON.parse(supportReasonContext([{user:'原话',assistant:['完整回复']}],[{name:'大报告',report:'x'.repeat(7000)}]));
- assert.equal(context.references.length,0);assert.equal(context.omitted[0].name,'大报告');assert.equal(context.conversation[0].user,'原话');
+ for(const url of ['http://example.com','file:///D:/key','https://127.0.0.1','https://10.0.0.1','https://example.local','https://localhost./','https://service.local./','https://user:pass@example.com','https://example.com:444'])assert.equal(publicSupportUrl(url),null);
+ const anchor=(id,parts)=>({id,messageId:id,attemptId:id,user:parts.map(p=>p.text).join('\n'),userParts:parts,
+   phase:'anchor',scopeKey:'s',status:'ready',assistant:[],recipients:[]});
+ const old=anchor('old',[{id:'old',text:'原话'},{id:'suffix',text:'PRIVATE_SUFFIX'}]), current=anchor('now',[{id:'now',text:'新问题'}]);
+ const said={...old,id:'reply',attemptId:'a',phase:'reaction',recipientId:'p',speakerName:'甲',assistant:['PRIVATE_BUBBLE','完整回复']};
+ const room={id:'r',generation:1,turns:[old,said,{...said,id:'failed',status:'failed',assistant:['PRIVATE_FAILED']},current],excludedReferences:[
+   {roomId:'r',generation:1,kind:'user',messageId:'suffix'}, {roomId:'r',generation:1,kind:'assistant',turnId:'reply',attemptId:'a',index:0}]};
+ const context=JSON.parse(supportReasonContext(room,current,[{name:'大报告',report:'x'.repeat(7000)}]));
+ assert.equal(context.references.length,0);assert.equal(context.omitted[0].name,'大报告');
+ assert.deepEqual(context.conversation,[{user:'原话'},{speaker:'甲',assistant:['完整回复']}]);
 });

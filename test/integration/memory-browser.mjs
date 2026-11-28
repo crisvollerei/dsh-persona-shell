@@ -30,7 +30,11 @@ const otherUsed = usage.begin({ personaId: 'dragon', sessionId: 's', channel: 'r
   selection: memory.selection({ personaId: 'dragon', sessionId: 's' }) }); otherUsed.sent(); otherUsed.finish('generated');
 const [usedId, notSentId, otherUsedId] = usage.snapshot().records.map((r) => r.id);
 let failNext = false, failRead = false, activePersonaId = 'whale'; const posts = [];
-const snapshot = () => ({ ...memory.snapshot(), activePersonaId, activePresetName: activePersonaId === 'whale' ? '鲸鲸' : '龙',
+const roomEntry=memory.rememberChat({entry:{kind:'episode',content:'上周看烟花',scope:'session',sessionId:'room:weekend',tags:['河岸']},
+  evidence:{source:'message',complete:true,eventId:'msg#0',sessionId:'room:weekend',quote:'一起去河岸看过烟花'}});
+const oldRoom='chat:22d22771-4380-4124-b742-f9e77346ce8c';
+const oldEntry=memory.mutate({action:'add',entry:{kind:'agreement',content:'旧房间约定',scope:'session',sessionId:oldRoom}});
+const snapshot = () => ({ ...memory.snapshot(), roomNames:{'room:weekend':'周末闲聊',[oldRoom]:'早期聊天室'}, capacity:memory.capacity(),activePersonaId, activePresetName: activePersonaId === 'whale' ? '鲸鲸' : '龙',
   sessionId: 's', extraction: { status: 'idle', pending: 0 }, usage: { ...usage.snapshot(), persistence: 'local' } });
 const source = readFileSync(new URL('../../client.js', import.meta.url), 'utf8');
 const entry = [
@@ -41,7 +45,7 @@ const entry = [
   source,
   'function Demo(){const[settings,setSettings]=React.useState({memory:true,memoryExtraction:false,presetName:"鲸鲸"});',
   'window.changePersona=name=>setSettings(s=>({...s,presetName:name}));',
-  'return h(plugin.__testing.MemoryPanel,{settings,presets:[{id:"whale",name:"鲸鲸"},{id:"dragon",name:"龙"}],',
+  'const [generation,replace]=React.useState(0);window.reopenMemory=()=>replace(n=>n+1);return h(plugin.__testing.MemoryPanel,{key:generation,settings,presets:[{id:"whale",name:"鲸鲸"},{id:"dragon",name:"龙"}],',
   'save:async patch=>{if(patch.clearMemory)await fetch("/persona-shell/settings",{method:"POST",body:JSON.stringify(patch)});',
   'setSettings(s=>({...s,...patch}));return{settings:{...settings,...patch}}}})}',
   'createRoot(document.getElementById("app")).render(h(Demo));',
@@ -64,6 +68,7 @@ try {
     const url = new URL(route.request().url());
     if (url.origin !== 'http://memory.test') { external.push(url.href); return route.abort(); }
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: html });
+    if (url.pathname === '/persona-shell/chat') return route.fulfill({json:{rooms:[{id:'room:weekend',name:'周末闲聊'}]}});
     if (url.pathname === '/persona-shell/settings') {
       if (route.request().postDataJSON().clearMemory) { memory.clear(); usage.clear(); }
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true }) });
@@ -92,6 +97,12 @@ try {
     if (values.output) { mkdirSync(values.output, { recursive: true }); await page.screenshot({ path: path.join(values.output, name + '.png'), fullPage: true }); }
   };
   await row(original.id).waitFor(); assert.equal(await row(dragon.id).count(), 0, 'private owner hidden by default');
+  await page.getByLabel('筛选记忆').selectOption(oldRoom);await row(oldEntry.id).getByText('房间 · 早期聊天室 · 角色共享').waitFor();
+  assert.equal(await row(original.id).count(),0);
+  await page.getByLabel('筛选记忆').selectOption('room:weekend');await row(roomEntry.id).waitFor();
+  await page.getByLabel('筛选类型').selectOption('episode');await page.getByLabel('搜索记忆').fill('河岸');await row(roomEntry.id).waitFor();
+  await page.getByLabel('搜索记忆').fill('不匹配的搜索');await row(roomEntry.id).waitFor({state:'hidden'});
+  await page.getByLabel('搜索记忆').fill('');await page.getByLabel('筛选类型').selectOption('');await page.getByLabel('筛选记忆').selectOption('current');
   const usageFold = page.locator('[data-settings-fold="memory-usage"]');
   assert.equal(await usageFold.getAttribute('open'), null, 'usage starts collapsed');
   await usageFold.locator(':scope > summary').click();
@@ -194,6 +205,27 @@ try {
   assert.equal(usage.snapshot().records.length, 0);
   await usageFold.locator(':scope > summary').click();
   assert.equal(await usagePanel.locator('[data-memory-usage]').count(), 0, 'clear also removes the visible usage history');
+  const coffee={kind:'agreement',scope:'persona',personaId:'dragon',content:'用户喜欢喝咖啡'};
+  const manual=memory.mutate({action:'add',entry:coffee});
+  const similar=memory.mutate({action:'add',entry:{...coffee,content:'用户很喜欢喝咖啡'}});
+  const chat=memory.rememberChat({entry:coffee,evidence:{source:'message',complete:true,eventId:'chat:x#0',sessionId:'room:weekend',quote:coffee.content}});
+  await page.getByRole('button',{name:'刷新记忆',exact:true}).click();
+  await page.locator('summary').filter({hasText:'记忆占用 3 / 200'}).click();
+  const keep=page.getByLabel('相近条目 · 选择保留项');
+  assert.deepEqual(await keep.locator('option').evaluateAll(options=>options.map(o=>o.value)),[manual.id,similar.id]);
+  await keep.selectOption(similar.id);await page.getByRole('button',{name:'确认合并',exact:true}).click();
+  await keep.waitFor({state:'detached'});
+  assert.equal(memory.versionStatus(manual.id),'superseded');assert.equal(memory.versionStatus(chat.id),'active');
+  assert.deepEqual(memory.select({personaId:'dragon',purpose:'rewrite'}).map(e=>e.id),[similar.id]);
+  await page.getByLabel('新增记忆内容').fill('房间里的约定草稿');
+  await page.getByLabel('记忆适用范围').selectOption('room');
+  await page.getByLabel('选择聊天室房间').selectOption('room:weekend');
+  await page.evaluate(()=>window.reopenMemory());
+  const addFold=page.locator('[data-settings-fold="memory-add"]');
+  if(!await addFold.evaluate(el=>el.open))await addFold.locator(':scope > summary').click();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="选择聊天室房间"]')?.value==='room:weekend');
+  assert.equal(await page.getByLabel('新增记忆内容').inputValue(),'房间里的约定草稿');
+  assert.equal(await page.getByRole('button',{name:'预览新记忆'}).isEnabled(),true);
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
   console.log(JSON.stringify({ result: 'passed', cases: ['confirmation-first', 'exact evidence', 'save retry', 'retract without inverse',
     'dismiss without changes', 'candidate provenance', 'manual add review', 'private isolation', 'history', 'keyboard', 'light/dark/mobile',

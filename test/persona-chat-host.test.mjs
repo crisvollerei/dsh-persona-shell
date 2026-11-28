@@ -11,10 +11,11 @@ const directorInput = options => readChatInput(options);
 const currentSpeech = value => value.events.slice(value.events.findLastIndex(event => event.author.role === 'user') + 1).filter(event => event.author.role === 'assistant');
 function assertDirectRepliesOnly(calls, actors) {
   const decisions = calls.map(directorInput);
-  assert.deepEqual(decisions.map(value => currentSpeech(value).length), actors.map((_, i) => i),
-    'each call allocates a delivered reply; no terminal WAIT judgement is needed');
+  assert.deepEqual(decisions.map(value => currentSpeech(value).length), [...actors.map((_, i) => i), actors.length],
+    'after each delivery, including the last, the director sees the new public reply');
   decisions.forEach((value, i) => {
-    assert.ok(value.choices.some(c => c.id === actors[i] && c.kind === 'normal' && c.to === 'user'));
+    if(i<actors.length) assert.ok(value.choices.some(c => c.id === actors[i] && c.kind === 'normal' && c.to === 'user'));
+    else assert.ok(value.choices.some(c => c.kind==='normal' && c.to===actors.at(-1)));
     assert.ok(value.choices.every(c => c.kind !== 'peer'), 'the fixture’s self-reference is not a companion invitation');
   });
 }
@@ -585,7 +586,8 @@ test('unload during model lookup cannot dispatch late or automatically replay th
   const f = fixture(t, { config: { model: '' }, listModels: () => catalog }); await f.ready();
   await f.send('等待模型'); await flush(); await f.dispose(); release([{ id: 'late' }]); await flush(); assert.equal(f.calls.length, 0);
   const next = fixture(t, { storage: f.storage }); await next.ready(); const restored=await next.state();
-  assert.equal(restored.room.turns.length,1);assert.equal(restored.room.turns[0].phase,'anchor');assert.equal(restored.room.turns[0].user,'等待模型');
+  assert.equal(restored.room.turns.length,2);assert.equal(restored.room.turns[0].phase,'anchor');assert.equal(restored.room.turns[0].user,'等待模型');
+  assert.ok(['cancelled','interrupted'].includes(restored.room.turns[1].status));
   assert.equal(next.calls.length,0);assert.equal(next.directors.length,0,'opening an unanswered user anchor cannot replay a model request');
 });
 

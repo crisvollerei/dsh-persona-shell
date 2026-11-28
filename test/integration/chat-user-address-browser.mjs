@@ -67,6 +67,11 @@ try {
   await save(settings()).click(); await page.waitForFunction(() => [...document.querySelectorAll('[aria-label="角色怎么称呼你"]')].every(node => node.value === '阿晴 👩‍💻'));
   assert.equal((await profile()).userAddress, '阿晴 👩‍💻');
   assert.deepEqual(Object.keys(requests.filter(value => value.body).at(-1).body).sort(), ['revision', 'userAddress']);
+  const reportAddress = settings().getByRole('checkbox',{name:'工作汇报也使用这个称呼'});
+  assert.equal(await reportAddress.isChecked(),false);
+  await reportAddress.check();
+  await page.waitForFunction(() => [...document.querySelectorAll('label')].filter(l=>l.textContent==='工作汇报也使用这个称呼').every(l=>l.querySelector('input').checked));
+  assert.equal((await profile()).reportAddress,true);
   await room().getByLabel('用户头像显示').selectOption('hidden');
   await page.waitForFunction(() => {
     const modes = [...document.querySelectorAll('select[aria-label="用户头像显示"]')];

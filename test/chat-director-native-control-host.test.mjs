@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readChatPacket} from './helpers/chat-input.mjs';
 import { fixture,reply,newRoom,roomSend,roomState,settledRoom,whale,dragon,claude,domain,readChatInput } from './helpers/persona-chat-host.mjs';
 
 const body=options=>JSON.parse(options.messages.at(-1).content[0].text);
-const control=(value,action='WAIT',work='N',request='open',evidence='-')=>(async function*(){
-  yield{type:'text-delta',text:`D1 ${value.protocol.ticket} ${action} ${work} ${request} ${evidence}`};
+const control=(value,action='WAIT')=>(async function*(){
+  yield{type:'text-delta',text:action};
   yield{type:'finish',reason:{kind:'stop'}};
 })();
 const compact=text=>(async function*(){yield{type:'text-delta',text};yield{type:'finish',reason:{kind:'stop'}};})();
@@ -21,29 +22,31 @@ test('actual Host accepts finite no-mention decisions, preserves each actor own 
   await roomSend(f,room,whale,'下一句，接着刚才聊。','second-user');done=await settledRoom(f,room);
   assert.equal(done.directorFailure,null);assert.equal(f.calls.length,2);
   const request=f.calls[1],own=request.messages.filter(message=>message.role==='assistant');
-  assert.equal(own.length,1);assert.deepEqual(JSON.parse(own[0].content[0].text),{messages:['上一轮确实说过的完整原话。']});
+  assert.equal(own.length,1);assert.deepEqual(readChatPacket(own[0]).messages,['上一轮确实说过的完整原话。']);
   assert.ok(own[0].id);assert.deepEqual(own[0].source,{kind:'model',provider:'persona-chat-history',model:'unknown'});
   assert.equal(body(request).task,'chat-control');
   assert.doesNotMatch(JSON.stringify(body(request)),/上一轮确实说过的完整原话|下一句，接着刚才聊/,'control holds pointers, not duplicate dialogue bodies');
 });
 
-test('a public peer message is heard without reopening a person who already answered, while untouched initial recipients keep their entry',async t=>{
+test('a broadcast can develop into a peer exchange using ordinary opportunities and exact saved bubble targets',async t=>{
   const snapshots=[];const f=fixture(t,{directorScript:options=>{const value=body(options);snapshots.push(value);
     const spoken=value.events.filter(event=>event.author.role==='assistant');
-    const id=[whale,dragon][spoken.length],option=value.choices.find(choice=>choice.id===id&&choice.to==='user');
-    return control(value,option?.choiceId??'WAIT');},script:options=>reply([body(options).speaker.id===whale?'我先说自己的话。':'我也直接接用户这句话。'])});
+    const next=[[whale,'user'],[dragon,whale],[whale,dragon]][spoken.length];
+    const option=next&&value.choices.find(choice=>choice.id===next[0]&&choice.to===next[1]&&choice.kind==='normal');
+    return control(value,option?.choiceId??'WAIT');},script:options=>reply([body(options).speaker.id===whale?'我先说自己的话。':'我倒想接着聊这个细节。'])});
   await f.ready();const room=await newRoom(f,[whale,dragon],'听见与接话分开','peer-hearing');await broadcast(f,room);
   await roomSend(f,room,whale,'各位随意。','user');const done=await settledRoom(f,room);
-  assert.equal(done.directorFailure,null);assert.equal(f.calls.length,2);
+  assert.equal(done.directorFailure,null);assert.equal(f.calls.length,3);
   assert.ok(snapshots[1].choices.some(choice=>choice.id===dragon&&choice.to==='user'));
-  const final=snapshots.at(-1);if(final.events.filter(event=>event.author.role==='assistant').length===2)
-    assert.ok(final.choices.every(choice=>choice.id!==whale),'a peer answer to the human does not reopen whale');
+  assert.ok(snapshots[2].choices.every(choice=>choice.id!==whale||choice.to!=='user'));
+  assert.equal(readChatInput(f.calls[1]).replyTarget.text,'我先说自己的话。');
+  assert.equal(readChatInput(f.calls[2]).replyTarget.text,'我倒想接着聊这个细节。');
   const second=f.calls[1];assert.ok(second.messages.some(message=>message.role==='user'&&message.content[0].text.includes('我先说自己的话。')));
   assert.ok(!second.messages.some(message=>message.role==='assistant'),'another actor’s words never become this actor’s own assistant history');
 });
 
 test('a forged finite ticket never dispatches a persona or reads working bodies and keeps the user original for retry',async t=>{
-  const f=fixture(t,{directorScript:options=>control({...body(options),protocol:{ticket:'0000000000000000'}},'WAIT')});
+  const f=fixture(t,{directorScript:()=>compact('D1 0000000000000000 WAIT N open -')});
   await f.ready();const room=await newRoom(f,[whale],'不可伪造选择','bad-ticket');
   await roomSend(f,room,whale,'保留下来的原话。','user');const state=await settledRoom(f,room);
   assert.equal(f.calls.length,0);assert.equal(state.directorFailure.reason,'choice');assert.equal(state.room.turns[0].user,'保留下来的原话。');

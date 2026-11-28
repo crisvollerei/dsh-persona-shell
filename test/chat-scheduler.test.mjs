@@ -4,7 +4,14 @@ import { createChatScheduler, chatSchedulerEventKey } from '../lib/chat-schedule
 
 const scope = { generation: 1, sourceScope: 'scope:current' };
 const ref = (turnId, extra = {}) => chatSchedulerEventKey({ roomId: 'room', ...scope, turnId, attemptId: null, ...extra });
-const make = () => { let at = 0; const scheduler = createChatScheduler({ now: () => at }); scheduler.register('room', ['a', 'b', 'c'], scope); scheduler.reset('room','user-turn-1',[]); return { scheduler, set: value => { at = value; } }; };
+const make = () => { let at = 0; const scheduler = createChatScheduler({ now: () => at, intervalMs:5000 }); scheduler.register('room', ['a', 'b', 'c'], scope); scheduler.reset('room','user-turn-1',[]); return { scheduler, set: value => { at = value; } }; };
+
+test('production cooldowns unlock primary, secondary and other members at 0, 1200 and 2400 ms', () => {
+  const s = createChatScheduler({now:() => 100});
+  s.register('room', ['a','b','c'], scope);
+  s.reset('room','turn',['a','b']);
+  assert.deepEqual(['a','b','c'].map(id => s.readyAt('room',id)), [100,1300,2500]);
+});
 
 test('cooldown belongs to each persona and starts after its complete response, with an exact five-second boundary', () => {
   const { scheduler: s, set } = make(); s.publish('room', { id: ref('u1'), authorId: 'user' });

@@ -12,7 +12,7 @@ const eventsFor=id=>[
 ];
 const wire=line=>(async function*(){yield{type:'text-delta',text:line};yield{type:'finish',reason:{kind:'stop'}};})();
 const choiceFor=(body,id)=>body.choices.find(choice=>choice.id===id&&choice.to==='user');
-const workWire=(body,choice)=>`D1 ${body.protocol.ticket} ${choice.choiceId} s1 answer q0`;
+const workWire=(body,choice)=>`${choice.choiceId} ${body.sourceKeys[0].key}`;
 
 function sourceHost(t,directorScript,workEvents=eventsFor('work')){
   const reads=[],events=new Map([['work',workEvents],['other',eventsFor('other')]]);let fail=false;
@@ -74,7 +74,7 @@ test('a required source selected for one reply remains grounded for the next bar
   await f.ready();const room=await newRoom(f,[whale,dragon]),state=await roomState(f,room);
   assert.equal((await f.request('chat-rooms',{...room,action:'update',targetPersonaIds:[whale,dragon],configRevision:state.room.configRevision,epoch:state.epoch})).status,200);
   const baseline=reads.length;await roomSend(f,room,whale,'你们看看这个任务','same-round');await settledRoom(f,room);
-  assert.equal(f.calls.length,2);assert.equal(f.directors.length,2);
+  assert.equal(f.calls.length,2);assert.equal(f.directors.length,3);
   const answers=f.calls.map(readChatInput);
   assert.deepEqual(answers[0].workContext.sources.map(source=>source.sessionId),['work']);
   assert.deepEqual(answers[1].workContext.sources.map(source=>source.sessionId),['work'],'omitted auxiliary context must not erase this round\'s already verified work selection');

@@ -31,8 +31,7 @@ function pointerText(request,pointer){
   if(!pointer)return undefined;
   const control=readChatInput(request),event=control.timeline.find(value=>value.eventId===pointer.eventId);
   if(!event)return undefined;
-  const packet=JSON.parse(request.messages[event.messageIndex].content[0].text),position=event.bubbles.findIndex(bubble=>bubble.index===pointer.index);
-  return typeof packet.messages[position]==='string'?packet.messages[position]:packet.messages.find(value=>value.index===pointer.index)?.text;
+  return control.__events.get(event.eventId).bubbles.find(bubble=>bubble.index===pointer.index)?.text;
 }
 function sourceServices(){
   return [['sessions',{get:id=>({header:{id,title:'示例项目',cwd:'D:/synthetic/project'}})}],

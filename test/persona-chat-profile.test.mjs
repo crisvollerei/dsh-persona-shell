@@ -19,6 +19,7 @@ const chat = pack => resolvePersonaExpression(pack, { channel: 'chat', persona: 
 
 test('legacy complete cards keep their shape without a newly invented chat property', () => {
   const card = legacy(), expected = structuredClone(card);
+  expected.narration.selfReference='natural';
   assert.deepEqual(normalizePack(card), expected);
   assert.deepEqual(normalizePack(normalizePack(card)), expected);
   assert.deepEqual(chat(card), { identity: card.identity, voice: card.voice, samples: card.samples,

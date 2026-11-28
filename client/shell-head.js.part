@@ -1,0 +1,37 @@
+window.__ModuleLoader__.load({
+  id: 'dsh-persona-shell',
+  factory(require) {
+    const React = require('react');
+    const h = React.createElement;
+    let flushChatSync;
+    try { flushChatSync=require('react-dom').flushSync; } catch { /* Older clients settle surface changes without snapshots. */ }
+    let createChatRoot;
+    try { createChatRoot = require('react-dom/client').createRoot; } catch {
+      try { createChatRoot = require('react-dom').createRoot; } catch { /* The chat entry explains unsupported hosts. */ }
+    }
+    /** Run before paint when the shell's React provides it (the test mock does not). */
+    const useLayoutEffect = typeof React.useLayoutEffect === 'function' ? React.useLayoutEffect : React.useEffect;
+
+    const ROUTE = '/persona-shell';
+
+    // BEGIN GENERATED STATE TRANSPORT
+    // END GENERATED STATE TRANSPORT
+
+    // BEGIN GENERATED REPORT READING
+    // END GENERATED REPORT READING
+
+    // BEGIN GENERATED REPORT THEME
+    // END GENERATED REPORT THEME
+
+    /**
+     * Bumped whenever the client changes shape.
+     *
+     * Sent on load and on the first render, so "is the page running the code I
+     * just installed?" is answerable instead of assumed. A stale bundle and a
+     * broken one look identical otherwise.
+     */
+    // BEGIN GENERATED CHAT PALETTE
+    // END GENERATED CHAT PALETTE
+
+const CLIENT_BUILD = 2026112802;
+

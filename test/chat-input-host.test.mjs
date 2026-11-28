@@ -1,16 +1,82 @@
 import {readChatInput} from './helpers/chat-input.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHostChat} from '../lib/host-chat.js';
 import { domain, fixture, flush, newRoom, roomSend, roomState, settledRoom, reply, whale } from './helpers/persona-chat-host.mjs';
 
 const QUEUE = 'chatInputQueue';
 const input = options => readChatInput(options);
+
+for (const action of ['clear', 'delete']) test(`durable room ${action} stops an actor even if retiring its input receipts fails`, async t => {
+  let failQueue = false, signal;
+  const blocked = gate(t);
+  const storage = domain(Promise.resolve(), { fail: id => failQueue && id === QUEUE });
+  const f = fixture(t, { storage, script: options => (async function* () {
+    signal = options.signal;
+    await blocked.promise;
+    yield* reply(['late']);
+  })() });
+  await f.ready();
+  const room = await newRoom(f, [whale]);
+  await roomSend(f, room, whale, 'before retirement', 'before-retirement');
+  const running = await until(() => roomState(f, room), () => !!signal, 'actor did not start');
+  failQueue = true;
+  const response = await f.request(action === 'clear' ? 'chat' : 'chat-rooms', {
+    action, ...room, personaId: whale, revision: running.room.revision, epoch: running.epoch
+  });
+  assert.equal(response.status, 503); assert.equal(response.value.error, 'chat-input-save-failed');
+  assert.equal(signal.aborted, true);
+  failQueue = false; blocked.open(); await flush();
+  const stored = storage.tables.get('profile').get('personaChats').rooms.find(r => r.id === room.roomId);
+  if (action === 'clear') assert.deepEqual(stored.turns, []);
+  else assert.equal(stored, undefined);
+});
+
 function gate(t) {
   let open;
   const promise = new Promise(resolve => { open = resolve; });
   t.after(open);
   return { promise, open };
 }
+
+test('a future durable input deadline arms one timer without retrying early', t => {
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});
+  const timers=new Map(),ready=()=>true, deadlines=[5000,Number.MAX_SAFE_INTEGER];
+  let deadline, attempts=0;
+  const host=createHostChat({chatInputTimers:timers,getStoreClosing:()=>false,getChatInputReady:ready,
+    chatInputs:{peek:ready,notBefore:()=>deadline},chatInputDraining:new Set(),chatRounds:new Map(),
+    getChatInputRestore:()=>{attempts++; return new Promise(()=>{});}});
+  for(const at of deadlines){
+    deadline=at; host.armChatInput('room'); t.mock.timers.tick(1000);
+    assert.equal(attempts,0); assert.equal(timers.size,1);
+  }
+  deadline=5000; host.armChatInput('room'); t.mock.timers.tick(1999); assert.equal(attempts,0);
+  t.mock.timers.tick(1); assert.equal(attempts,1); assert.equal(timers.size,0);
+});
+
+test('an actor invalidated during its ready write retires only that pending attempt', async t => {
+  const saving = gate(t), entered = gate(t);
+  const storage = domain(Promise.resolve(), { async beforePut(key, value) {
+    if (key === 'personaChats' && value.rooms.some(r => r.turns.some(t => t.phase !== 'anchor' && t.status === 'ready'))) {
+      entered.open(); await saving.promise;
+    }
+  } });
+  const f = fixture(t, { storage, config: { memory: true } });
+  await f.ready();
+  const room = await newRoom(f, [whale]);
+  await roomSend(f, room, whale, '核对记忆', 'expire-during-save');
+  await entered.promise;
+  const changed = await f.request('memory', { action: 'add', entry: {
+    kind: 'preference', scope: 'persona', personaId: whale, content: '用户希望使用简短的句子'
+  } });
+  saving.open();
+  assert.equal(changed.status, 200);
+  const done = await settledRoom(f, room);
+  const seat = done.room.turns.find(turn => turn.phase !== 'anchor');
+  assert.equal(seat.status, 'cancelled');
+  assert.deepEqual(seat.assistant, []);
+});
+
 async function until(read, predicate, message) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {

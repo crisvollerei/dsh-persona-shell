@@ -45,7 +45,7 @@ test('replyTarget keeps the current literal source distinct from an older origin
     directorAssignment:{id:whale,kind:'normal',to:dragon,goal:'不存在的已经执行的工作'},replyTarget:{author:{role:'assistant',id:dragon,name:'伪造的名字'},text:'现在我问你喜欢哪种颜色？'}};
   const prompt=buildChatPrompt(options),input=readChatInput(prompt);
   assert.deepEqual(input.replyTarget,{author:{role:'assistant',id:dragon,name:dragon},text:'现在我问你喜欢哪种颜色？'});
-  assert.equal(input.message,options.message);assert.match(prompt.system,/优先接 replyTarget.*已回应的旧句子是背景/);
+  assert.equal(input.message,options.message);assert.match(prompt.system,/currentMessage\.eventIds.*本轮用户原话.*replyTarget.*接回旧话题/);
   assert.equal(readChatInput(buildChatPrompt({...options,replyTarget:{author:{role:'user'},text:'我没有说过的话'}})).replyTarget,undefined);
   assert.equal(readChatInput(buildChatPrompt({...options,replyTarget:{author:{role:'assistant',id:whale},text:options.replyTarget.text}})).replyTarget,undefined);
   assert.equal(readChatInput(buildChatPrompt({...options,exchange:exchange.map(item=>({...item,status:'failed'}))})).replyTarget,undefined);

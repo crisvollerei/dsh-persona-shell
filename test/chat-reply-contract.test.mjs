@@ -16,7 +16,7 @@ const said=(head,id,person,assistant)=>({...head,id,attemptId:id,recipientId:per
 const ref=(turn,index=0)=>({roomId:'room',generation:2,kind:'assistant',turnId:turn.id,attemptId:turn.attemptId,index});
 const build=(current,extra={})=>buildChatPrompt({pack,speaker,participants:[speaker,peer],recipients:[speaker],roomId:'room',generation:2,scopeKey,
   message:current.user,currentTurn:current,history:[],...extra});
-const packet=message=>JSON.parse(message.content.find(block=>block.type==='text').text);
+import {readChatPacket as packet} from './helpers/chat-input.mjs';
 const task=call=>{try{return readChatInput(call).task;}catch{return null;}};
 const actorCalls=f=>f.calls.filter(call=>task(call)==='chat-control');
 const output=body=>(async function*(){yield{type:'text-delta',index:0,text:body};yield{type:'finish',reason:{kind:'stop'}};})();
@@ -26,17 +26,17 @@ test('both output routes keep the final control separate from original history a
     other=said(old,'other',peer,['同伴第一泡。','同伴被引用的第二泡。']),current=anchor('now','现在只接被引用的那一句。');
   const input={history:[old,own,other],quotedMessage:{ref:ref(other,1),author:{role:'assistant',...peer},text:other.assistant[1]}};
   const before=structuredClone(input),result=build(current,input),control=packet(result.messages.at(-1));
-  assert.equal(control.task,'chat-control');assert.deepEqual(result.control,control);
+  assert.equal(control.task,'chat-control');assert.equal(control.timeline,undefined);assert.deepEqual(result.control.quotedMessage,control.quotedMessage);
   assert.ok(result.messages.every(message=>!Object.hasOwn(packet(message),'replyFormat')));
   const decoded=readChatInput(result);assert.equal(decoded.message,current.user);assert.equal(decoded.quotedMessage.text,other.assistant[1]);
-  assert.deepEqual(result.messages.filter(message=>message.role==='assistant').map(packet),[{messages:own.assistant}]);
-  const quoteEvent=control.timeline.find(event=>event.eventId===control.quotedMessage.pointer.eventId);
+  assert.deepEqual(result.messages.filter(message=>message.role==='assistant').map(message=>packet(message).messages),[own.assistant]);
+  const quoteEvent=result.control.timeline.find(event=>event.eventId===control.quotedMessage.pointer.eventId);
   assert.equal(quoteEvent.author.id,peer.id);assert.equal(control.quotedMessage.pointer.index,1);
   const quotePacket=packet(result.messages[quoteEvent.messageIndex]);
   assert.equal(quotePacket.messages.find(message=>message.index===1).text,other.assistant[1]);
   for(const literal of [old.user,current.user,...own.assistant,...other.assistant])assert.equal(JSON.stringify(result.messages).split(literal).length-1,1);
-  assert.ok(control.timeline.every(event=>event.messageIndex<result.messages.length-1),'the control never gets a public event or quote location');
-  assert.doesNotMatch(JSON.stringify(control.timeline),/replyFormat|本次气泡正文/);assert.deepEqual(input,before);
+  assert.ok(result.control.timeline.every(event=>event.messageIndex<result.messages.length-1),'the control never gets a public event or quote location');
+  assert.doesNotMatch(JSON.stringify(control),/replyFormat|本次气泡正文/);assert.deepEqual(input,before);
   assert.doesNotMatch(result.system,/replyFormat|本次气泡正文/);
 });
 
@@ -122,13 +122,102 @@ test('report and progress keep their own protocols outside both actor output rou
 test('the actor action brief distinguishes an offered posture from contact without adding a confirmation workflow',()=>{
   const old=anchor('invite','我想要抱抱。'),offered=said(old,'offered',speaker,['（张开手）来。']),paused=anchor('pause','好了，先别抱了，就聊聊天。');
   const result=build(paused,{history:[old,offered]});
-  assert.equal(readChatInput(result).message,paused.user);assert.deepEqual(result.messages.filter(message=>message.role==='assistant').map(packet),[{messages:offered.assistant}]);
+  assert.equal(readChatInput(result).message,paused.user);assert.deepEqual(result.messages.filter(message=>message.role==='assistant').map(message=>packet(message).messages),[offered.assistant]);
   assert.match(result.system,/张开手、留位置是本人的姿态，不等于双方已经接触/);
   assert.match(result.system,/不因这句话补写此前已抱住、现在松开/);
-  assert.match(result.system,/用户确实写了靠近或接触时也可自然承接/);
-  assert.match(result.system,/不必逐步核对/);assert.match(result.system,/不必逐动作索要确认/);
-  assert.match(result.system,/用户已明确邀请抱抱时可以直接应邀/);assert.match(result.system,/等用户时仍可回应本人收到的邀请，或接合适的同伴话头/);
+  const invitation=build(old).system;
+  assert.match(invitation,/用户确实写了靠近或接触时也可自然承接/);assert.match(invitation,/不必逐动作索要确认/);
+  assert.match(invitation,/用户已明确邀请抱抱时可以直接应邀/);assert.doesNotMatch(result.system,/用户已明确邀请抱抱时可以直接应邀/);
   assert.doesNotMatch(result.system,/replyFormat/);
+});
+
+test('an unqualified pause can follow a visible offer, without reviving an unrelated or excluded encounter',()=>{
+  const before=anchor('invite','好呀。'),offered=said(before,'offer',speaker,['（张开手）来。']),paused=anchor('pause','好了，先聊聊天吧。');
+  const guidance=/不因这句话补写此前已抱住、现在松开/;
+  assert.match(build(paused,{history:[before,offered]}).system,guidance);
+  assert.match(build(paused,{history:[before,{...offered,recipientId:peer.id,speakerName:peer.name}]}).system,guidance);
+  assert.doesNotMatch(build(anchor('new','聊聊新的电影。'),{history:[before,offered]}).system,guidance);
+  const unrelated=anchor('other','上次电影里都演了什么？');
+  assert.doesNotMatch(build(paused,{history:[before,offered,unrelated,said(unrelated,'review',peer,['只说电影吧。'])]}).system,guidance);
+  assert.doesNotMatch(build(paused,{history:[before,offered],excluded:[ref(offered)]}).system,guidance);
+  assert.doesNotMatch(build(paused,{history:[before,{...offered,scopeKey:'other'}]}).system,guidance);
+  assert.doesNotMatch(build(paused,{history:[before,{...offered,status:'pending'}]}).system,guidance);
+});
+
+test('an explicit pause after an offered hug works with the original present or cropped out during a scene change',()=>{
+  const old=anchor('old','抱抱'),offer=said(old,'offer',speaker,['（张开手）过来吧']),pause=anchor('now','先暂停一下，我们聊点别的');
+  assert.match(build(pause,{history:[old,offer]}).system,/不因这句话补写此前已抱住、现在松开/);
+  const refUser=id=>({roomId:'room',generation:2,kind:'user',messageId:id});
+  const cropped=build(pause,{history:[old,offer],scene:{version:1,relation:'pause',trigger:refUser('now'),focus:refUser('now'),parked:refUser('old'),
+    transition:{trigger:refUser('now'),reply:null},relatedReplies:[]}});
+  assert.equal(cropped.control.conversationScene.historySelection,'active-focus');
+  assert.ok(!cropped.messages.some(m=>m.role==='assistant'));
+  assert.match(cropped.system,/只凭这句话不能补写已经发生的动作或双方接触/);
+  assert.doesNotMatch(cropped.system,/此前已抱住、现在松开/);
+  for(const words of ['暂停按钮怎么用？','别暂停，继续说。']){
+    assert.doesNotMatch(build(anchor('other',words),{history:[old,offer]}).system,/不能补写已经发生的动作或双方接触|此前已抱住、现在松开/);
+  }
+});
+
+test('actor memory projects only bounded content, approved kinds and coarse time labels',()=>{
+  const current=anchor('memory','还记得吗？');
+  const result=build(current,{personalContext:[null,{kind:'other',content:'PRIVATE_KIND'},
+    {kind:'episode',content:'a'.repeat(241)},
+    {kind:'agreement',content:'请使用保存的称呼',when:'昨天',timeBasis:'记录时间',evidence:'PRIVATE_QUOTE'},
+    {kind:'episode',content:'一起看过雪',when:'PRIVATE_TIME',timeBasis:'PRIVATE_BASIS'},{kind:'context',content:'PRIVATE_THIRD'}]});
+  assert.deepEqual(result.control.personalContext,[{kind:'agreement',content:'请使用保存的称呼',when:'昨天',timeBasis:'记录时间'},
+    {kind:'episode',content:'一起看过雪'}]); assert.doesNotMatch(JSON.stringify(result.messages),/PRIVATE_/);
+});
+
+test('physical cues include an earlier visible speaker in this exchange and an explicitly resumed focus',()=>{
+  const old=anchor('offer','好呀。'),offer=said(old,'hands',peer,['（张开手）来。']),aside=said(old,'aside',speaker,['窗外放晴了。']);
+  const current=build(old,{history:[old,offer,aside]});
+  assert.equal(current.control.exchange.length,2); assert.match(current.system,/张开手、留位置/);
+  const other=anchor('movie','我们聊聊电影吧。'),paused=anchor('hold','先暂停一下。');
+  const refUser=messageId=>({roomId:'room',generation:2,kind:'user',messageId});
+  const result=build(paused,{history:[old,offer,other,said(other,'film',peer,['我昨天看了电影。'])],scene:{version:1,
+    relation:'resume',trigger:refUser('hold'),focus:refUser('offer'),parked:refUser('movie'),
+    transition:{trigger:refUser('hold'),reply:null},relatedReplies:[ref(offer)]}});
+  assert.equal(result.control.history.at(-1).bodyOmission,'inactive-scene');
+  assert.match(result.system,/不因这句话补写此前已抱住、现在松开/);
+});
+
+test('resuming a scene uses the latest visible continuation when its opening had no interaction',()=>{
+  const intro=anchor('intro','刚才聊到哪了？'),later=anchor('later','原来如此。'),offer=said(later,'offer',peer,['（张开手）过来吧。']);
+  const detour=anchor('movie','看电影吧。'),paused=anchor('hold','先暂停一下。');
+  const user=messageId=>({roomId:'room',generation:2,kind:'user',messageId});
+  const result=build(paused,{history:[intro,later,offer,detour],scene:{version:1,relation:'resume',trigger:user('hold'),
+    focus:user('intro'),parked:user('movie'),transition:{trigger:user('hold'),reply:null},relatedReplies:[ref(offer)]}});
+  assert.equal(result.control.history.at(-1).bodyOmission,'inactive-scene');
+  assert.equal(result.control.history.findLast(g=>!g.bodyOmission).messageId,'later');
+  assert.match(result.system,/不因这句话补写此前已抱住、现在松开/);
+});
+
+test('a pause sees an earlier visible offer in the previous group even after two unrelated speakers',()=>{
+  const paused=anchor('pause','先暂停一下，我们聊点别的'),third={id:'third',name:'另一位'};
+  const guidance=/不因这句话补写此前已抱住、现在松开/;
+  const generic=/只凭这句话不能补写已经发生的动作或双方接触/;
+  for(const invitation of ['抱抱','好呀。']){
+    const before=anchor('before',invitation),offer=said(before,'offer',speaker,['（张开手）过来吧']),
+      weather=said(before,'weather',peer,['我喜欢晴天。']),music=said(before,'music',third,['这里的音乐真好听。']);
+    const history=[before,offer,weather,music];
+    const current=build(paused,{history});
+    assert.deepEqual(current.control.history[0].responses.map(({speaker})=>speaker.id),[speaker.id,peer.id,third.id]);
+    assert.match(current.system,guidance);
+
+    const later=anchor('later','说说你喜欢的电影吧。');
+    const intervening=build(paused,{history:[...history,later,said(later,'film',peer,['我也喜欢那部。'])]});
+    assert.ok(intervening.control.timeline.some(e=>e.turnId===offer.id));
+    assert.doesNotMatch(intervening.system,guidance);assert.match(intervening.system,generic);
+
+    // A deliberate quote keeps the old bubble visible even after its scene was parked.
+    const refUser=id=>({roomId:'room',generation:2,kind:'user',messageId:id});
+    const parked=build(paused,{history,quotedMessage:{ref:ref(offer),author:{role:'assistant',...speaker},text:offer.assistant[0]},
+      scene:{version:1,relation:'pause',trigger:refUser('pause'),focus:refUser('pause'),parked:refUser('before'),
+        transition:{trigger:refUser('pause'),reply:null},relatedReplies:[]}});
+    assert.equal(parked.control.history[0].bodyOmission,'inactive-scene');
+    assert.ok(parked.control.quotedMessage);assert.doesNotMatch(parked.system,guidance);assert.match(parked.system,generic);
+  }
 });
 
 test('the generation contract separates explicit none from unspecified gender and retains presentation without inferring sex',()=>{

@@ -24,7 +24,8 @@
       "condition-change": "Conditional wording changed",
       "uncertainty-change": "Uncertainty wording changed",
       "quantity-change": "Numeric wording changed",
-      "literal-order": "Literal order changed"
+      "literal-order": "Literal order changed",
+      "self-reference": "Possible narrator self-reference"
     },
     "personaSwitch": "Persona",
     "personaSwitchOn": "On",

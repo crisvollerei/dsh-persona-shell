@@ -16,6 +16,14 @@ function setup() {
     events, states: [ready('fish', events)], sourceIds: ['work'] };
 }
 const view = options => JSON.parse(buildDirectorPrompt(options).user);
+test('the opening explains cooling and mentions without inventing a name in an unaddressed part', () => {
+  const {system,user} = buildDirectorPrompt(setup());
+  assert.ok(!Object.hasOwn(JSON.parse(user),'mentionedMembers'));
+  const lines = system.split('\n'), mentionRules = lines.filter(line => line.startsWith('mentionedMembers '));
+  assert.equal(mentionRules.length,1);
+  assert.match(system,/ready.*cooling.*done/u);
+  assert.doesNotMatch(system,/冷却5\/10秒/u);
+});
 const wire = (choiceId, extra = {}) => JSON.stringify({ choiceId, ...extra });
 const context = options => ({ work: 'not-needed', sourceIds: [], request: 'answer', evidence: options.message.slice(0, 100) });
 const pick = (options, predicate) => {

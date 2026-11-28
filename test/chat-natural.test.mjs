@@ -116,7 +116,10 @@ test('a member can address a peer through actual evidence and an empty decision 
 test('self-introductions do not create peer opportunities or force all remaining normal opportunities',async t=>{
   const f=fixture(t,{script:()=>reply(['鲸鲸在呢。','你想聊什么？'])});await f.ready();
   const room=await newRoom(f);await selectTwo(f,room);await roomSend(f,room);await settledRoom(f,room);
-  assert.equal(f.calls.length,2);assert.equal(f.directors.length,2,'no peer candidate remains after the self-introduction');assert.equal(f.requests.length,4);
+  assert.equal(f.calls.length,2);assert.equal(f.directors.length,3);assert.equal(f.requests.length,5);
+  const last=directorInput(f.directors.at(-1)),introduction=currentSpeech(last).at(-1);
+  assert.ok(last.choices.some(choice=>choice.kind==='normal'&&choice.to===introduction.author.id&&choice.eventId===introduction.id));
+  assert.ok(last.choices.every(choice=>choice.kind==='normal'));assert.equal(last.peerInvitations,undefined);
   assert.ok(f.calls.every(call=>input(call).responsePlan.kind==='normal'));assert.equal(f.plans.length+f.continuations.length,0);
 });
 

@@ -24,7 +24,8 @@ test('each bounded contribution reaches only the matching actor control as an in
     const point='THIS_STEP_'+move,direction=assignment(move,point),before=structuredClone(direction);
     const prompt=build({directorAssignment:direction});
     assert.deepEqual(prompt.control.directorAssignment,{kind:'normal',to:'user',goal:point,contribution:{move,point}});
-    assert.deepEqual(controlPacket(prompt).directorAssignment,prompt.control.directorAssignment);
+    assert.deepEqual(controlPacket(prompt).directorAssignment,{kind:'normal',to:'user',move});
+    assert.ok(!JSON.stringify(prompt.messages).includes(point),'a casual prompt leaves the director’s drafted point out of the conversation');
     assert.ok(prompt.system.includes(move+'：'),'only the selected move brief is provided');
     assert.equal(moves.filter(other=>prompt.system.includes(other+'：')).length,1);
     assert.equal(prompt.control.currentMessage.messageId,current.messageId);

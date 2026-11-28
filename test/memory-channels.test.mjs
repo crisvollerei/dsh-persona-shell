@@ -20,11 +20,7 @@ function fixture(t, { storage = domain(), config = {}, prepare } = {}) {
   const agent = { session, status: 'running' };
   const llm = { resolveModelInfo: prepare ?? (async () => ({ reasoning: { efforts: [{ id: 'off' }, { id: 'low' }] } })), stream(options) {
     calls.push(options);
-    if (options.tools) return (async function* () {
-      yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'usage', name: 'get_tool_usage', arguments: '{}' } };
-      yield { type: 'finish', reason: { kind: 'tool-calls' } };
-    })();
-    if (options.messages.at(-1).role === 'tool') return output(JSON.stringify({ rewrite: '原始汇报的另一种说法。', process_note: '' }));
+    if (options.messages[0].content.length>1) return output(JSON.stringify({ rewrite: '原始汇报的另一种说法。', process_note: '' }));
     return output(options.system.includes('独立的状态播报员') ? '还没有新的正文汇报，我在这里等消息。' : '原始汇报的另一种说法。');
   } };
   const services = new Map([['llm', llm], ['agents', { get: (id) => id === 's' ? agent : undefined }],
@@ -76,7 +72,7 @@ test('report, process continuation, one-off retry and quiet notice share scoped 
   f.event('tool/call', { turn: 1, callId: 'r', name: 'read', arguments: { secret: 'TOOL_BODY' } }); f.report(true); await flush();
   await f.quiet();
   const records = await f.usage(); assert.deepEqual(records.map((r) => r.channel), ['report', 'retry', 'process', 'progress']);
-  assert.equal(f.calls.length, 5, 'four logical requests, including one process continuation');
+  assert.equal(f.calls.length, 4, 'one request per channel');
   for (const call of f.calls) {
     assert.match(call.system, /不要提醒我休息/); assert.match(call.system, /叫我阿晴/);
     assert.doesNotMatch(call.system, /DRAGON_PRIVATE|EPISODE_PRIVATE|OTHER_SESSION|UNCONFIRMED|TOOL_BODY/);

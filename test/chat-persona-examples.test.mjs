@@ -28,10 +28,13 @@ test('report identity and constraints remain stable while only chat gets multi-t
   for(const preset of BUILTIN_PRESETS){
     const original=structuredClone(preset.pack),report=view(preset,'report');
     const {samples,...stableReport}=report;
+    assert.equal(stableReport.narration.selfReference,'natural');
+    delete stableReport.narration.selfReference;
     assert.equal(createHash('sha256').update(JSON.stringify(stableReport)).digest('hex'),reportSignatures[preset.id]);
     assert.equal(samples.length,3);assert.ok(samples.every(sample=>sample.startsWith('原文：')&&sample.includes('\n表达：')));
     assert.equal(report.dialogueExamples,undefined);
     const rawReport=resolvePersonaExpression(preset.pack,{channel:'report',persona:owner(preset)});
+    if(rawReport.narration)delete rawReport.narration.selfReference;
     // Raw cards may omit the normalized default narration; keep that distinction.
     const {narration:normalizedDefault,...withoutNarration}=report;
     assert.deepEqual(rawReport,preset.pack.narration===undefined?withoutNarration:report);

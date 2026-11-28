@@ -16,7 +16,7 @@ const get = async (f, room) => (await f.request('chat-work-draft?room=' + encode
 async function generateBody(f, room, extra = {}) {
   const info = await get(f, room);
   return { action: 'generate', requestId: 'work-draft-one', roomId: room.roomId, epoch: info.epoch, scopeKey: info.scopeKey,
-    discussionRevision: info.discussionRevision, refs: [info.choices.find(q => q.ref.kind === 'user').ref], instruction: '整理成可执行的工作指令，未确定的内容先列出。', ...extra };
+    referenceRevision: info.referenceRevision, discussionRevision: info.discussionRevision, refs: [info.choices.find(q => q.ref.kind === 'user').ref], instruction: '整理成可执行的工作指令，未确定的内容先列出。', ...extra };
 }
 const generate = (f, body) => f.request('chat-work-draft', body);
 function gate(t) {
@@ -109,6 +109,43 @@ test('invalid work draft evidence is refused before dispatch and fake client met
     assert.notEqual((await generate(f, { ...body, ...patch })).status, 200);
   }
   assert.equal(f.calls.length, before);
+});
+
+test('pausing a reference filters draft choices and discussion evidence and retires both generated and running drafts', async t => {
+  const entered = gate(t), waiting = gate(t);
+  let hold = false, signal;
+  const f = fixture(t, { script: options => !isDraft(options) ? reply() : (async function* () {
+    if (hold) { signal = options.signal; entered.open(); await waiting.promise; }
+    yield* draft();
+  })() });
+  await f.ready(); const room = await newRoom(f, [whale]);
+  await roomSend(f, room, whale, 'KEEP_ORIGINAL', 'keep'); await settledRoom(f, room);
+  await roomSend(f, room, whale, 'PAUSED_ORIGINAL', 'pause'); await settledRoom(f, room);
+  const info = await get(f, room), findRef = text => info.choices.find(q => q.text === text).ref;
+  const keep = findRef('KEEP_ORIGINAL'), pause = findRef('PAUSED_ORIGINAL');
+  const annotations = [{ status: 'confirmed', source: keep, evidence: pause }, { status: 'proposal', source: pause }];
+  for (const [index, annotation] of annotations.entries()) {
+    const added = await f.request('chat-discussion', { action: 'add', roomId: room.roomId, epoch: info.epoch, discussionRevision: index,
+      requestId: 'annotation-' + index, title: 'PAUSED_ANNOTATION_' + index, ...annotation });
+    assert.equal(added.status, 200);
+  }
+  const body = await generateBody(f, room, { refs: [keep] });
+  const first = await generate(f, body); assert.equal(first.status, 200);
+  assert.equal(bodyOf(f.calls.at(-1)).discussionState.length, 2);
+  hold = true; const running = generate(f, { ...body, requestId: 'in-flight' }); await entered.promise;
+  const setPaused = (referenceRevision, excluded) => f.request('chat-references', { roomId: room.roomId, epoch: info.epoch, ref: pause, referenceRevision, excluded });
+  assert.equal((await setPaused(body.referenceRevision, true)).status, 200);
+  assert.equal(signal.aborted, true); hold = false; waiting.open(); assert.equal((await running).status, 409);
+  const paused = await get(f, room), before = f.calls.length;
+  assert.ok(!paused.choices.some(q => q.text === 'PAUSED_ORIGINAL'));
+  assert.equal((await generate(f, { ...body, ...first.value.basis, action: 'validate' })).status, 409);
+  assert.equal((await generate(f, { ...body, referenceRevision: paused.referenceRevision, refs: [pause] })).status, 409);
+  assert.equal(f.calls.length, before);
+  const fresh = await generate(f, { ...body, referenceRevision: paused.referenceRevision, requestId: 'fresh' });
+  assert.equal(fresh.status, 200); assert.doesNotMatch(JSON.stringify(bodyOf(f.calls.at(-1))), /PAUSED_/);
+  assert.equal((await setPaused(paused.referenceRevision, false)).status, 200);
+  assert.equal((await generate(f, { ...body, action: 'validate' })).status, 409, 'restoring a reference still requires a fresh basis');
+  assert.ok((await get(f, room)).choices.some(q => q.text === 'PAUSED_ORIGINAL'));
 });
 
 test('work draft routing follows the current chat thinking policy without changing the formal rewrite route', async t => {

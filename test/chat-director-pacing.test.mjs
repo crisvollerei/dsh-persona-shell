@@ -12,7 +12,7 @@ const options={message:'先说说你的倾向，别急着定。',recipients:[],m
 test('native and production director briefs allow an unfinished discussion without requiring an unfinished transport response',()=>{
   for(const prompt of [buildDirectorPrompt(options),buildDirectorRequest(options)]){
     assert.match(prompt.system,/一小步|这一拍/);assert.match(prompt.system,/简短赞同/);
-    assert.match(prompt.system,/慢慢聊/);assert.match(prompt.system,/最后一次也不|接近上限也不/);
+    assert.match(prompt.system,/剩余机会只是上限/);assert.match(prompt.system,/不.*用完|不用替整场聊天收尾/u);
     assert.doesNotMatch(prompt.system,/一位先完成主要回答|后位只在有具体的新事实|只是礼貌收尾时/);
     assert.match(prompt.system,/完整总结|集中答复/);assert.match(prompt.system,/重要条件/);
   }

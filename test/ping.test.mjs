@@ -116,6 +116,18 @@ function mount() {
 /** The exact key names the public probe is allowed to publish. */
 const PUBLIC_KEYS = ['applied', 'authCounts', 'authStatus', 'clientBuild', 'heartbeat', 'shippedMarkdown'];
 
+test('client telemetry updates client fields while host counters keep their own values', async () => {
+  const route = routeOf(mount().webServer);
+  await call(route, { url: '/persona-shell/diagnostics', method: 'POST',
+    body: { applied: true, seenTypes: { clientEvent: 77 }, authCounts: { ok: 123456 } } });
+  const response = await call(route, { url: '/persona-shell/diagnostics' });
+  assert.equal(response.statusCode, 200);
+  const stored = JSON.parse(response.body);
+  assert.equal(stored.applied, true);
+  assert.equal(stored.seenTypes?.clientEvent, undefined);
+  assert.notEqual(stored.authCounts?.ok, 123456);
+});
+
 test('the public probe never forwards internal text', async () => {
   const { webServer, connection } = mount();
 

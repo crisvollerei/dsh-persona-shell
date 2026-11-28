@@ -39,3 +39,20 @@ test('a scene-aware stop may retain a grounded transition while a bare stop gran
   assert.equal(parseDirectorResponse('WAIT',o).sceneKey,undefined);
   assert.equal(parseDirectorResponse('WAIT N P99',o).basis,'invalid');
 });
+
+test('a source-free local stop can name an offered scene directly; a lone C1 still selects a speaker',()=>{
+  const o={...options(),requestLocal:true,sources:[],sourceIds:[]};
+  const prepared=buildDirectorRequest(o),withWork=buildDirectorRequest({...options(),requestLocal:true});
+  for(const stop of ['WAIT','IDLE']) for(const key of ['F','C1','P1','R1']) {
+    const wire=`${stop} ${key}`,result=prepared.parse(wire);
+    assert.equal(result.basis,'model',wire);
+    assert.deepEqual(result,prepared.parse(`${stop} N ${key}`));
+    assert.equal(result.next,null);assert.equal(result.sceneKey,key);assert.deepEqual(result.context.sourceIds,[]);
+    assert.equal(result.waitForUser,stop==='WAIT');
+    assert.equal(withWork.parse(wire).basis,'invalid');
+    assert.equal(parseDirectorResponse(wire,o).basis,'invalid');
+  }
+  assert.equal(prepared.parse('C1').next.id,'a');
+  for(const wire of ['WAIT C2','WAIT c1','WAIT C1 extra','IDLE C1 R1','WAIT\nC1','WAIT s1','WAIT C1。'])
+    assert.equal(prepared.parse(wire).basis,'invalid',wire);
+});

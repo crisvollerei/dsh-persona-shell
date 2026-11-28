@@ -66,6 +66,8 @@ test('full report projections and saved builtin cards stay independent of both c
       raw:resolvePersonaExpression(preset.pack,{channel:'report',persona}),
       normalized:resolvePersonaExpression(normalizePack(preset.pack),{channel:'report',persona}),
     };
+    assert.equal(reports.normalized.narration.selfReference,'natural');
+    for(const view of Object.values(reports))if(view.narration)delete view.narration.selfReference;
     assert.equal(digest(reports),reportSignatures[preset.id],preset.id+' report baseline');
     for(const value of [preset.pack,normalizePack(preset.pack),reports.raw,reports.normalized]){
       for(const key of exampleFields)assert.equal(Object.hasOwn(value,key),false,

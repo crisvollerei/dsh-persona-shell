@@ -114,7 +114,7 @@ function fixture(t, { storage = domain(), script, directorScript, planScript, co
     const value = await state(id); return request('chat', { action: 'send', personaId: id,
       requestId, content, revision: value.room?.revision ?? 0, epoch: value.epoch });
   };
-  return { calls,directors,plans,continuations,requests,judgements,selections, storage, request, state, send, dispose, ready: flush, bus,
+  return { calls,directors,plans,continuations,requests,judgements,selections, storage, request, handler:routes[0].handler, state, send, dispose, ready: flush, bus,
     work(text = 'WORK_SESSION_SECRET') { bus.emit('session/event', { id: 'work', header: {}, append() { assert.fail('chat cannot write to working sessions'); } },
       { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text }] } }); } };
 }

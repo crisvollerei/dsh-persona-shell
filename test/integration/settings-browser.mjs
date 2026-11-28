@@ -10,6 +10,7 @@ import { avatarContent, avatarUrl, builtinAvatar } from '../../lib/avatar.js';
 import { roomCharacterContext } from '../../lib/character-roster.js';
 import { createModelUsage } from '../../lib/model-usage.js';
 import { parseGeneratedPreset } from '../../lib/preset.js';
+import {fixture,whale,newRoom,roomSend,settledRoom} from '../helpers/persona-chat-host.mjs';
 
 const { values } = parseArgs({ options: {
   deps: { type: 'string' }, 'browser-deps': { type: 'string' },
@@ -36,6 +37,7 @@ ledger.restore({ version: 1, rows: [
   { date: '2026-11-06', purpose: 'chat', provider: 'anthropic', model: 'claude-sonnet', ...metrics(5, 4, 6400) },
   { date: '2026-11-03', purpose: 'chat-participation', provider: 'local', model: 'small-judge', ...metrics(2, 0, 0) },
   { date: '2026-11-06', purpose: 'memory', provider: 'deepseek', model: 'deepseek-v4-flash', ...metrics(1, 1, 200), reasoningTokens: 16 },
+  { date: '2026-11-06', purpose: 'persona-preview', provider: 'deepseek', model: 'deepseek-v4-flash', ...metrics(1, 0, 0) },
 ] });
 const periods = Object.fromEntries([1, 7, 30].map((days) => [days, { ...ledger.report(days), persistence: 'local' }]));
 const generatedPreset = {
@@ -88,6 +90,7 @@ const entry = [
   'const snapshot=()=>({settings:structuredClone(host.settings),settingsPersistence:host.settingsPersistence||"saved",presets:structuredClone(host.presets),active:host.settings.presetName,memory:[],memoryStats:{messages:0,stated:0}});',
   'const reply=(body,ok=true)=>({ok,status:ok?200:503,json:async()=>structuredClone(body)});',
   'window.fetch=async(url,options)=>{const route=new URL(url,"https://example.invalid").pathname;',
+  'if(route.endsWith("/backup")){const result=await window.backupHost(url,options?.body);return reply(result.value,result.status===200)}',
   'if(route.endsWith("/model-usage")){const days=+new URL(url,"https://example.invalid").searchParams.get("days");host.usageReads.push(days);if(host.holdUsage===days)await new Promise(r=>host.resumeUsage=r);if(host.failUsage){host.failUsage=false;return reply({},false)}return reply(host.periods[days])}',
   'if(route.endsWith("/settings")){if(options?.method==="POST"){const patch=JSON.parse(options.body);host.settingsPosts.push(patch);',
   'if(host.failSettings){host.failSettings=false;return reply({error:"storage-not-ready"},false)}',
@@ -97,6 +100,7 @@ const entry = [
   'if(active.builtin){active={id:"edited",name:active.name+" · 我的版本",builtin:false,pack:patch.pack};host.presets.push(active);host.settings.presetName=active.name}',
   'else active.pack=patch.pack}}else{host.settingsReads++;if(host.settingsGetFailures.length){const code=host.settingsGetFailures.shift();if(code==="network")throw Error("PRIVATE_NETWORK_ERROR");return{ok:false,status:code,json:async()=>({})}}}return reply(snapshot())}',
   'if(route.endsWith("/presets")){if(options){const body=JSON.parse(options.body);host.presetPosts.push(body);',
+  'if(body.action==="preview")return reply({original:"试说样板",text:body.pack.identity,...(body.mode==="strict"?{fallback:"dropped-marker",reasons:[]}:{reasons:["self-reference","quantity-change"]})});',
   'if(host.failPreset){host.failPreset=false;return reply({error:"storage-not-ready"},false)}',
   'if(body.action==="generate"){if(host.holdGenerate)await new Promise(r=>host.resumeGenerate=r);if(host.failGenerate){host.failGenerate=false;return reply({ok:false,reason:"generation-invalid-jsonl"})}return reply(parseFixtureGenerated(generationWire(host.generatedPreset),body.prompt))}',
   'if(body.action==="save"){const pack=normalizeFixturePack(body.pack),existing=host.presets.find(p=>!p.builtin&&p.name===body.name),entry={id:existing?.id||"generated",name:body.name,pack,builtin:false};if(existing)host.presets=host.presets.map(p=>p.id===existing.id?entry:p);else host.presets.push(entry);host.settings.pack=pack;host.settings.presetName=body.name}',
@@ -106,7 +110,7 @@ const entry = [
   'if(route.endsWith("/chat-model-options"))return reply({provider:host.settings.chatProvider||host.settings.provider,model:host.settings.chatModel||host.settings.model,status:"available",efforts:[{id:"off",name:"关闭"},{id:"low",name:"低"},{id:"high",name:"高"}],defaultEffort:"high"});',
   'if(route.endsWith("/chat-profile")){if(options?.method==="POST"){const patch=JSON.parse(options.body);host.profilePosts.push(patch);if(host.failProfile){host.failProfile=false;return reply({error:"storage-not-ready"},false)}if(host.conflictProfile){host.conflictProfile=false;Object.assign(host.userProfile,{revision:host.userProfile.revision+1,userGender:"female",userAddress:"另一处已更新的称呼"})}if(patch.revision!==host.userProfile.revision)return{ok:false,status:409,json:async()=>({error:"profile-conflict",state:structuredClone(host.userProfile)})};Object.assign(host.userProfile,patch,{revision:host.userProfile.revision+1})}return reply(host.userProfile)}',
   'if(route.endsWith("/memory")){if(options){const b=JSON.parse(options.body);if(b.action==="add")host.entries.push({...b.entry,id:"memory1",status:"active",origin:"manual",version:1,expiresAt:null,evidence:[]})}',
-  'return reply({entries:host.entries,activePersonaId:host.presets.find(p=>p.name===host.settings.presetName).id,activePresetName:host.settings.presetName,sessionId:"main",extraction:{pending:0,status:"idle"}})}',
+  'const imported=host.testingBackup ? (await window.readImportedMemory()).entries:[];return reply({entries:[...host.entries,...imported],activePersonaId:host.presets.find(p=>p.name===host.settings.presetName).id,activePresetName:host.settings.presetName,sessionId:"main",extraction:{pending:0,status:"idle"}})}',
   'return reply({})};',
   'createRoot(document.getElementById("app")).render(h(plugin.__testing.SettingsSection));',
 ].join('\n');
@@ -114,8 +118,15 @@ const bundle = buildSync({ stdin: { contents: entry, resolveDir: path.dirname(de
   bundle: true, write: false, platform: 'browser', format: 'iife',
   define: { 'process.env.NODE_ENV': '"development"' }, logLevel: 'silent' }).outputFiles[0].text;
 const browser = await chromium.launch({ headless: true, ...(values.executable ? { executablePath: values.executable } : {}) });
+const cleanup=[];
 try {
   const page = await browser.newPage({ viewport: { width: 1100, height: 1000 } });
+  const backupSource=fixture({after:fn=>cleanup.push(fn)}),backupTarget=fixture({after:fn=>cleanup.push(fn)});
+  await Promise.all([backupSource.ready(),backupTarget.ready()]);await backupSource.request('settings',{memory:true});
+  const b=await newRoom(backupSource,[whale]);await roomSend(backupSource,b,whale,'我们一起看过烟花','backup-source');const {room}=await settledRoom(backupSource,b);
+  assert.equal((await backupSource.request('chat/memory',{room:b.roomId,generation:room.generation,part:0,messageId:'backup-source',kind:'episode',scope:'persona',personaId:whale})).status,200);
+  await page.exposeFunction('backupHost',(url,body)=>(body?backupTarget:backupSource).request(url.split('/persona-shell/')[1],body?JSON.parse(body):undefined));
+  await page.exposeFunction('readImportedMemory',async()=>(await backupTarget.request('memory')).value);
   const errors = []; const external = [];
   page.on('pageerror', (e) => errors.push(e.message));
   const assets = new Map(presets.map(p => [new URL(p.avatar, 'https://persona.test').href, avatarContent(builtinAvatar(p.id)).file]));
@@ -684,7 +695,7 @@ try {
   assert.deepEqual(corrected.request.pack.narration, { mode: 'relay', assistant: '师姐' });
   assert.deepEqual(corrected.request.pack.address, { user: '阁下', subagent: '协作者' });
   assert.equal(corrected.request.source, replacementSource);
-  assert.deepEqual(corrected.saved.narration, { mode: 'relay', assistant: '师姐' });
+  assert.deepEqual(corrected.saved.narration, { mode: 'relay', assistant: '师姐', selfReference:'natural' });
   assert.deepEqual(corrected.saved.address, { user: '阁下', subagent: '协作者' });
   assert.equal(corrected.saved.chat.source.text, replacementSource, 'manual corrections never rewrite the original source');
   assert.equal(corrected.saved.chat.source.identity, correctedIdentity);
@@ -851,6 +862,9 @@ try {
   assert.match(await model.locator('summary').textContent(), /9 次18,600 token/);
   assert.equal(await model.getByText('记忆提取', { exact: true }).count(), 0);
   await model.getByText('其中推理 120（已含在输出，不重复计入）', { exact: true }).waitFor();
+  await usageFilter.selectOption('other');
+  await model.getByText('人格试说', {exact:true}).waitFor();
+  assert.match(await model.locator('summary').textContent(), /2 次200 token/);
   await usageFilter.selectOption('chat');
   assert.equal(await usage.locator('.mu-model').count(), 2);
   await usageFilter.selectOption('all');
@@ -869,6 +883,33 @@ try {
   await range('刷新').click();
   await usage.getByText('25,200', { exact: true }).waitFor();
   assert.equal(await usage.locator('.mu-bars i').count(), 30);
+  await page.getByRole('tab',{name:'人格',exact:true}).click();
+  const trialEditor=page.locator('[data-settings-fold="edit-persona"]');
+  if((await trialEditor.getAttribute('open'))===null)await trialEditor.locator(':scope > summary').click();
+  const draftIdentity=trialEditor.locator('textarea').first();await draftIdentity.fill('用于预览的未保存身份');
+  const settingsWrites=await page.evaluate(()=>window.settingsMock.settingsPosts.length);
+  await trialEditor.getByRole('button',{name:'试说一句',exact:true}).click();
+  await trialEditor.locator('fieldset').getByText('用于预览的未保存身份',{exact:true}).waitFor();
+  await trialEditor.getByText('建议核对措辞 · 转述者可能使用了自称、数字表达变化',{exact:true}).waitFor();
+  await trialEditor.getByRole('group',{name:'试说一句',exact:true}).getByRole('combobox').selectOption('strict');
+  await trialEditor.getByRole('button',{name:'试说一句',exact:true}).click();
+  await trialEditor.getByText(/没有完整保留受保护的技术内容/).waitFor();
+  assert.equal(await page.evaluate(()=>window.settingsMock.settingsPosts.length),settingsWrites);
+  await page.getByRole('tab',{name:'高级',exact:true}).click();
+  const backup=page.locator('[data-settings-fold="asset-backup"]');await backup.locator(':scope > summary').click();
+  const downloaded=page.waitForEvent('download');await backup.getByRole('button',{name:'导出 JSON'}).click();const artifact=await downloaded;
+  const bytes=readFileSync(await artifact.path());const [saved]=JSON.parse(bytes).memory.entries;assert.equal(saved.origin,'chat');
+  const importFile=backup.locator('input[type=file]'), backupFile={name:'backup.json',mimeType:'application/json',buffer:bytes};
+  await page.evaluate(()=>{window.settingsMock.testingBackup=true;});
+  await importFile.setInputFiles(backupFile);
+  await backup.getByRole('button',{name:'预览导入'}).click();await backup.getByRole('button',{name:'确认导入'}).waitFor();
+  assert.equal((await backupTarget.request('memory')).value.entries.length,0);await backup.getByRole('button',{name:'确认导入'}).click();
+  await backup.getByText(/已导入 0 张人格卡、1 条记忆/).waitFor();const [restored]=(await backupTarget.request('memory')).value.entries;
+  assert.equal(restored.origin,'chat');assert.equal(restored.scope,'persona');assert.equal(restored.status,'candidate');assert.deepEqual(restored.evidence,saved.evidence);
+  assert.equal(await importFile.inputValue(),'');await importFile.setInputFiles(backupFile);
+  await backup.getByRole('button',{name:'预览导入'}).click();await backup.getByText(/跳过重复 1/).waitFor();
+  await page.getByRole('tab',{name:'记忆',exact:true}).click();await page.getByLabel('筛选记忆').selectOption('all');
+  await page.getByRole('button',{name:/^待确认 /}).click();await page.locator('[data-memory-id="'+restored.id+'"]').waitFor();
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
   console.log(JSON.stringify({ result: 'passed', initialHeight, defaultVisibleEditors: 0,
     cases: ['delayed persistence acknowledgement', 'applied settings failure and empty-patch retry', 'pending and memory-only feedback', 'final-only process dependencies preserve choices', 'initial settings 503/auth/network failures and explicit read retry', 'provider discovery waits for authenticated settings', '200 metadata error and manual catalogue/list retry', 'progressive disclosure', 'colloquial report default, autosave and retry', 'failed save retains hidden draft', 'generated preset retry',
@@ -893,4 +934,4 @@ try {
       'lazy usage statistics', 'usage coverage and model details', 'empty, stale and failed usage queries',
       'auxiliary capabilities default off', 'research and reasoning enable independently', 'reasoning separate model persists across navigation', 'disabled helper model selection is retained'],
     pageErrors: errors, externalRequests: external }));
-} finally { await browser.close(); }
+} finally { await browser.close();for(const fn of cleanup)await fn(); }

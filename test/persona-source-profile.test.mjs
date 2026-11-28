@@ -17,7 +17,7 @@ const bind=pack=>({...pack,chat:{...pack.chat,source:{text:'SOURCE_ONLY：女店
 const view=pack=>resolvePersonaExpression(pack,{channel:'chat',persona:owner});
 
 test('old cards do not invent source bindings and a stored source field is not an automatic opt-in',()=>{
-  const card=base();assert.deepEqual(normalizePack(card),card);
+  const card=base();assert.deepEqual(normalizePack(card),{...card,narration:{...card.narration,selfReference:'natural'}});
   assert.equal(Object.hasOwn(view(card),'source'),false);
   assert.equal(Object.hasOwn(view({...card,source:'LEGACY_ARCHIVE_ONLY'}),'source'),false);
   for(const preset of BUILTIN_PRESETS){const pack=normalizePack(preset.pack);

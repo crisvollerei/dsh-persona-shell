@@ -135,10 +135,9 @@ test('clearing and deleting a different room preserves listener decisions, quick
   const state = await settledRoom(f,a);
   assert.deepEqual(actors(state).map(t => [t.recipientId,t.status]),[[whale,'ready'],[dragon,'ready']]);
   const decisions=f.directors.map(bodyOf);
-  assert.deepEqual(decisions.map(input=>input.events.filter(event=>event.author.role==='assistant').map(event=>event.author.id)),[[],[whale]],
-    'both scheduled actors delivered, without a third terminal judgement');
-  assert.ok(decisions.every(input=>input.choices.every(choice=>choice.kind==='normal'&&choice.to==='user')),
-    'neither reply addressed a companion');
+  assert.deepEqual(decisions.map(input=>input.events.filter(event=>event.author.role==='assistant').map(event=>event.author.id)),[[],[whale],[whale,dragon]]);
+  assert.ok(decisions.every(input=>input.choices.every(choice=>choice.kind==='normal')),'neither reply granted a peer invitation');
+  assert.ok(decisions.at(-1).choices.some(c=>c.id===whale&&c.to===dragon));
   assert.equal((await f.request('chat',{ ...c, action:'send', personaId:claude, content:'目录变了，但我的房间没有变',
     revision:before.room.revision, epoch:before.epoch, requestId:'still-current' })).status,200);
 });

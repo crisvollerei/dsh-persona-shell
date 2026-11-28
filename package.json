@@ -1,9 +1,16 @@
 {
   "name": "dsh-persona-shell",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "在工作提示词之外，为 DeepSeek Harness 的助手汇报提供人格化转述，原文随时可查。",
   "type": "module",
   "main": "index.js",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "sync:client": "node scripts/build-client-sync.mjs",
+    "sync:check": "node scripts/build-client-sync.mjs --check",
+    "check": "npm run sync:check && npm test",
+    "pack:check": "node scripts/check-package.mjs"
+  },
   "engines": {
     "dsh": ">=0.2.1-rc.3 <0.3.0-0"
   },

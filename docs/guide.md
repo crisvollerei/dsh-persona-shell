@@ -27,13 +27,13 @@ dsh plugin --profile <profile> add dsh-persona-shell
 从 [Releases](https://github.com/crisvollerei/dsh-persona-shell/releases) 下载当前版本的 `dsh-persona-shell-<version>.tgz`，然后在 **Plugins → Add plugin** 中选择 **Install a third-party plugin**，填入下载链接，例如：
 
 ```text
-https://github.com/crisvollerei/dsh-persona-shell/releases/download/v0.5.4/dsh-persona-shell-0.5.4.tgz
+https://github.com/crisvollerei/dsh-persona-shell/releases/download/v<version>/dsh-persona-shell-<version>.tgz
 ```
 
 也可以下载后通过 CLI 安装本地 tarball：
 
 ```bash
-dsh plugin --profile <profile> add ./dsh-persona-shell-0.5.4.tgz
+dsh plugin --profile <profile> add ./dsh-persona-shell-<version>.tgz
 ```
 
 ### Git 仓库
@@ -183,7 +183,7 @@ Enter 发送、Shift+Enter 换行；输入框旁的斜向箭头展开或收起�
 
 ## 过程运行信息
 
-在 **设置 → 人格套壳 → 同时改写阶段性输出** 旁开启 **「允许过程转述参考运行信息」**，默认关闭。过程转述模型会获得一个无参数的只读函数 `get_tool_usage()`，可以自行决定是否查询，并按当前人设生成简短反应；没有固定台词模板。沿用 `processToolUsage` 配置键，一次查询同时返回阶段工具计数、可确认的工作性质，以及仅在内存中观察的会话节奏，不增加第二个查询或后台模型任务。
+在 **设置 → 人格套壳 → 同时改写阶段性输出** 旁开启 **「允许过程转述参考运行信息」**，默认关闭。开启后，宿主把阶段工具计数、可确认的工作性质和会话节奏汇总成只读统计，随过程正文一次发送。角色可以另写一句最多 40 字的备注。原始工具参数、路径和工具结果留在工作会话中。
 
 补充以正文下方的小字单独显示，**最多 40 个字符（含标点、空格）、单行、最多一句，每轮最多 3 条**。它不占正文的长度预算，不加入正文的措辞变化评分，也不调整原来的提示阈值；正文仍按原有字面量与长度规则校验。补充不合要求时只丢弃补充，正文照常处理。
 
@@ -191,7 +191,7 @@ Enter 发送、Shift+Enter 换行；输入框旁的斜向箭头展开或收起�
 
 这些信息只供当前人设参考，不强制改变正文长度或提醒休息，也不据此推断用户去做了什么。最终汇报不使用这条统计路径或它生成的语气样例。
 
-统计以原始阶段汇报划分区间，不按模型查询次数累计。完整的[计数口径、函数限制与字段说明](./architecture.md#过程运行信息)见架构说明。
+每份原始阶段汇报确定一个统计区间。各字段的含义见[阶段计数与统计快照](./architecture.md#过程运行信息)。
 
 ## 静默状态播报
 

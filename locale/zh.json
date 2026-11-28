@@ -24,7 +24,8 @@
       "condition-change": "条件表达变化",
       "uncertainty-change": "不确定性表达变化",
       "quantity-change": "数字表达变化",
-      "literal-order": "字面量顺序变化"
+      "literal-order": "字面量顺序变化",
+      "self-reference": "转述者可能使用了自称"
     },
     "personaSwitch": "人格",
     "personaSwitchOn": "开",

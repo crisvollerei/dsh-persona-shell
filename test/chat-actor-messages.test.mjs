@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {buildActorTimeline} from '../lib/chat-messages.js';
 import {buildChatPrompt} from '../lib/chat-prompt.js';
-import {readChatInput} from './helpers/chat-input.mjs';
+import {readChatInput,readChatPacket as packet} from './helpers/chat-input.mjs';
 
 const pack={identity:'当前人格',voice:[],samples:[],avoid:[],address:{user:'你'}};
 const speaker={id:'a',name:'甲'},other={id:'b',name:'乙'},scopeKey='scope';
@@ -13,16 +13,15 @@ const ref=(turn,index=0)=>({roomId:'room',generation:2,kind:'assistant',turnId:t
 const userRef=id=>({roomId:'room',generation:2,kind:'user',messageId:id});
 const prompt=extra=>buildChatPrompt({pack,history:[],message:'当前用户原话',currentTurn:anchor('now','当前用户原话'),speaker,participants:[speaker,other],recipients:[speaker],
   roomId:'room',generation:2,scopeKey,...extra});
-const packet=message=>JSON.parse(message.content[0].text);
 
 test('real API roles are relative to the current actor, with complete SDK identity and no replay metadata',()=>{
   const head=anchor('old','上一轮用户原话'),own=reply(head,'own',speaker,['我确实说过的话']),peer=reply(head,'peer',other,['同伴确实说过的话']);
   const first=prompt({history:[head,own,peer]}),second=prompt({history:[head,own,peer],speaker:other});
-  const ownMessage=first.messages.find(message=>message.role==='assistant');assert.deepEqual(packet(ownMessage),{messages:own.assistant});
+  const ownMessage=first.messages.find(message=>message.role==='assistant');assert.deepEqual(packet(ownMessage).messages,own.assistant);
   assert.ok(ownMessage.id);assert.deepEqual(ownMessage.source,{kind:'model',provider:'persona-chat-history',model:'unknown'});
-  assert.ok(!('replayState'in ownMessage.source));assert.equal(second.messages.find(message=>message.role==='assistant').content[0].text,JSON.stringify({messages:peer.assistant}));
+  assert.ok(!('replayState'in ownMessage.source));assert.deepEqual(packet(second.messages.find(message=>message.role==='assistant')).messages,peer.assistant);
   const peerMessage=first.messages.find(message=>message.role==='user'&&message.content[0].text.includes(peer.assistant[0]));
-  assert.deepEqual(packet(peerMessage).author,{role:'assistant',id:'b',name:'乙'});
+  assert.deepEqual(packet(peerMessage).author,{role:'assistant',name:'乙'});
   assert.deepEqual(peerMessage.source,{kind:'model',provider:'persona-chat-history',model:'unknown'},'a peer is heard in the user role without falsely attributing her words to the human producer');
   assert.notEqual(peerMessage.id,second.messages.find(message=>message.role==='assistant').id,'SDK identity binds the actor-relative representation');
   assert.equal(first.messages.at(-1).role,'user');assert.equal(packet(first.messages.at(-1)).task,'chat-control');assert.equal(first.user,undefined);

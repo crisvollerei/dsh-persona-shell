@@ -39,9 +39,9 @@ test('the shared chat instructions are concise and invite direct role interactio
 test('real work permissions, attribution and private memory remain distinct from fictional interaction',()=>{
   const prompt=base({memory:['ONLY_CURRENT_PERSONA_PRIVATE_STYLE'],pack:{...pack,report:['REPORT_DUTY_DO_NOT_IMPORT'],narration:{mode:'relay',assistant:'REPORT_WORKER_DO_NOT_IMPORT'}}});
   assert.match(prompt.system,/没有工具执行、分派任务或向工作流发送的权限/);
-  assert.match(prompt.system,/不要把讨论、参考资料或想象动作冒称为实际操作/);assert.match(prompt.system,/不替同伴编台词、心理、沉默原因或承诺/);
+  assert.doesNotMatch(prompt.system,/workContext 是来源会话/);assert.match(prompt.system,/不替同伴编台词、心理、沉默原因或承诺/);
   assert.match(prompt.system,/不自动成为现实经历、永久关系或长期记忆/);assert.match(prompt.system,/不共享其他人格的私有记忆，不从别的房间补经历/);
-  assert.match(prompt.system,/不要把.*刚刚保存了记忆/);assert.match(prompt.system,/ONLY_CURRENT_PERSONA_PRIVATE_STYLE/);
+  assert.match(prompt.system,/ONLY_CURRENT_PERSONA_PRIVATE_STYLE/);
   assert.doesNotMatch(JSON.stringify(prompt.messages),/ONLY_CURRENT_PERSONA_PRIVATE_STYLE/);assert.doesNotMatch(prompt.system,/REPORT_DUTY_DO_NOT_IMPORT|REPORT_WORKER_DO_NOT_IMPORT/);
 });
 
@@ -77,8 +77,8 @@ test('every phase preserves the real role timeline, pointer target and original 
   for(const phase of ['primary','reaction','followup']){
     const prompt=base({...options,phase}),input=readChatInput(prompt);
     assert.equal(input.replyTarget.text,peer.assistant[0]);assert.deepEqual(input.recipients,[speaker]);
-    assert.deepEqual(input.opportunity,options.opportunity);assert.match(prompt.system,/一轮多个气泡只算一次/);
-    assert.match(prompt.system,/余量只是上限，不要求用满/);assert.match(prompt.system,/不为续聊刻意互相点名/);
+    assert.deepEqual(input.opportunity,options.opportunity);assert.doesNotMatch(prompt.system,/opportunity|剩余机会/);
+    assert.match(prompt.system,/够了就停/);
     assert.match(prompt.system,/没有必要再说时返回 \{"messages":\[\]\}，不解释沉默/);
     assert.match(prompt.system,/最多 2 条消息、合计 600 字符/);assert.match(prompt.system,/只允许 messages 这一个键/);
     if(originals)assert.deepEqual(prompt.messages.slice(0,-1),originals);else originals=prompt.messages.slice(0,-1);

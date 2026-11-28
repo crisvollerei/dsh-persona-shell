@@ -29,9 +29,9 @@ test('actual remaining opportunities permit taking time without promising more t
   for(const [normal,independent] of [[3,1],[2,0],[0,1],[0,0]]){
     const prompt=build(anchor('now','继续聊。'),{opportunity:allowance(normal,independent)});
     assert.deepEqual(prompt.control.opportunity,allowance(normal,independent));
-    assert.match(prompt.system,/余量只是上限，不要求用满，也不保证再轮到你/);
-    assert.match(prompt.system,/最后一次也不用总结/);
-    assert.match(prompt.system,/正文不报额度，不为续聊刻意互相点名/);
+    assert.match(prompt.system,/够了就停/);
+    assert.match(prompt.system,/没有必要再说时返回 \{"messages":\[\]\}/);
+    assert.doesNotMatch(prompt.system,/opportunity|最后一次|剩余机会/);
   }
   const invalid=build(anchor('now','继续聊。'),{opportunity:allowance(99)});
   assert.equal(invalid.control.opportunity,undefined);assert.doesNotMatch(invalid.system,/普通机会最多还剩|undefined 轮/);
